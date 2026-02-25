@@ -1,0 +1,86 @@
+body {
+  margin: 0;
+  font-family: 'Poppins', sans-serif;
+  background: #f3f4f6;
+}
+
+.layout {
+  display: flex;
+  height: 100vh;
+}
+
+/* Reuse your sidebar styles */
+@import url("dashboard.css");
+
+/* MAIN */
+.main {
+  flex: 1;
+  padding: 30px;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.filters {
+  margin: 25px 0;
+  display: flex;
+  gap: 15px;
+}
+
+select {
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+}
+
+.table-container {
+  background: white;
+  border-radius: 15px;
+  overflow: hidden;
+  box-shadow: 0 5px 20px rgba(0,0,0,0.05);
+}
+
+.table-title {
+  background: #dc2626;
+  color: white;
+  padding: 15px;
+  font-weight: 600;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  padding: 14px;
+  border-bottom: 1px solid #eee;
+}
+
+.badge {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 13px;
+}
+
+.critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.warning {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.action-btn {
+  padding: 6px 12px;
+  border: none;
+  background: #3b82f6;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+}

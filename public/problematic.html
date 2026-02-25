@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Problematic Sites</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/remixicon/fonts/remixicon.css" rel="stylesheet">
+
+  <link rel="stylesheet" href="problematic.css">
+  <script defer src="problematic.js"></script>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- Sidebar (same structure as dashboard) -->
+  <aside class="sidebar" id="sidebar">
+
+    <div class="logo">
+      <img src="logo.png" class="logo-img">
+    </div>
+
+    <ul class="menu">
+      <li onclick="location.href='dashboard.html'">
+        <i class="ri-dashboard-line"></i><span>Dashboard</span>
+      </li>
+
+      <li class="active">
+        <i class="ri-error-warning-line"></i>
+        <span>Problematic Sites</span>
+      </li>
+
+      <li id="logout">
+        <i class="ri-logout-box-r-line"></i>
+        <span>Logout</span>
+      </li>
+    </ul>
+
+    <button id="toggleSidebar" class="collapse-btn">
+      <i class="ri-arrow-left-s-line"></i>
+    </button>
+
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <div class="topbar">
+      <h2>Problematic Sites Overview</h2>
+      <button id="darkToggle"><i class="ri-moon-line"></i></button>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters">
+      <select id="provinceFilter">
+        <option value="">All Provinces</option>
+        <option>Province 1</option>
+        <option>Province 2</option>
+        <option>Province 3</option>
+      </select>
+
+      <select id="statusFilter">
+        <option value="">All Status</option>
+        <option>Critical</option>
+        <option>Warning</option>
+        <option>Resolved</option>
+      </select>
+    </div>
+
+    <!-- Problematic Table -->
+    <div class="table-container">
+
+      <div class="table-title">
+        <i class="ri-error-warning-line"></i>
+        Active Problematic Sites
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Site ID</th>
+            <th>Province</th>
+            <th>Issue</th>
+            <th>Last Reported</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="problemTable">
+
+          <tr>
+            <td>SITE-001</td>
+            <td>Province 1</td>
+            <td>No Signal</td>
+            <td>2026-02-24</td>
+            <td><span class="badge critical">Critical</span></td>
+            <td><button class="action-btn">View</button></td>
+          </tr>
+
+          <tr>
+            <td>SITE-002</td>
+            <td>Province 2</td>
+            <td>Power Failure</td>
+            <td>2026-02-23</td>
+            <td><span class="badge warning">Warning</span></td>
+            <td><button class="action-btn">View</button></td>
+          </tr>
+
+        </tbody>
+      </table>
+
+    </div>
+
+  </main>
+</div>
+
+</body>
+</html>
