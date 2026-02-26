@@ -55,12 +55,14 @@ document.getElementById("toggleSidebar").addEventListener("click", () => {
 let terminalData = [];
 let terminalFiltered = [];
 let terminalPage = 1;
-const terminalRowsPerPage = 12; // 12 rows per page
+const terminalRowsPerPage = 10; // 10 rows per page
 let terminalSortCol = null;
 let terminalSortDir = 1;
 let terminalSelectedRows = new Set();
 let terminalSelectMode = false;
 
+
+//Load Terminals
 async function loadTerminals() {
   mainContent.innerHTML = `
     <div class="terminals-header">
@@ -202,14 +204,14 @@ async function loadTerminals() {
       </div>
     </div>
   `;
-
+  // Region Selector
   document.getElementById("regionSelect").addEventListener("change", function () {
     const val = this.value;
     document.getElementById("regionLabel").innerText = capitalize(val);
     document.getElementById("regionTitle").innerText = capitalize(val) + " Records";
     fetchTerminals(val);
   });
-
+  // Search Input
   document.getElementById("terminalSearch").addEventListener("input", () => {
     applyTerminalSearch();
     terminalPage = 1;
@@ -380,18 +382,22 @@ async function loadTerminals() {
   fetchTerminals("benguet");
 }
 
+
+// Utility functions
 function toggleBar(id) {
   document.getElementById(id).classList.toggle("hidden");
 }
-
+// Hide the other bar when one is toggled
 function hideBar(id) {
   document.getElementById(id).classList.add("hidden");
 }
-
+// Update the count of selected rows in the bulk action bar
 function capitalize(word) {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
+
+// Terminal state
 async function fetchTerminals(region) {
   const tbody = document.getElementById("terminalTbody");
   const thead = document.getElementById("terminalThead");
@@ -436,6 +442,7 @@ async function fetchTerminals(region) {
   }
 }
 
+// Render the terminal table based on current filters, sorting, and pagination
 function renderTerminalTable() {
   const thead = document.getElementById("terminalThead");
   const tbody = document.getElementById("terminalTbody");
@@ -454,7 +461,7 @@ function renderTerminalTable() {
   thead.innerHTML = `
     <tr>
       ${terminalSelectMode ? '<th class="select-col"><input type="checkbox" id="selectAll"></th>' : ''}
-      <th class="num-col">#</th>
+
       ${columns.map(col => `<th>${col}</th>`).join("")}
       <th class="actions-col">Actions</th>
     </tr>
@@ -480,7 +487,7 @@ function renderTerminalTable() {
     return `
       <tr class="${isChecked ? 'selected-row' : ''}" data-idx="${globalIdx}">
         ${terminalSelectMode ? `<td class="select-col"><input type="checkbox" class="row-check" ${isChecked ? 'checked' : ''}></td>` : ''}
-        <td class="num-col">${globalIdx + 1}</td>
+
         ${columns.map(col => `<td>${row[col] ?? ''}</td>`).join("")}
         <td class="actions-col">
           <button class="row-action-btn edit-btn" data-idx="${globalIdx}" title="Edit">
@@ -584,7 +591,7 @@ function openEditModal(idx) {
 
   const cols = Object.keys(row);
   const fields = document.getElementById("editRowFields");
-
+  // Determine icon based on column name
   const getIcon = (col) => {
     const c = col.toLowerCase();
     if (c.includes("name") || c.includes("site")) return "ri-map-pin-line";
@@ -596,7 +603,7 @@ function openEditModal(idx) {
     if (c.includes("status")) return "ri-checkbox-circle-line";
     return "ri-input-field";
   };
-
+  // Build form fields with current values
   fields.innerHTML = cols.map(col => `
     <div class="add-field-item">
       <label class="add-field-label">
@@ -611,15 +618,15 @@ function openEditModal(idx) {
       >
     </div>
   `).join("");
-
+    // Show modal
   const modal = document.getElementById("editRowModal");
   modal.classList.remove("hidden");
-
+    // Set up buttons
   const close = () => modal.classList.add("hidden");
   document.getElementById("cancelEditRow").onclick = close;
   document.getElementById("cancelEditRowFooter").onclick = close;
   modal.onclick = (e) => { if (e.target === modal) close(); };
-
+    // Confirm edit
   document.getElementById("confirmEditRow").onclick = async () => {
     const updatedRow = {};
     cols.forEach(col => {
@@ -692,11 +699,12 @@ function showToast(message, type = "success") {
     setTimeout(() => toast.remove(), 400);
   }, 3500);
 }
-
+// Update the count of selected rows in the bulk action bar
 function updateSelectedCount() {
   document.getElementById("selectedCount").innerText = `${terminalSelectedRows.size} rows selected`;
 }
 
+// Render pagination controls based on current page and total filtered records
 function renderTerminalPagination() {
   const container = document.getElementById("terminalPagination");
   const total = Math.ceil(terminalFiltered.length / terminalRowsPerPage);
@@ -729,28 +737,28 @@ function renderTerminalPagination() {
     </div>
   `;
 }
-
+// Get page range for pagination controls, showing first 5, last 5, and 2 around current page
 function getPageRange(current, total) {
   if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
   if (current <= 4) return [1, 2, 3, 4, 5, '...', total];
   if (current >= total - 3) return [1, '...', total - 4, total - 3, total - 2, total - 1, total];
   return [1, '...', current - 1, current, current + 1, '...', total];
 }
-
+// Navigate to a specific page in the terminal table
 function goTerminalPage(page) {
   terminalPage = page;
   renderTerminalTable();
   renderTerminalPagination();
   document.querySelector(".terminals-table-wrapper").scrollTop = 0;
 }
-
+//  Apply search filter to terminal data based on search input value
 function applyTerminalSearch() {
   const q = document.getElementById("terminalSearch").value.toLowerCase();
   terminalFiltered = terminalData.filter(row =>
     Object.values(row).some(v => String(v ?? "").toLowerCase().includes(q))
   );
 }
-
+// Open the Add Terminal modal and dynamically generate input fields based on terminal data structure
 function openAddModal() {
   if (!terminalData.length) return;
   const cols = Object.keys(terminalData[0]);
@@ -843,7 +851,7 @@ function openAddModal() {
 }
 
 /* ================= DASHBOARD VIEW ================= */
-
+// Load the dashboard overview with summary cards and recent incident reports
 function loadDashboard() {
   mainContent.innerHTML = `
     <div class="topbar">
@@ -941,7 +949,7 @@ function loadDashboard() {
       </table>
     </div>
   `;
-
+  // Dark mode toggle
   document.getElementById("darkToggle").addEventListener("click", () => {
     document.body.classList.toggle("dark");
     const icon = document.querySelector("#darkToggle i");
@@ -953,6 +961,7 @@ function loadDashboard() {
 
 /* ================= PROBLEMATIC SITES ================= */
 
+// Load the problematic sites view with a table of active issues and their details
 function loadProblematicSites() {
   mainContent.innerHTML = `
     <h3 class="section-title">Problematic Sites</h3>
@@ -983,7 +992,7 @@ function loadProblematicSites() {
 }
 
 /* ================= TICKETS ================= */
-
+// Load the ticket management view with a searchable, paginated table of tickets and a modal for creating new tickets
 function loadTickets() {
   mainContent.innerHTML = `
     <h3 class="section-title">Ticket Management</h3>
@@ -1054,7 +1063,7 @@ function loadTickets() {
 }
 
 /* ================= TABLE RENDER ================= */
-
+// Get the current list of tickets filtered by the search query
 function getFilteredTickets() {
   const q = (document.getElementById("ticketSearch")?.value || "").toLowerCase();
   if (!q) return tickets;
@@ -1062,7 +1071,7 @@ function getFilteredTickets() {
     Object.values(t).some(v => String(v).toLowerCase().includes(q))
   );
 }
-
+// Render the ticket table based on current filters and pagination
 function renderTable() {
   const table = document.getElementById("ticketTable");
   if (!table) return;
@@ -1099,29 +1108,31 @@ function renderTable() {
     `;
   });
 }
-
+// Delete a ticket by ID and re-render the table and pagination
 function deleteTicket(id) {
   tickets = tickets.filter(t => t.id !== id);
   renderTable();
   renderPagination();
 }
-
+// Render the options for the status select dropdown, marking the current status as selected
 function renderStatusOptions(current) {
   return ["Pending", "In Progress", "Completed"].map(status =>
     `<option value="${status}" ${status === current ? "selected" : ""}>${status}</option>`
   ).join("");
 }
-
+// Update the status of a ticket by ID and re-render the table
 function updateStatus(id, newStatus, element) {
   tickets = tickets.map(t => t.id === id ? { ...t, status: newStatus } : t);
 }
 
+// Get the CSS class for a given priority level to style the badge accordingly
 function getPriorityClass(priority) {
   if (priority === "High") return "high";
   if (priority === "Medium") return "medium";
   return "low";
 }
 
+// Render pagination controls based on current page, total filtered tickets, and rows per page
 function renderPagination() {
   const container = document.getElementById("pagination");
   if (!container) return;
@@ -1149,6 +1160,7 @@ function renderPagination() {
   `;
 }
 
+// Get page range for pagination controls, showing first 5, last 5, and 2 around current page
 function changePage(page) {
   const filtered = getFilteredTickets();
   const total = Math.ceil(filtered.length / rowsPerPage);
@@ -1159,7 +1171,7 @@ function changePage(page) {
 }
 
 /* ================= MODAL ================= */
-
+// Set up event listeners for opening and closing the ticket creation modal, as well as saving a new ticket
 function setupModal() {
   const modal = document.getElementById("ticketModal");
 
@@ -1198,7 +1210,7 @@ function setupModal() {
 }
 
 /* ================= COUNTERS ================= */
-
+// Animate the counters in the dashboard overview cards from 0 to their target values for a dynamic effect
 function runCounters() {
   document.querySelectorAll(".counter").forEach(counter => {
     const target = +counter.getAttribute("data-target");

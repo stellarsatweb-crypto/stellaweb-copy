@@ -41,6 +41,8 @@ CREATE TABLE ilocos_inventory (
     "REMARKS" TEXT
 );
 
+DROP TABLE IF EXISTS ilocos_inventory;
+
 SELECT * FROM ilocos_inventory;
 
 
