@@ -1308,15 +1308,6 @@ async function loadTickets() {
           </select>
         </div>
 
-        <div class="tk-form-attach">
-          <label class="tk-attach-label" for="tkFileInput">
-            <i class="ri-attachment-2"></i> Attach a file
-          </label>
-          <span class="tk-attach-hint">(Up to 40 MB)</span>
-          <input type="file" id="tkFileInput" style="display:none">
-          <span class="tk-attach-name" id="tkAttachName"></span>
-        </div>
-
         <div class="tk-form-actions">
           <button class="tool-btn apply-btn" id="tkSubmitBtn" style="padding:11px 28px;font-size:14px;">Submit</button>
           <button class="tool-btn" id="tkDiscardBtn" style="padding:11px 22px;font-size:14px;">Discard</button>
@@ -1355,6 +1346,89 @@ async function loadTickets() {
         <div class="tk-form-actions">
           <button class="tool-btn apply-btn" id="tkEditSaveBtn" style="padding:11px 28px;font-size:14px;"><i class="ri-save-line"></i> Save Changes</button>
           <button class="tool-btn" id="tkEditCancelBtn" style="padding:11px 22px;font-size:14px;">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- View Ticket Modal -->
+    <div id="tkViewModal" class="modal-overlay hidden">
+      <div class="tk-view-modal" style="max-width:700px;max-height:85vh;overflow-y:auto;">
+        <div class="tk-view-header">
+          <div class="tk-view-title">
+            <i class="ri-ticket-2-line tk-view-icon"></i>
+            <span>Ticket Details</span>
+          </div>
+          <button class="modal-close-btn" id="tkViewCloseBtn" style="background:transparent;border:none;color:#64748b;font-size:24px;cursor:pointer;padding:8px;">
+            <i class="ri-close-line"></i>
+          </button>
+        </div>
+
+        <div class="tk-view-body">
+          <div class="tk-view-section">
+            <div class="tk-view-section-title">
+              <i class="ri-information-line"></i>
+              <span>Ticket Information</span>
+            </div>
+            <div class="tk-view-grid">
+              <div class="tk-view-field">
+                <div class="tk-view-label">
+                  <i class="ri-hashtag"></i>
+                  Ticket ID
+                </div>
+                <div class="tk-view-value" id="tkViewId" style="font-weight:600;color:#3b82f6;"></div>
+              </div>
+              <div class="tk-view-field">
+                <div class="tk-view-label">
+                  <i class="ri-bookmark-line"></i>
+                  Subject
+                </div>
+                <div class="tk-view-value" id="tkViewSubject" style="font-weight:500;font-size:16px;"></div>
+              </div>
+              <div class="tk-view-field full-width">
+                <div class="tk-view-label">
+                  <i class="ri-file-text-line"></i>
+                  Description
+                </div>
+                <div class="tk-view-value" id="tkViewDesc" style="white-space: pre-wrap;line-height:1.6;background:#f8fafc;padding:16px;border-radius:8px;border-left:4px solid #3b82f6;"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tk-view-section">
+            <div class="tk-view-section-title">
+              <i class="ri-settings-3-line"></i>
+              <span>Additional Information</span>
+            </div>
+            <div class="tk-view-grid">
+              <div class="tk-view-field">
+                <div class="tk-view-label">
+                  <i class="ri-router-line"></i>
+                  Airmac / ESN
+                </div>
+                <div class="tk-view-value" id="tkViewEsn"></div>
+              </div>
+              <div class="tk-view-field">
+                <div class="tk-view-label">
+                  <i class="ri-flag-line"></i>
+                  Status
+                </div>
+                <div class="tk-view-value" id="tkViewStatus"></div>
+              </div>
+              <div class="tk-view-field">
+                <div class="tk-view-label">
+                  <i class="ri-calendar-line"></i>
+                  Created Date
+                </div>
+                <div class="tk-view-value" id="tkViewCreated"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tk-view-footer">
+          <button class="tool-btn" id="tkViewCloseBtnFooter" style="padding:12px 32px;font-size:15px;">
+            <i class="ri-close-line"></i> Close
+          </button>
         </div>
       </div>
     </div>
@@ -1428,11 +1502,6 @@ async function loadTickets() {
     document.getElementById("tkSubmitModal").classList.remove("hidden");
   });
 
-  // File attach
-  document.getElementById("tkFileInput").addEventListener("change", function () {
-    document.getElementById("tkAttachName").textContent = this.files[0] ? this.files[0].name : "";
-  });
-
   // Submit ticket → POST to DB
   document.getElementById("tkSubmitBtn").addEventListener("click", async () => {
     const subject     = document.getElementById("tkSubjectInput").value.trim();
@@ -1456,7 +1525,6 @@ async function loadTickets() {
       document.getElementById("tkSubjectInput").value = "";
       document.getElementById("tkDescInput").value    = "";
       document.getElementById("tkEsnInput").value     = "";
-      document.getElementById("tkAttachName").textContent = "";
       await fetchTickets();
       showToast("Ticket submitted successfully.", "success");
     } catch (err) {
@@ -1514,6 +1582,18 @@ async function loadTickets() {
   // Delete modal
   document.getElementById("tkDeleteCancelBtn").addEventListener("click", () => {
     document.getElementById("tkDeleteModal").classList.add("hidden");
+  });
+
+  // View modal
+  document.getElementById("tkViewCloseBtn").addEventListener("click", () => {
+    document.getElementById("tkViewModal").classList.add("hidden");
+  });
+  document.getElementById("tkViewCloseBtnFooter").addEventListener("click", () => {
+    document.getElementById("tkViewModal").classList.add("hidden");
+  });
+  document.getElementById("tkViewModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("tkViewModal"))
+      document.getElementById("tkViewModal").classList.add("hidden");
   });
 
   // Fetch from DB
@@ -1607,6 +1687,268 @@ function openTkDeleteModal(id) {
   };
 }
 
+function openTkViewModal(t) {
+  // Add CSS styles if not already added
+  if (!document.getElementById('tkViewModalStyles')) {
+    const style = document.createElement('style');
+    style.id = 'tkViewModalStyles';
+    style.textContent = `
+      .tk-view-modal {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+        overflow: visible;
+        animation: modalSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        border: 1px solid rgba(0, 0, 0, 0.06);
+        backdrop-filter: blur(10px);
+        max-height: 90vh;
+        max-width: 90vw;
+      }
+      
+      @keyframes modalSlideIn {
+        from {
+          opacity: 0;
+          transform: translateY(-30px) scale(0.96);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+      
+      .tk-view-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 28px 32px 24px;
+        background: linear-gradient(135deg, #2f4b85 0%, #1e3a8a 100%);
+        color: white;
+        position: relative;
+        overflow: hidden;
+      }
+      
+      .tk-view-header::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+      }
+      
+      .tk-view-title {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.5px;
+      }
+      
+      .tk-view-icon {
+        font-size: 28px;
+        opacity: 0.9;
+      }
+      
+      .tk-view-body {
+        padding: 32px;
+        background: #fafbfc;
+      }
+      
+      .tk-view-section {
+        margin-bottom: 36px;
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        transition: all 0.2s ease;
+      }
+      
+      .tk-view-section:hover {
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
+        transform: translateY(-1px);
+      }
+      
+      .tk-view-section:last-child {
+        margin-bottom: 0;
+      }
+      
+      .tk-view-section-title {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 15px;
+        font-weight: 600;
+        color: #1e293b;
+        margin-bottom: 20px;
+        padding-bottom: 12px;
+        border-bottom: 2px solid #e2e8f0;
+        position: relative;
+      }
+      
+      .tk-view-section-title i {
+        color: #3b82f6;
+        font-size: 18px;
+        background: rgba(59, 130, 246, 0.1);
+        padding: 6px;
+        border-radius: 6px;
+      }
+      
+      .tk-view-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 24px;
+      }
+      
+      .tk-view-field {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      
+      .tk-view-field.full-width {
+        grid-column: 1 / -1;
+      }
+      
+      .tk-view-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.75px;
+      }
+      
+      .tk-view-label i {
+        font-size: 14px;
+        color: #94a3b8;
+      }
+      
+      .tk-view-value {
+        font-size: 15px;
+        color: #1e293b;
+        line-height: 1.6;
+        padding: 16px 20px;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        min-height: 52px;
+        display: flex;
+        align-items: center;
+        font-weight: 500;
+        transition: all 0.2s ease;
+      }
+      
+      .tk-view-value:hover {
+        background: #f1f5f9;
+        border-color: #cbd5e1;
+      }
+      
+      .tk-view-footer {
+        padding: 24px 32px;
+        border-top: 1px solid #e2e8f0;
+        background: #f8fafc;
+        display: flex;
+        justify-content: flex-end;
+        gap: 12px;
+      }
+      
+      .modal-overlay.hidden .tk-view-modal {
+        animation: modalSlideOut 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      }
+      
+      @keyframes modalSlideOut {
+        from {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        to {
+          opacity: 0;
+          transform: translateY(-30px) scale(0.96);
+        }
+      }
+      
+      .tk-status-badge-view {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      
+      .tk-status-open-view {
+        background: rgba(34, 197, 94, 0.1);
+        color: #16a34a;
+        border: 1px solid rgba(34, 197, 94, 0.2);
+      }
+      
+      .tk-status-closed-view {
+        background: rgba(239, 68, 68, 0.1);
+        color: #dc2626;
+        border: 1px solid rgba(239, 68, 68, 0.2);
+      }
+      
+      .tk-status-hold-view {
+        background: rgba(251, 146, 60, 0.1);
+        color: #ea580c;
+        border: 1px solid rgba(251, 146, 60, 0.2);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // Enhanced data display with proper formatting
+  const ticketId = document.getElementById("tkViewId");
+  const subject = document.getElementById("tkViewSubject");
+  const description = document.getElementById("tkViewDesc");
+  const airmacEsn = document.getElementById("tkViewEsn");
+  const status = document.getElementById("tkViewStatus");
+  const created = document.getElementById("tkViewCreated");
+  
+  // Format data with professional styling
+  ticketId.innerHTML = `<span style="font-size: 18px; font-weight: 700; color: #3b82f6;">#${t.id}</span>`;
+  subject.innerHTML = `<span style="font-size: 16px; font-weight: 600; color: #1e293b;">${t.subject || 'No subject'}</span>`;
+  description.innerHTML = `<div style="line-height: 1.7; color: #374151; padding: 20px; border-radius: 8px; border-left: 4px solid #2f4b85; white-space: pre-wrap;">${t.description || 'No description provided'}</div>`;
+  airmacEsn.innerHTML = `<span style="font-family: 'Courier New', monospace; color: #059669;">${t.airmac_esn || 'Not specified'}</span>`;
+  
+  // Enhanced status display
+  let statusClass = 'tk-status-open-view';
+  let statusText = t.status || 'Open';
+  if (t.status === 'Closed') { statusClass = 'tk-status-closed-view'; }
+  else if (t.status === 'On hold') { statusClass = 'tk-status-hold-view'; statusText = 'On Hold'; }
+  status.innerHTML = `<span class="tk-status-badge-view ${statusClass}">${statusText}</span>`;
+  
+  // Fix date formatting - handle different date formats properly
+  let formattedDate = 'Unknown';
+  if (t.created_at) {
+    try {
+      const date = new Date(t.created_at);
+      if (!isNaN(date.getTime())) {
+        formattedDate = date.toLocaleString('en-US', {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        });
+      }
+    } catch (e) {
+      console.warn('Date formatting error:', e);
+    }
+  }
+  created.innerHTML = `<span style="color: #6b7280; font-size: 14px;">${formattedDate}</span>`;
+  
+  document.getElementById("tkViewModal").classList.remove("hidden");
+}
+
 function renderTkList() {
   const list = document.getElementById("tkList");
   if (!list) return;
@@ -1639,26 +1981,18 @@ function renderTkList() {
           </div>
         </div>
         <div class="tk-row-right">
-          <button class="row-action-btn edit-btn tk-action-btn" data-id="${t.id}" title="Edit"><i class="ri-edit-line"></i></button>
-          <button class="row-action-btn delete-single-btn tk-action-btn" data-id="${t.id}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+          <button class="row-action-btn view-btn tk-action-btn" data-id="${t.id}" title="View Details"><i class="ri-eye-line"></i></button>
           <div class="tk-avatar">${assignee}</div>
           <span class="tk-status-badge ${statusClass}">${escHtml(t.status)}</span>
         </div>
       </div>
     `;
   }).join("");
-
-  list.querySelectorAll(".tk-action-btn.edit-btn").forEach(btn => {
+  list.querySelectorAll(".tk-action-btn.view-btn").forEach(btn => {
     btn.addEventListener("click", e => {
       e.stopPropagation();
       const t = ticketData.find(x => String(x.id) === btn.dataset.id);
-      if (t) openTkEditModal(t);
-    });
-  });
-  list.querySelectorAll(".tk-action-btn.delete-single-btn").forEach(btn => {
-    btn.addEventListener("click", e => {
-      e.stopPropagation();
-      openTkDeleteModal(btn.dataset.id);
+      if (t) openTkViewModal(t);
     });
   });
 }
