@@ -679,6 +679,90 @@ app.get('/api/letters/files/:id/download', async (req, res) => {
   }
 });
 
+/* ── POST /api/letters/files/:id/copy ── */
+app.post('/api/letters/files/:id/copy', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { target_folder_id } = req.body || {};
+  if (!target_folder_id) return res.status(400).json({ error: 'target_folder_id is required' });
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f = rows[0];
+
+    // Copy the physical file with a new timestamp prefix
+    const fs   = require('fs');
+    const path = require('path');
+    const ext  = path.extname(f.file_name);
+    const base = path.basename(f.file_name, ext).replace(/\s*\(copy.*\)$/, '').trimEnd();
+    const newFileName = `${base} (copy)${ext}`;
+
+    const oldPath = path.join(__dirname, 'public', f.file_path);
+    const newFile = `${Date.now()}_${path.basename(f.file_path)}`;
+    const newRelPath = '/uploads/letters/' + newFile;
+    const newAbsPath = path.join(__dirname, 'public', newRelPath);
+
+    fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+    fs.copyFileSync(oldPath, newAbsPath);
+
+    const result = await pool.query(
+      `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [parseInt(target_folder_id), f.uploader_name, newFileName, newRelPath, f.file_size, f.file_type]
+    );
+    res.status(201).json({ success: true, file: result.rows[0] });
+  } catch (err) {
+    console.error('Copy file error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/letters/folders/:id/copy ── */
+app.post('/api/letters/folders/:id/copy', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { target_parent_id } = req.body || {};
+  if (!target_parent_id) return res.status(400).json({ error: 'target_parent_id is required' });
+  try {
+    // Get source folder
+    const { rows: folderRows } = await pool.query(`SELECT * FROM folders WHERE id = $1`, [id]);
+    if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
+    const srcFolder = folderRows[0];
+
+    // Create new folder copy
+    const newName = srcFolder.folder_name + ' (copy)';
+    const { rows: newFolderRows } = await pool.query(
+      `INSERT INTO folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
+      [newName, parseInt(target_parent_id)]
+    );
+    const newFolderId = newFolderRows[0].id;
+
+    // Copy all files inside
+    const { rows: files } = await pool.query(`SELECT * FROM files WHERE folder_id = $1`, [id]);
+    const fs   = require('fs');
+    const path = require('path');
+
+    for (const f of files) {
+      try {
+        const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
+        const newRelPath = '/uploads/letters/' + newFile;
+        const newAbsPath = path.join(__dirname, 'public', newRelPath);
+        const oldAbsPath = path.join(__dirname, 'public', f.file_path);
+        fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+        fs.copyFileSync(oldAbsPath, newAbsPath);
+        await pool.query(
+          `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [newFolderId, f.uploader_name, f.file_name, newRelPath, f.file_size, f.file_type]
+        );
+      } catch { /* skip files that can't be copied */ }
+    }
+
+    res.status(201).json({ success: true, folder_id: newFolderId, folder_name: newName });
+  } catch (err) {
+    console.error('Copy folder error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* ── GET /api/letters/files/:id/preview ── */
 app.get('/api/letters/files/:id/preview', async (req, res) => {
   const id = parseInt(req.params.id);

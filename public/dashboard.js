@@ -1320,6 +1320,7 @@ let lettersSearchQuery    = "";
 let lettersFilterType     = "all";
 let lettersFilterUploader = "";
 let lettersFilterModified = "all";
+let lettersClipboard      = null; // { type: "file"|"folder", id, name, folderId } 
 
 // helpers
 function lettersCurrentFolder() { return lettersFolderStack.length ? lettersFolderStack[lettersFolderStack.length - 1] : null; }
@@ -1356,6 +1357,7 @@ function loadLetters() {
         <div class="letters-main-toolbar">
           <div class="letters-breadcrumb" id="lettersBreadcrumb"></div>
           <div class="letters-main-actions">
+            <button class="tool-btn letters-paste-btn hidden" id="lettersPasteBtn"><i class="ri-clipboard-line"></i> Paste</button>
             <button class="tool-btn apply-btn" id="lettersNewBtn"><i class="ri-add-line"></i> New</button>
           </div>
         </div>
@@ -1522,6 +1524,7 @@ function loadLetters() {
   fetchLettersContent();
   bindLettersFilterChips();
   updateLettersClearBtn();
+  bindLettersPasteBtn();
 }
 
 /* ── API helpers ── */
@@ -1676,6 +1679,7 @@ async function fetchLettersRecent() {
 
 async function fetchLettersContent() {
   renderLettersBreadcrumb();
+  updateLettersPasteBtn();
   const content = document.getElementById("lettersContent");
   content.innerHTML = `<div class="letters-empty"><i class="ri-loader-4-line spin"></i></div>`;
   const fid = lettersCurrentFolderId();
@@ -2032,6 +2036,86 @@ function openLettersNewChoiceMenu(anchor) {
   setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }), 0);
 }
 
+// ── Copy / Paste / Duplicate ──
+
+function lettersCopyItem(type, id, name, sourceFolderId) {
+  lettersClipboard = { type, id, name, sourceFolderId };
+  updateLettersPasteBtn();
+  showToast(`"${name}" copied — navigate to a folder and click Paste.`, "success");
+}
+
+function updateLettersPasteBtn() {
+  const btn = document.getElementById("lettersPasteBtn");
+  if (!btn) return;
+  const show = lettersClipboard !== null && lettersCurrentFolderId() !== null;
+  btn.classList.toggle("hidden", !show);
+  if (lettersClipboard) {
+    const icon = lettersClipboard.type === "folder" ? "ri-folder-transfer-line" : "ri-clipboard-line";
+    btn.innerHTML = `<i class="${icon}"></i> Paste "${lettersClipboard.name}"`;
+  }
+}
+
+function bindLettersPasteBtn() {
+  document.getElementById("lettersPasteBtn")?.addEventListener("click", () => {
+    if (!lettersClipboard) return;
+    if (lettersClipboard.type === "file") lettersPasteFile();
+    else lettersPasteFolder();
+  });
+}
+
+async function lettersPasteFile() {
+  const { id, name } = lettersClipboard;
+  const targetFolderId = lettersCurrentFolderId();
+  if (!targetFolderId) { showToast("Open a folder first to paste into.", "error"); return; }
+  const btn = document.getElementById("lettersPasteBtn");
+  btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Pasting…';
+  try {
+    const res    = await fetch(`/api/letters/files/${id}/copy`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_folder_id: targetFolderId })
+    });
+    const result = await res.json();
+    if (!res.ok) { showToast("Paste failed: " + (result.error || "Unknown"), "error"); return; }
+    showToast(`"${name}" pasted successfully.`, "success");
+    fetchLettersContent(); fetchLettersRecent();
+  } catch { showToast("Network error.", "error"); }
+  finally { btn.disabled = false; updateLettersPasteBtn(); }
+}
+
+async function lettersPasteFolder() {
+  const { id, name } = lettersClipboard;
+  const targetParentId = lettersCurrentFolderId();
+  if (!targetParentId) { showToast("Open a folder first to paste into.", "error"); return; }
+  const btn = document.getElementById("lettersPasteBtn");
+  btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Pasting…';
+  try {
+    const res    = await fetch(`/api/letters/folders/${id}/copy`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_parent_id: targetParentId })
+    });
+    const result = await res.json();
+    if (!res.ok) { showToast("Paste failed: " + (result.error || "Unknown"), "error"); return; }
+    showToast(`Folder "${name}" pasted successfully.`, "success");
+    fetchLettersContent();
+  } catch { showToast("Network error.", "error"); }
+  finally { btn.disabled = false; updateLettersPasteBtn(); }
+}
+
+async function lettersDuplicateFile(id, name) {
+  const folderId = lettersCurrentFolderId();
+  if (!folderId) return;
+  try {
+    const res    = await fetch(`/api/letters/files/${id}/copy`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ target_folder_id: folderId })
+    });
+    const result = await res.json();
+    if (!res.ok) { showToast("Duplicate failed: " + (result.error || "Unknown"), "error"); return; }
+    showToast(`"${name}" duplicated.`, "success");
+    fetchLettersContent(); fetchLettersRecent();
+  } catch { showToast("Network error.", "error"); }
+}
+
 function bindLettersKebabs(container) {
   container.querySelectorAll(".letters-kebab").forEach(btn => {
     btn.addEventListener("click", e => {
@@ -2051,16 +2135,24 @@ function bindLettersKebabs(container) {
           <div class="kebab-item km-preview"><i class="ri-eye-line"></i> Preview</div>
           <div class="kebab-item km-download"><i class="ri-download-line"></i> Download</div>
           <div class="kebab-divider"></div>
+          <div class="kebab-item km-copy"><i class="ri-file-copy-line"></i> Copy</div>
+          <div class="kebab-item km-duplicate"><i class="ri-file-add-line"></i> Duplicate</div>
+          <div class="kebab-divider"></div>
           <div class="kebab-item km-rename"><i class="ri-edit-line"></i> Rename</div>
           <div class="kebab-item kebab-danger km-delete"><i class="ri-delete-bin-line"></i> Delete</div>
         `;
-        menu.querySelector(".km-preview").onclick  = () => { closeAllLettersKebabs(); openLettersPreview(id, name, ftype); };
-        menu.querySelector(".km-download").onclick = () => { closeAllLettersKebabs(); window.location.href = `/api/letters/files/${id}/download`; };
+        menu.querySelector(".km-preview").onclick   = () => { closeAllLettersKebabs(); openLettersPreview(id, name, ftype); };
+        menu.querySelector(".km-download").onclick  = () => { closeAllLettersKebabs(); window.location.href = `/api/letters/files/${id}/download`; };
+        menu.querySelector(".km-copy").onclick      = () => { closeAllLettersKebabs(); lettersCopyItem("file", id, name, lettersCurrentFolderId()); };
+        menu.querySelector(".km-duplicate").onclick = () => { closeAllLettersKebabs(); lettersDuplicateFile(id, name); };
       } else {
         menu.innerHTML = `
+          <div class="kebab-item km-copy"><i class="ri-folder-transfer-line"></i> Copy</div>
+          <div class="kebab-divider"></div>
           <div class="kebab-item km-rename"><i class="ri-edit-line"></i> Rename</div>
           <div class="kebab-item kebab-danger km-delete"><i class="ri-delete-bin-line"></i> Delete</div>
         `;
+        menu.querySelector(".km-copy").onclick = () => { closeAllLettersKebabs(); lettersCopyItem("folder", id, name, lettersCurrentFolderId()); };
       }
       menu.querySelector(".km-rename").onclick = () => { closeAllLettersKebabs(); openLettersRename(type, id, name); };
       menu.querySelector(".km-delete").onclick = () => { closeAllLettersKebabs(); openLettersDelete(type, id, name); };

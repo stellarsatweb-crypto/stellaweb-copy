@@ -1218,3 +1218,18 @@ body.dark .chip-option.active { background: #1e3a6e; color: #93c5fd; }
 }
 .letters-filter-clear:hover { background: #fecaca; }
 body.dark .letters-filter-clear { background: #450a0a; border-color: #7f1d1d; color: #f87171; }
+
+/* ── Letters paste button ── */
+.letters-paste-btn {
+  background: #f0fdf4;
+  border-color: #86efac;
+  color: #15803d;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.letters-paste-btn:hover { background: #dcfce7; border-color: #4ade80; }
+.letters-paste-btn.hidden { display: none; }
+body.dark .letters-paste-btn { background: #052e16; border-color: #166534; color: #4ade80; }
+body.dark .letters-paste-btn:hover { background: #14532d; }
