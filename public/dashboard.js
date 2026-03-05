@@ -10,14 +10,6 @@ if (!user) {
 
 const mainContent = document.getElementById("mainContent");
 
-let tickets = [
-  { id: "TIC-001", site: "SITE-01", issue: "No Signal", priority: "High", status: "In Progress", date: "2026-02-20" },
-  { id: "TIC-002", site: "SITE-07", issue: "Power Failure", priority: "Medium", status: "Pending", date: "2026-02-21" },
-  { id: "TIC-003", site: "SITE-12", issue: "Battery Low", priority: "Low", status: "Completed", date: "2026-02-22" },
-  { id: "TIC-004", site: "SITE-14", issue: "Router Offline", priority: "High", status: "Pending", date: "2026-02-23" },
-  { id: "TIC-005", site: "SITE-22", issue: "Fiber Cut", priority: "High", status: "In Progress", date: "2026-02-24" }
-];
-
 let currentPage = 1;
 const rowsPerPage = 7;
 
@@ -691,7 +683,6 @@ function applyProbRegionFilter() {
 }
 
 async function loadProblematicSites() {
-  // Reset state each time the page loads
   probData = []; probFiltered = []; probPage = 1;
   probSelectedRows = new Set(); probSelectMode = false;
   probCurrentRegion = "all";
@@ -775,7 +766,6 @@ async function loadProblematicSites() {
       <div class="pagination-bar" id="probPagination"></div>
     </div>
 
-    <!-- Confirm Delete Modal -->
     <div id="probConfirmDeleteModal" class="modal-overlay hidden">
       <div class="modal-box confirm-modal-box">
         <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
@@ -788,7 +778,6 @@ async function loadProblematicSites() {
       </div>
     </div>
 
-    <!-- Add Modal -->
     <div id="probAddModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
@@ -812,7 +801,6 @@ async function loadProblematicSites() {
       </div>
     </div>
 
-    <!-- Edit Modal -->
     <div id="probEditModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
@@ -837,7 +825,6 @@ async function loadProblematicSites() {
     </div>
   `;
 
-  // Region filter
   document.getElementById("probRegionSelect").addEventListener("change", function () {
     const val = this.value;
     document.getElementById("probRegionLabel").innerText = val === "all" ? "All Regions" : val.charAt(0).toUpperCase() + val.slice(1);
@@ -846,7 +833,6 @@ async function loadProblematicSites() {
     probPage = 1; renderProbTable(); renderProbPagination();
   });
 
-  // Combined Sort & Filter panel
   document.getElementById("probBtnSortFilter").addEventListener("click", () => {
     document.getElementById("probSortFilterBar").classList.toggle("hidden");
     document.getElementById("probBtnSortFilter").classList.toggle("active-tool",
@@ -881,7 +867,6 @@ async function loadProblematicSites() {
     probPage = 1; renderProbTable(); renderProbPagination();
   });
 
-  // Select
   document.getElementById("probBtnSelect").addEventListener("click", () => {
     probSelectMode = !probSelectMode;
     probSelectedRows.clear();
@@ -890,7 +875,6 @@ async function loadProblematicSites() {
     renderProbTable();
   });
 
-  // Bulk Delete
   document.getElementById("probDeleteSelected").addEventListener("click", async () => {
     if (probSelectedRows.size === 0) { showToast("No rows selected.", "error"); return; }
     const toDeleteRows = Array.from(probSelectedRows).map(idx => probFiltered[idx]);
@@ -918,7 +902,6 @@ async function loadProblematicSites() {
     });
   });
 
-  // Export Excel (all records, split by region)
   document.getElementById("probExportExcel").addEventListener("click", async () => {
     const btn = document.getElementById("probExportExcel");
     btn.disabled = true;
@@ -940,10 +923,8 @@ async function loadProblematicSites() {
     }
   });
 
-  // Add button
   document.getElementById("probBtnAdd").addEventListener("click", () => openProbAddModal());
 
-  // Fetch data
   await fetchProbData();
 }
 
@@ -1201,128 +1182,533 @@ function openProbEditModal(idx) {
 
 /* ================= TICKETS ================= */
 
-function loadTickets() {
+let ticketData = [];
+let tkCurrentView  = "My Tickets";
+let tkCurrentDept  = "All Department";
+let tkCurrentChan  = "All Channel";
+let tkSearchQuery  = "";
+let tkCurrentPage  = 1;
+const tkRowsPerPage = 10;
+
+const tkViews = [
+  { label: "My Tickets",           count: 0 },
+  { label: "My Open Tickets",      count: 0 },
+  { label: "My Closed Tickets",    count: 0 },
+  { label: "My On hold Tickets",   count: 0 },
+  { label: "My Overdue Tickets",   count: 0 },
+  null,
+  { label: "Team Tickets",         count: 0 },
+  { label: "Team Open Tickets",    count: 0 },
+  { label: "Team Closed Tickets",  count: 0 },
+  { label: "Team On Hold Tickets", count: 0 },
+  { label: "Team Overdue Tickets", count: 0 },
+];
+
+async function loadTickets() {
+  tkCurrentView = "My Tickets";
+  tkCurrentDept = "All Department";
+  tkCurrentChan = "All Channel";
+  tkSearchQuery = "";
+  tkCurrentPage = 1;
+
   mainContent.innerHTML = `
-    <h3 class="section-title">Ticket Management</h3>
-    <div class="tickets-toolbar">
-      <button id="openModal" class="tool-btn apply-btn"><i class="ri-add-line"></i> Create Ticket</button>
-      <div class="search-box">
-        <i class="ri-search-line"></i>
-        <input type="text" id="ticketSearch" placeholder="Search tickets…">
+    <div class="tk-topbar">
+      <div class="tk-title-row">
+        <h2 class="tk-title"><i class="ri-ticket-2-line"></i> Ticket</h2>
+        <span class="tk-subtitle">My Area</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div class="tk-search-box">
+          <i class="ri-search-line"></i>
+          <input type="text" id="tkSearch" placeholder="Search here">
+        </div>
+        <button class="tool-btn apply-btn" id="tkAddBtn" style="gap:6px;padding:10px 18px;font-size:14px;">
+          <i class="ri-add-line"></i> Add ticket
+        </button>
+        <button class="tool-btn" style="gap:6px;padding:10px 14px;">
+          <i class="ri-equalizer-line"></i> Filter
+        </button>
+        <button class="tool-btn" style="padding:10px 12px;"><i class="ri-more-2-fill"></i></button>
       </div>
     </div>
-    <div class="table-container">
-      <div class="table-title"><i class="ri-ticket-2-line"></i> Tickets</div>
-      <table>
-        <thead><tr><th>ID</th><th>Site</th><th>Issue</th><th>Priority</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
-        <tbody id="ticketTable"></tbody>
-      </table>
-    </div>
-    <div class="pagination-bar" id="pagination"></div>
-    <div id="ticketModal" class="modal-overlay hidden">
-      <div class="modal-box">
-        <h3><i class="ri-ticket-2-line"></i> Create Ticket</h3>
-        <div class="form-group"><label>Site ID</label><input id="siteInput" placeholder="e.g. SITE-10"></div>
-        <div class="form-group"><label>Issue</label><input id="issueInput" placeholder="Describe the issue"></div>
-        <div class="form-group"><label>Priority</label>
-          <select id="priorityInput"><option>High</option><option>Medium</option><option>Low</option></select>
+
+    <div class="tk-layout">
+      <div class="tk-main-card">
+        <div class="tk-tabs-bar">
+          <div class="tk-dropdown-wrap" id="tkDeptWrap">
+            <button class="tk-tab-btn" id="tkDeptBtn">
+              <span id="tkDeptLabel">All Department</span>
+              <i class="ri-arrow-down-s-line"></i>
+            </button>
+            <div class="tk-tab-menu hidden" id="tkDeptMenu">
+              ${["All Department","NOC Department","Finance Department","Executive"].map(d =>
+                `<div class="tk-tab-opt${d === "All Department" ? ' active' : ''}" data-dept="${d}">${d}</div>`
+              ).join("")}
+            </div>
+          </div>
+          <div class="tk-dropdown-wrap" id="tkChanWrap">
+            <button class="tk-tab-btn" id="tkChanBtn">
+              <span id="tkChanLabel">All Channel</span>
+              <i class="ri-arrow-down-s-line"></i>
+            </button>
+            <div class="tk-tab-menu hidden" id="tkChanMenu">
+              ${["All Channel","Web","Email","Phone"].map(c =>
+                `<div class="tk-tab-opt${c === "All Channel" ? ' active' : ''}" data-chan="${c}">${c}</div>`
+              ).join("")}
+            </div>
+          </div>
         </div>
-        <div class="modal-actions">
-          <button id="closeModal" class="tool-btn">Cancel</button>
-          <button id="saveTicket" class="tool-btn apply-btn">Save Ticket</button>
+
+        <div class="tk-list" id="tkList">
+          <div class="tk-empty"><i class="ri-loader-4-line spin"></i><p>Loading tickets…</p></div>
+        </div>
+        <div class="tk-pagination" id="tkPagination"></div>
+      </div>
+
+      <div class="tk-sidebar">
+        <div class="tk-sidebar-title">Views</div>
+        <div class="tk-views" id="tkViewsList">
+          ${tkViews.map(v => v === null
+            ? `<div class="tk-view-divider"></div>`
+            : `<div class="tk-view-item${v.label === "My Tickets" ? ' active' : ''}" data-view="${v.label}">
+                 <span>${v.label}</span>
+                 <span class="tk-view-count" id="tkCount_${v.label.replace(/\s+/g,'_')}"></span>
+               </div>`
+          ).join("")}
+        </div>
+      </div>
+    </div>
+
+    <!-- Submit Ticket Modal -->
+    <div id="tkSubmitModal" class="modal-overlay hidden">
+      <div class="tk-form-box">
+        <h2 class="tk-form-title">Submit a Ticket</h2>
+
+        <div class="tk-form-section-label">Ticket Information</div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Subject <span class="tk-required">*</span></label>
+          <input type="text" id="tkSubjectInput" class="tk-form-input">
+        </div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Description <span class="tk-required">*</span></label>
+          <textarea id="tkDescInput" class="tk-form-textarea" rows="6"></textarea>
+        </div>
+
+        <div class="tk-form-section-label">Additional Information</div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Airmac / ESN</label>
+          <input type="text" id="tkEsnInput" class="tk-form-input">
+        </div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Status</label>
+          <select id="tkStatusInput" class="tk-form-input">
+            <option value="Open">Open</option>
+            <option value="Closed">Closed</option>
+            <option value="On hold">On hold</option>
+          </select>
+        </div>
+
+        <div class="tk-form-attach">
+          <label class="tk-attach-label" for="tkFileInput">
+            <i class="ri-attachment-2"></i> Attach a file
+          </label>
+          <span class="tk-attach-hint">(Up to 40 MB)</span>
+          <input type="file" id="tkFileInput" style="display:none">
+          <span class="tk-attach-name" id="tkAttachName"></span>
+        </div>
+
+        <div class="tk-form-actions">
+          <button class="tool-btn apply-btn" id="tkSubmitBtn" style="padding:11px 28px;font-size:14px;">Submit</button>
+          <button class="tool-btn" id="tkDiscardBtn" style="padding:11px 22px;font-size:14px;">Discard</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Ticket Modal -->
+    <div id="tkEditModal" class="modal-overlay hidden">
+      <div class="tk-form-box" style="max-height:80vh;">
+        <h2 class="tk-form-title">Edit Ticket</h2>
+        <input type="hidden" id="tkEditId">
+
+        <div class="tk-form-section-label">Ticket Information</div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Subject <span class="tk-required">*</span></label>
+          <input type="text" id="tkEditSubject" class="tk-form-input">
+        </div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Description</label>
+          <textarea id="tkEditDesc" class="tk-form-textarea" rows="5"></textarea>
+        </div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Airmac / ESN</label>
+          <input type="text" id="tkEditEsn" class="tk-form-input">
+        </div>
+        <div class="tk-form-group">
+          <label class="tk-form-label">Status</label>
+          <select id="tkEditStatus" class="tk-form-input">
+            <option value="Open">Open</option>
+            <option value="Closed">Closed</option>
+            <option value="On hold">On hold</option>
+          </select>
+        </div>
+
+        <div class="tk-form-actions">
+          <button class="tool-btn apply-btn" id="tkEditSaveBtn" style="padding:11px 28px;font-size:14px;"><i class="ri-save-line"></i> Save Changes</button>
+          <button class="tool-btn" id="tkEditCancelBtn" style="padding:11px 22px;font-size:14px;">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div id="tkDeleteModal" class="modal-overlay hidden">
+      <div class="modal-box confirm-modal-box">
+        <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
+        <h3 class="confirm-modal-title">Delete Ticket</h3>
+        <p class="confirm-modal-msg">Are you sure you want to delete this ticket? This cannot be undone.</p>
+        <div class="confirm-modal-actions">
+          <button class="tool-btn" id="tkDeleteCancelBtn">Cancel</button>
+          <button class="tool-btn danger-btn" id="tkDeleteConfirmBtn"><i class="ri-delete-bin-line"></i> Delete</button>
         </div>
       </div>
     </div>
   `;
-  document.getElementById("ticketSearch").addEventListener("input", () => { currentPage = 1; renderTable(); renderPagination(); });
-  renderTable(); renderPagination(); setupModal();
+
+  // Search
+  document.getElementById("tkSearch").addEventListener("input", function () {
+    tkSearchQuery = this.value.trim().toLowerCase();
+    tkCurrentPage = 1; renderTkList(); renderTkPagination();
+  });
+
+  // Dept dropdown
+  document.getElementById("tkDeptBtn").addEventListener("click", e => {
+    e.stopPropagation();
+    document.getElementById("tkChanMenu").classList.add("hidden");
+    document.getElementById("tkDeptMenu").classList.toggle("hidden");
+  });
+  document.getElementById("tkDeptMenu").addEventListener("click", e => {
+    const opt = e.target.closest(".tk-tab-opt"); if (!opt) return;
+    tkCurrentDept = opt.dataset.dept;
+    document.getElementById("tkDeptLabel").textContent = tkCurrentDept;
+    document.querySelectorAll("#tkDeptMenu .tk-tab-opt").forEach(o => o.classList.toggle("active", o.dataset.dept === tkCurrentDept));
+    document.getElementById("tkDeptMenu").classList.add("hidden");
+    tkCurrentPage = 1; renderTkList(); renderTkPagination();
+  });
+
+  // Channel dropdown
+  document.getElementById("tkChanBtn").addEventListener("click", e => {
+    e.stopPropagation();
+    document.getElementById("tkDeptMenu").classList.add("hidden");
+    document.getElementById("tkChanMenu").classList.toggle("hidden");
+  });
+  document.getElementById("tkChanMenu").addEventListener("click", e => {
+    const opt = e.target.closest(".tk-tab-opt"); if (!opt) return;
+    tkCurrentChan = opt.dataset.chan;
+    document.getElementById("tkChanLabel").textContent = tkCurrentChan;
+    document.querySelectorAll("#tkChanMenu .tk-tab-opt").forEach(o => o.classList.toggle("active", o.dataset.chan === tkCurrentChan));
+    document.getElementById("tkChanMenu").classList.add("hidden");
+    tkCurrentPage = 1; renderTkList(); renderTkPagination();
+  });
+
+  // Close dropdowns on outside click
+  document.addEventListener("click", () => {
+    document.getElementById("tkDeptMenu")?.classList.add("hidden");
+    document.getElementById("tkChanMenu")?.classList.add("hidden");
+  });
+
+  // Views sidebar
+  document.getElementById("tkViewsList").addEventListener("click", e => {
+    const item = e.target.closest(".tk-view-item"); if (!item) return;
+    tkCurrentView = item.dataset.view;
+    document.querySelectorAll(".tk-view-item").forEach(i => i.classList.toggle("active", i.dataset.view === tkCurrentView));
+    tkCurrentPage = 1; renderTkList(); renderTkPagination();
+  });
+
+  // Add ticket modal
+  document.getElementById("tkAddBtn").addEventListener("click", () => {
+    document.getElementById("tkSubmitModal").classList.remove("hidden");
+  });
+
+  // File attach
+  document.getElementById("tkFileInput").addEventListener("change", function () {
+    document.getElementById("tkAttachName").textContent = this.files[0] ? this.files[0].name : "";
+  });
+
+  // Submit ticket → POST to DB
+  document.getElementById("tkSubmitBtn").addEventListener("click", async () => {
+    const subject     = document.getElementById("tkSubjectInput").value.trim();
+    const description = document.getElementById("tkDescInput").value.trim();
+    const airmac_esn  = document.getElementById("tkEsnInput").value.trim();
+    const status      = document.getElementById("tkStatusInput").value;
+    if (!subject)     { showToast("Subject is required.", "error"); return; }
+    if (!description) { showToast("Description is required.", "error"); return; }
+
+    const btn = document.getElementById("tkSubmitBtn");
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+    try {
+      const res    = await fetch("/api/tickets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject, description, airmac_esn, status })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast("Failed: " + (result.error || "Unknown error"), "error"); return; }
+      document.getElementById("tkSubmitModal").classList.add("hidden");
+      document.getElementById("tkSubjectInput").value = "";
+      document.getElementById("tkDescInput").value    = "";
+      document.getElementById("tkEsnInput").value     = "";
+      document.getElementById("tkAttachName").textContent = "";
+      await fetchTickets();
+      showToast("Ticket submitted successfully.", "success");
+    } catch (err) {
+      showToast("Network error: " + err.message, "error");
+    } finally {
+      btn.disabled = false; btn.innerHTML = "Submit";
+    }
+  });
+
+  // Discard
+  document.getElementById("tkDiscardBtn").addEventListener("click", () => {
+    document.getElementById("tkSubmitModal").classList.add("hidden");
+  });
+  document.getElementById("tkSubmitModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("tkSubmitModal"))
+      document.getElementById("tkSubmitModal").classList.add("hidden");
+  });
+
+  // Edit modal
+  document.getElementById("tkEditSaveBtn").addEventListener("click", async () => {
+    const id          = document.getElementById("tkEditId").value;
+    const subject     = document.getElementById("tkEditSubject").value.trim();
+    const description = document.getElementById("tkEditDesc").value.trim();
+    const airmac_esn  = document.getElementById("tkEditEsn").value.trim();
+    const status      = document.getElementById("tkEditStatus").value;
+    if (!subject) { showToast("Subject is required.", "error"); return; }
+
+    const btn = document.getElementById("tkEditSaveBtn");
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+    try {
+      const res    = await fetch(`/api/tickets/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subject, description, airmac_esn, status })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast("Update failed: " + (result.error || "Unknown error"), "error"); return; }
+      document.getElementById("tkEditModal").classList.add("hidden");
+      await fetchTickets();
+      showToast("Ticket updated.", "success");
+    } catch (err) {
+      showToast("Network error: " + err.message, "error");
+    } finally {
+      btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save Changes';
+    }
+  });
+  document.getElementById("tkEditCancelBtn").addEventListener("click", () => {
+    document.getElementById("tkEditModal").classList.add("hidden");
+  });
+  document.getElementById("tkEditModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("tkEditModal"))
+      document.getElementById("tkEditModal").classList.add("hidden");
+  });
+
+  // Delete modal
+  document.getElementById("tkDeleteCancelBtn").addEventListener("click", () => {
+    document.getElementById("tkDeleteModal").classList.add("hidden");
+  });
+
+  // Fetch from DB
+  await fetchTickets();
 }
 
-function getFilteredTickets() {
-  const q = (document.getElementById("ticketSearch")?.value || "").toLowerCase();
-  if (!q) return tickets;
-  return tickets.filter(t => Object.values(t).some(v => String(v).toLowerCase().includes(q)));
+async function fetchTickets() {
+  try {
+    const res  = await fetch("/api/tickets");
+    if (!res.ok) throw new Error("Server error");
+    ticketData = await res.json();
+    updateTkViewCounts();
+    renderTkList();
+    renderTkPagination();
+  } catch (err) {
+    const list = document.getElementById("tkList");
+    if (list) list.innerHTML = `<div class="tk-empty"><i class="ri-error-warning-line"></i><p>Error loading tickets</p></div>`;
+  }
 }
 
-function renderTable() {
-  const table = document.getElementById("ticketTable");
-  if (!table) return;
-  table.innerHTML = "";
-  const filtered = getFilteredTickets();
-  const start = (currentPage - 1) * rowsPerPage;
-  const paginated = filtered.slice(start, start + rowsPerPage);
-  if (!paginated.length) { table.innerHTML = `<tr><td colspan="7" class="empty-cell">No tickets found</td></tr>`; return; }
-  paginated.forEach(ticket => {
-    table.innerHTML += `
-      <tr>
-        <td><strong>${ticket.id}</strong></td><td>${ticket.site}</td><td>${ticket.issue}</td>
-        <td><span class="badge ${getPriorityClass(ticket.priority)}">${ticket.priority}</span></td>
-        <td><select onchange="updateStatus('${ticket.id}', this.value)" class="status-select">${renderStatusOptions(ticket.status)}</select></td>
-        <td>${ticket.date}</td>
-        <td><button class="tool-btn danger-btn small-btn" onclick="deleteTicket('${ticket.id}')"><i class="ri-delete-bin-line"></i></button></td>
-      </tr>
-    `;
+function updateTkViewCounts() {
+  const counts = {
+    "My Tickets":           ticketData.length,
+    "My Open Tickets":      ticketData.filter(t => t.status === "Open").length,
+    "My Closed Tickets":    ticketData.filter(t => t.status === "Closed").length,
+    "My On hold Tickets":   ticketData.filter(t => t.status === "On hold").length,
+    "My Overdue Tickets":   0,
+    "Team Tickets":         ticketData.length,
+    "Team Open Tickets":    ticketData.filter(t => t.status === "Open").length,
+    "Team Closed Tickets":  ticketData.filter(t => t.status === "Closed").length,
+    "Team On Hold Tickets": ticketData.filter(t => t.status === "On hold").length,
+    "Team Overdue Tickets": 0,
+  };
+  Object.entries(counts).forEach(([label, count]) => {
+    const el = document.getElementById("tkCount_" + label.replace(/\s+/g, "_"));
+    if (el) el.textContent = count > 0 ? count : "";
   });
 }
 
-function deleteTicket(id) { tickets = tickets.filter(t => t.id !== id); renderTable(); renderPagination(); }
-function renderStatusOptions(current) { return ["Pending", "In Progress", "Completed"].map(s => `<option value="${s}" ${s === current ? "selected" : ""}>${s}</option>`).join(""); }
-function updateStatus(id, newStatus) { tickets = tickets.map(t => t.id === id ? { ...t, status: newStatus } : t); }
-function getPriorityClass(priority) { return priority === "High" ? "high" : priority === "Medium" ? "medium" : "low"; }
-
-function renderPagination() {
-  const container = document.getElementById("pagination");
-  if (!container) return;
-  const filtered = getFilteredTickets();
-  const total = Math.ceil(filtered.length / rowsPerPage);
-  if (total <= 1) { container.innerHTML = ""; return; }
-  const start = (currentPage - 1) * rowsPerPage + 1;
-  const end = Math.min(currentPage * rowsPerPage, filtered.length);
-  const range = getPageRange(currentPage, total);
-  container.innerHTML = `
-    <span class="page-info">Showing ${start}–${end} of ${filtered.length}</span>
-    <div class="page-buttons">
-      <button class="page-btn ${currentPage===1?'disabled':''}" onclick="changePage(${currentPage-1})" ${currentPage===1?'disabled':''}><i class="ri-arrow-left-s-line"></i></button>
-      ${range.map(p => p==='...' ? `<button class="page-btn dots" disabled>…</button>` : `<button class="page-btn ${p===currentPage?'active':''}" onclick="changePage(${p})">${p}</button>`).join("")}
-      <button class="page-btn ${currentPage===total?'disabled':''}" onclick="changePage(${currentPage+1})" ${currentPage===total?'disabled':''}><i class="ri-arrow-right-s-line"></i></button>
-    </div>
-  `;
+function getTkFiltered() {
+  return ticketData.filter(t => {
+    const matchSearch = !tkSearchQuery ||
+      (t.subject || "").toLowerCase().includes(tkSearchQuery) ||
+      String(t.id).includes(tkSearchQuery) ||
+      (t.airmac_esn || "").toLowerCase().includes(tkSearchQuery);
+    const matchView = (() => {
+      if (tkCurrentView === "My Tickets")           return true;
+      if (tkCurrentView === "My Open Tickets")      return t.status === "Open";
+      if (tkCurrentView === "My Closed Tickets")    return t.status === "Closed";
+      if (tkCurrentView === "My On hold Tickets")   return t.status === "On hold";
+      if (tkCurrentView === "My Overdue Tickets")   return false;
+      if (tkCurrentView === "Team Tickets")         return true;
+      if (tkCurrentView === "Team Open Tickets")    return t.status === "Open";
+      if (tkCurrentView === "Team Closed Tickets")  return t.status === "Closed";
+      if (tkCurrentView === "Team On Hold Tickets") return t.status === "On hold";
+      if (tkCurrentView === "Team Overdue Tickets") return false;
+      return true;
+    })();
+    return matchSearch && matchView;
+  });
 }
 
-function changePage(page) {
-  const total = Math.ceil(getFilteredTickets().length / rowsPerPage);
-  if (page < 1 || page > total) return;
-  currentPage = page; renderTable(); renderPagination();
+function openTkEditModal(t) {
+  document.getElementById("tkEditId").value       = t.id;
+  document.getElementById("tkEditSubject").value  = t.subject || "";
+  document.getElementById("tkEditDesc").value     = t.description || "";
+  document.getElementById("tkEditEsn").value      = t.airmac_esn || "";
+  document.getElementById("tkEditStatus").value   = t.status || "Open";
+  document.getElementById("tkEditModal").classList.remove("hidden");
 }
 
-function setupModal() {
-  const modal = document.getElementById("ticketModal");
-  document.getElementById("openModal").onclick = () => modal.classList.remove("hidden");
-  document.getElementById("closeModal").onclick = () => modal.classList.add("hidden");
-  modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
-  document.getElementById("saveTicket").onclick = () => {
-    const site = document.getElementById("siteInput").value.trim();
-    const issue = document.getElementById("issueInput").value.trim();
-    const priority = document.getElementById("priorityInput").value;
-    if (!site || !issue) { alert("Please fill in all fields."); return; }
-    tickets.unshift({ id: "TIC-" + String(Math.floor(Math.random() * 900) + 100), site, issue, priority, status: "Pending", date: new Date().toISOString().split("T")[0] });
-    modal.classList.add("hidden");
-    document.getElementById("siteInput").value = ""; document.getElementById("issueInput").value = "";
-    currentPage = 1; renderTable(); renderPagination();
+function openTkDeleteModal(id) {
+  const modal      = document.getElementById("tkDeleteModal");
+  const confirmBtn = document.getElementById("tkDeleteConfirmBtn");
+  modal.classList.remove("hidden");
+  const newBtn = confirmBtn.cloneNode(true);
+  confirmBtn.replaceWith(newBtn);
+  document.getElementById("tkDeleteCancelBtn").onclick = () => modal.classList.add("hidden");
+  modal.onclick = e => { if (e.target === modal) modal.classList.add("hidden"); };
+  newBtn.onclick = async () => {
+    newBtn.disabled = true; newBtn.innerHTML = '<i class="ri-loader-4-line spin"></i> Deleting…';
+    try {
+      const res = await fetch(`/api/tickets/${id}`, { method: "DELETE" });
+      const result = await res.json();
+      if (!res.ok) { showToast("Delete failed: " + (result.error || "Unknown"), "error"); return; }
+      modal.classList.add("hidden");
+      await fetchTickets();
+      showToast("Ticket deleted.", "success");
+    } catch (err) { showToast("Network error.", "error"); }
+    finally { newBtn.disabled = false; newBtn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete'; }
   };
 }
 
+function renderTkList() {
+  const list = document.getElementById("tkList");
+  if (!list) return;
+  const filtered = getTkFiltered();
+  const start    = (tkCurrentPage - 1) * tkRowsPerPage;
+  const paged    = filtered.slice(start, start + tkRowsPerPage);
+
+  if (!paged.length) {
+    list.innerHTML = `<div class="tk-empty"><i class="ri-inbox-line"></i><p>No tickets found</p></div>`;
+    return;
+  }
+
+  const assignee = (user?.full_name || user?.email || "U").slice(0, 2).toUpperCase();
+
+  list.innerHTML = paged.map(t => {
+    const statusClass = t.status === "Closed" ? "tk-status-closed"
+      : t.status === "Open" ? "tk-status-open"
+      : "tk-status-hold";
+    const age = t.created_at ? timeAgo(new Date(t.created_at)) : "";
+    return `
+      <div class="tk-row">
+        <div class="tk-row-main">
+          <div class="tk-row-subject">${escHtml(t.subject)}</div>
+          <div class="tk-row-meta">
+            <span class="tk-id">#${t.id}</span>
+            <span class="tk-dot">•</span>
+            <i class="ri-global-line tk-meta-icon"></i>
+            ${t.airmac_esn ? `<span class="tk-dot">•</span><span>${escHtml(t.airmac_esn)}</span>` : ''}
+            ${age ? `<span class="tk-dot">•</span><span>${age}</span>` : ''}
+          </div>
+        </div>
+        <div class="tk-row-right">
+          <button class="row-action-btn edit-btn tk-action-btn" data-id="${t.id}" title="Edit"><i class="ri-edit-line"></i></button>
+          <button class="row-action-btn delete-single-btn tk-action-btn" data-id="${t.id}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+          <div class="tk-avatar">${assignee}</div>
+          <span class="tk-status-badge ${statusClass}">${escHtml(t.status)}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  list.querySelectorAll(".tk-action-btn.edit-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      const t = ticketData.find(x => String(x.id) === btn.dataset.id);
+      if (t) openTkEditModal(t);
+    });
+  });
+  list.querySelectorAll(".tk-action-btn.delete-single-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
+      e.stopPropagation();
+      openTkDeleteModal(btn.dataset.id);
+    });
+  });
+}
+
+function renderTkPagination() {
+  const container = document.getElementById("tkPagination");
+  if (!container) return;
+  const filtered = getTkFiltered();
+  const total    = Math.ceil(filtered.length / tkRowsPerPage);
+  if (total <= 1) { container.innerHTML = ""; return; }
+  const range = getPageRange(tkCurrentPage, total);
+  container.innerHTML = `
+    <button class="page-btn ${tkCurrentPage===1?'disabled':''}" onclick="goTkPage(${tkCurrentPage-1})" ${tkCurrentPage===1?'disabled':''}><i class="ri-arrow-left-s-line"></i></button>
+    ${range.map(p => p==='...'
+      ? `<button class="page-btn dots" disabled>…</button>`
+      : `<button class="page-btn ${p===tkCurrentPage?'active':''}" onclick="goTkPage(${p})">${p}</button>`
+    ).join("")}
+    <button class="page-btn ${tkCurrentPage===total?'disabled':''}" onclick="goTkPage(${tkCurrentPage+1})" ${tkCurrentPage===total?'disabled':''}><i class="ri-arrow-right-s-line"></i></button>
+  `;
+}
+
+function goTkPage(page) {
+  const total = Math.ceil(getTkFiltered().length / tkRowsPerPage);
+  if (page < 1 || page > total) return;
+  tkCurrentPage = page; renderTkList(); renderTkPagination();
+}
+
+function escHtml(str) {
+  return String(str ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+function timeAgo(date) {
+  const diff = Math.floor((Date.now() - date) / 1000);
+  if (diff < 60)   return "just now";
+  if (diff < 3600) return Math.floor(diff/60) + " min ago";
+  if (diff < 86400) return Math.floor(diff/3600) + " hr ago";
+  if (diff < 2592000) return Math.floor(diff/86400) + " days ago";
+  if (diff < 31536000) return Math.floor(diff/2592000) + " months ago";
+  return Math.floor(diff/31536000) + " yr ago";
+}
 
 /* ================= LETTERS ================= */
 
-let lettersFolderStack    = []; // stack of { id, name } — empty = root
+let lettersFolderStack    = [];
 let lettersSearchQuery    = "";
 let lettersFilterType     = "all";
 let lettersFilterUploader = "";
 let lettersFilterModified = "all";
-let lettersClipboard      = null; // { type: "file"|"folder", id, name, folderId } 
+let lettersClipboard      = null;
 
-// helpers
 function lettersCurrentFolder() { return lettersFolderStack.length ? lettersFolderStack[lettersFolderStack.length - 1] : null; }
 function lettersCurrentFolderId() { const f = lettersCurrentFolder(); return f ? f.id : null; }
 
@@ -1343,8 +1729,6 @@ function loadLetters() {
     </div>
 
     <div class="letters-layout">
-
-      <!-- Recent Files sidebar -->
       <div class="letters-sidebar-card">
         <div class="letters-sidebar-header">Recent Files</div>
         <div class="letters-recent-list" id="lettersRecentList">
@@ -1352,7 +1736,6 @@ function loadLetters() {
         </div>
       </div>
 
-      <!-- Main area -->
       <div class="letters-main-card">
         <div class="letters-main-toolbar">
           <div class="letters-breadcrumb" id="lettersBreadcrumb"></div>
@@ -1362,7 +1745,6 @@ function loadLetters() {
           </div>
         </div>
 
-        <!-- Filter bar -->
         <div class="letters-filter-bar" id="lettersFilterBar">
           <div class="letters-filter-chip" id="chipType">
             <span class="chip-label">Type</span>
@@ -1511,8 +1893,6 @@ function loadLetters() {
 
   document.getElementById("lettersSearch").addEventListener("input", function () {
     lettersSearchQuery = this.value.trim();
-    lettersFilterType     = document.getElementById("lettersFilterType")?.value || "all";
-    lettersFilterUploader = document.getElementById("lettersFilterUploader")?.value.trim() || "";
     fetchLettersContent();
   });
 
@@ -1526,8 +1906,6 @@ function loadLetters() {
   updateLettersClearBtn();
   bindLettersPasteBtn();
 }
-
-/* ── API helpers ── */
 
 function bindLettersFilterChips() {
   const closeAllDrops = () =>
@@ -1547,7 +1925,6 @@ function bindLettersFilterChips() {
 
   document.addEventListener("click", closeAllDrops);
 
-  // Type
   document.getElementById("dropType")?.addEventListener("click", e => {
     const opt = e.target.closest(".chip-opt-type"); if (!opt) return;
     e.stopPropagation();
@@ -1560,7 +1937,6 @@ function bindLettersFilterChips() {
     closeAllDrops(); updateLettersClearBtn(); fetchLettersContent();
   });
 
-  // Uploader
   document.getElementById("dropUploader")?.addEventListener("click", e => {
     const opt = e.target.closest(".chip-opt-uploader"); if (!opt) return;
     e.stopPropagation();
@@ -1573,7 +1949,6 @@ function bindLettersFilterChips() {
     closeAllDrops(); updateLettersClearBtn(); fetchLettersContent();
   });
 
-  // Modified
   document.getElementById("dropModified")?.addEventListener("click", e => {
     const opt = e.target.closest(".chip-opt-modified"); if (!opt) return;
     e.stopPropagation();
@@ -1586,17 +1961,13 @@ function bindLettersFilterChips() {
     closeAllDrops(); updateLettersClearBtn(); fetchLettersContent();
   });
 
-  // Clear
   document.getElementById("lettersClearFilters")?.addEventListener("click", () => {
     lettersFilterType = "all"; lettersFilterUploader = ""; lettersFilterModified = "all"; lettersSearchQuery = "";
     const si = document.getElementById("lettersSearch"); if (si) si.value = "";
-    // Reset chip labels
     document.getElementById("chipType").querySelector(".chip-label").textContent = "Type";
     document.getElementById("chipUploader").querySelector(".chip-label").textContent = "Uploader";
     document.getElementById("chipModified").querySelector(".chip-label").textContent = "Modified";
-    // Remove active state from chips
     ["chipType","chipUploader","chipModified"].forEach(id => document.getElementById(id)?.classList.remove("chip-active"));
-    // Reset active option highlights
     document.querySelectorAll(".chip-opt-type").forEach(o => o.classList.toggle("active", o.dataset.val === "all"));
     document.querySelectorAll(".chip-opt-uploader").forEach(o => o.classList.toggle("active", o.dataset.val === ""));
     document.querySelectorAll(".chip-opt-modified").forEach(o => o.classList.toggle("active", o.dataset.val === "all"));
@@ -1623,10 +1994,10 @@ function updateLettersClearBtn() {
 function populateUploaderChip(files) {
   const drop = document.getElementById("dropUploader");
   if (!drop) return;
-  const names    = [...new Set(files.map(f => f.uploader_name).filter(Boolean))];
-  const current  = lettersFilterUploader;
+  const names   = [...new Set(files.map(f => f.uploader_name).filter(Boolean))];
+  const current = lettersFilterUploader;
   const anyActive = current === "" ? " active" : "";
-  drop.innerHTML  = `<div class="chip-option chip-opt-uploader${anyActive}" data-val="">Anyone</div>`;
+  drop.innerHTML = `<div class="chip-option chip-opt-uploader${anyActive}" data-val="">Anyone</div>`;
   names.forEach(name => {
     const el = document.createElement("div");
     el.className = "chip-option chip-opt-uploader" + (current === name ? " active" : "");
@@ -1685,12 +2056,10 @@ async function fetchLettersContent() {
   const fid = lettersCurrentFolderId();
   try {
     if (fid === null) {
-      // Root: only folders (no files at root level)
       const res  = await fetch("/api/letters/folders");
       const data = await res.json();
       renderLettersFolders(data, null);
     } else {
-      // Inside folder: fetch subfolders + files in parallel
       const q = lettersSearchQuery ? `?q=${encodeURIComponent(lettersSearchQuery)}` : "";
       const [subfoldersRes, filesRes] = await Promise.all([
         fetch(`/api/letters/folders?parent_id=${fid}`),
@@ -1705,12 +2074,9 @@ async function fetchLettersContent() {
   }
 }
 
-/* ── Render helpers ── */
-
 function renderLettersBreadcrumb() {
   const bc = document.getElementById("lettersBreadcrumb");
   if (!bc) return;
-
   const crumbs = [
     `<span class="crumb ${lettersFolderStack.length === 0 ? "crumb-active" : "crumb-link"}" data-depth="-1"><i class="ri-home-4-line"></i> Home</span>`
   ];
@@ -1720,15 +2086,11 @@ function renderLettersBreadcrumb() {
     crumbs.push(`<span class="crumb ${isLast ? "crumb-active" : "crumb-link"}" data-depth="${i}">${f.name}</span>`);
   });
   bc.innerHTML = crumbs.join("");
-
   bc.querySelectorAll(".crumb-link").forEach(el => {
     el.addEventListener("click", () => {
       const depth = parseInt(el.dataset.depth);
-      if (depth === -1) {
-        lettersFolderStack = [];
-      } else {
-        lettersFolderStack = lettersFolderStack.slice(0, depth + 1);
-      }
+      if (depth === -1) lettersFolderStack = [];
+      else lettersFolderStack = lettersFolderStack.slice(0, depth + 1);
       lettersSearchQuery = "";
       const si = document.getElementById("lettersSearch");
       if (si) si.value = "";
@@ -1740,10 +2102,7 @@ function renderLettersBreadcrumb() {
 function renderLettersRecent(files) {
   const list = document.getElementById("lettersRecentList");
   if (!list) return;
-  if (!files.length) {
-    list.innerHTML = `<div class="letters-empty-recent">No files yet</div>`;
-    return;
-  }
+  if (!files.length) { list.innerHTML = `<div class="letters-empty-recent">No files yet</div>`; return; }
   list.innerHTML = files.map(f => {
     const fi = getLettersFileIcon(f.file_type);
     return `
@@ -1774,7 +2133,6 @@ function bindFolderCardClicks(container) {
     card.addEventListener("click", e => {
       if (e.target.closest(".letters-kebab")) return;
       const folderId = parseInt(card.dataset.id);
-      // Prevent pushing the same folder that's already current
       if (lettersCurrentFolderId() === folderId) return;
       lettersFolderStack.push({ id: folderId, name: card.dataset.name });
       fetchLettersContent();
@@ -1787,12 +2145,10 @@ function renderLettersFolders(folders) {
   const q = lettersSearchQuery.toLowerCase();
   let list = folders;
   if (q) list = folders.filter(f => f.folder_name.toLowerCase().includes(q));
-
   if (!list.length) {
     content.innerHTML = `<div class="letters-empty"><i class="ri-folder-open-line"></i><p>${q ? "No folders match your search" : "No folders yet — click <strong>New</strong> to create one."}</p></div>`;
     return;
   }
-
   content.innerHTML = `<div class="letters-folders-grid">${buildFolderCardsHTML(list)}</div>`;
   bindFolderCardClicks(content);
   bindLettersKebabs(content);
@@ -1802,20 +2158,14 @@ function renderLettersFolderContents(subfolders, files, parentId) {
   const content = document.getElementById("lettersContent");
   const q = lettersSearchQuery.toLowerCase();
   let filteredFolders = q ? subfolders.filter(f => f.folder_name.toLowerCase().includes(q)) : subfolders;
-  // Hide folders when a specific file type is selected
   if (lettersFilterType !== "all") filteredFolders = [];
-
   let html = "";
-
   if (filteredFolders.length) {
     html += `<div class="letters-section-label"><i class="ri-folder-line"></i> Folders</div>`;
     html += `<div class="letters-folders-grid">${buildFolderCardsHTML(filteredFolders)}</div>`;
   }
-
-  // Apply all active filters
   const filteredFiles = applyLettersFileFilters(files);
   populateUploaderChip(files);
-
   if (filteredFiles.length) {
     html += `<div class="letters-section-label" style="margin-top:${filteredFolders.length ? "24px" : "0"}"><i class="ri-file-line"></i> Files</div>`;
     html += `<div class="letters-files-list">${filteredFiles.map(f => {
@@ -1834,40 +2184,12 @@ function renderLettersFolderContents(subfolders, files, parentId) {
       `;
     }).join("")}</div>`;
   }
-
   if (!filteredFolders.length && !filteredFiles.length) {
     html = `<div class="letters-empty"><i class="ri-folder-open-line"></i><p>This folder is empty.<br>Click <strong>New</strong> to add a subfolder or file.</p></div>`;
   }
-
   content.innerHTML = html;
   bindFolderCardClicks(content);
   bindLettersKebabs(content);
-}
-
-function renderLettersFiles(files) {
-  const content = document.getElementById("lettersContent");
-  if (!files.length) {
-    content.innerHTML = `<div class="letters-empty"><i class="ri-file-add-line"></i><p>${lettersSearchQuery ? "No files match your search" : "No files yet — click <strong>New</strong> to upload one."}</p></div>`;
-    return;
-  }
-  content.innerHTML = `<div class="letters-files-list">${files.map(f => {
-    const fi   = getLettersFileIcon(f.file_type);
-    const size = f.file_size ? formatFileSize(f.file_size) : "";
-    const date = f.created_at ? new Date(f.created_at).toLocaleDateString() : "";
-    return `
-      <div class="letters-file-row" data-id="${f.id}">
-        <i class="${fi.icon}" style="color:${fi.color};font-size:24px;flex-shrink:0;"></i>
-        <div class="letters-file-info">
-          <div class="letters-file-name">${f.file_name}</div>
-          <div class="letters-file-meta">${[f.uploader_name, size, date].filter(Boolean).join(" · ")}</div>
-        </div>
-        <button class="letters-kebab" data-type="file" data-id="${f.id}" data-name="${f.file_name}" data-filetype="${f.file_type}"><i class="ri-more-2-fill"></i></button>
-      </div>
-    `;
-  }).join("")}</div>`;
-
-  bindLettersKebabs(content);
-
 }
 
 function getLettersFileIcon(type) {
@@ -1881,14 +2203,11 @@ function getLettersFileIcon(type) {
 
 function formatFileSize(bytes) {
   if (!bytes) return "";
-  if (bytes < 1024)       return bytes + " B";
-  if (bytes < 1048576)    return (bytes / 1024).toFixed(1) + " KB";
+  if (bytes < 1024)    return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / 1048576).toFixed(1) + " MB";
 }
 
-/* ── Kebab menu ── */
-
-// Dynamically load a script once
 function loadScript(src) {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
@@ -1904,58 +2223,44 @@ async function openLettersPreview(id, name, type) {
   const title = document.getElementById("lettersPreviewName");
   const icon  = document.getElementById("lettersPreviewIcon");
   const dl    = document.getElementById("lettersPreviewDownload");
-
   title.textContent = name;
   dl.href = `/api/letters/files/${id}/download`;
-
   const fi = getLettersFileIcon(type);
   icon.className = fi.icon;
   icon.style.color = fi.color;
-
   body.innerHTML = `<div class="letters-empty"><i class="ri-loader-4-line spin"></i><p>Loading preview…</p></div>`;
   modal.classList.remove("hidden");
-
   const close = () => { modal.classList.add("hidden"); body.innerHTML = ""; };
   document.getElementById("lettersPreviewClose").onclick = close;
   modal.onclick = e => { if (e.target === modal) close(); };
-
   const t   = (type || "").toLowerCase();
   const ext = name.split(".").pop().toLowerCase();
   const previewUrl = `/api/letters/files/${id}/preview`;
-
   const isPdf   = t === "pdf"  || ext === "pdf";
   const isWord  = ["word","doc","docx"].includes(t) || ["doc","docx"].includes(ext);
   const isExcel = ["excel","xls","xlsx"].includes(t) || ["xls","xlsx"].includes(ext);
   const isImg   = ["image","jpg","jpeg","png","gif","webp"].includes(t) || ["jpg","jpeg","png","gif","webp"].includes(ext);
   const isVideo = ["video","mp4","webm","mov","avi","mkv"].includes(t) || ["mp4","webm","mov","avi","mkv"].includes(ext);
-
   try {
     if (isPdf) {
       const blob = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(); return r.blob(); });
       body.innerHTML = `<iframe src="${URL.createObjectURL(blob)}" class="letters-preview-frame" title="${name}"></iframe>`;
-
     } else if (isWord) {
       await loadScript("https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js");
       const ab     = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); });
       const result = await mammoth.convertToHtml({ arrayBuffer: ab });
       body.innerHTML = `<div class="letters-preview-docx">${result.value || "<p><em>Document appears to be empty.</em></p>"}</div>`;
-
     } else if (isExcel) {
       await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js");
       const ab       = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); });
       const workbook = XLSX.read(ab, { type: "array" });
-
       const tabs = workbook.SheetNames.length > 1
         ? `<div class="letters-excel-tabs">${workbook.SheetNames.map((s, i) =>
             `<button class="letters-excel-tab${i === 0 ? " active" : ""}" data-sheet="${s}">${s}</button>`
-          ).join("")}</div>`
-        : "";
-
+          ).join("")}</div>` : "";
       const firstHtml = XLSX.utils.sheet_to_html(workbook.Sheets[workbook.SheetNames[0]], { editable: false });
       body.innerHTML = `${tabs}<div class="letters-preview-excel" id="lettersExcelContent">${firstHtml}</div>`;
-
       styleExcelTable(body);
-
       body.querySelectorAll(".letters-excel-tab").forEach(btn => {
         btn.addEventListener("click", () => {
           body.querySelectorAll(".letters-excel-tab").forEach(b => b.classList.remove("active"));
@@ -1965,10 +2270,8 @@ async function openLettersPreview(id, name, type) {
           styleExcelTable(body);
         });
       });
-
     } else if (isImg) {
       body.innerHTML = `<div class="letters-preview-img-wrap"><img src="${previewUrl}" class="letters-preview-img" alt="${name}"></div>`;
-
     } else if (isVideo) {
       const mimeTypes = { mp4:"video/mp4", webm:"video/webm", mov:"video/quicktime", avi:"video/x-msvideo", mkv:"video/x-matroska" };
       const mime = mimeTypes[ext] || "video/mp4";
@@ -1980,7 +2283,6 @@ async function openLettersPreview(id, name, type) {
           </video>
         </div>
       `;
-
     } else {
       showLettersPreviewFallback(body, id);
     }
@@ -2010,33 +2312,23 @@ function showLettersPreviewFallback(body, id, msg) {
   `;
 }
 
-
-function openLettersNewChoiceMenu(anchor) {
-  // Close any existing
-  document.querySelectorAll(".letters-new-choice-menu").forEach(m => m.remove());
-
+function openLettersNewChoiceMenu(anchorEl) {
+  document.querySelectorAll(".letters-new-menu").forEach(m => m.remove());
+  const insideFolder = lettersCurrentFolder() !== null;
   const menu = document.createElement("div");
-  menu.className = "letters-new-choice-menu letters-kebab-menu";
-  menu.style.cssText = "position:absolute;z-index:200;min-width:170px;";
+  menu.className = "letters-new-menu";
   menu.innerHTML = `
-    <div class="kebab-item choice-subfolder"><i class="ri-folder-add-line"></i> New Subfolder</div>
-    <div class="kebab-item choice-file"><i class="ri-file-upload-line"></i> Upload File</div>
+    <div class="letters-new-item" id="newChoiceFolder"><i class="ri-folder-add-line"></i> New Folder</div>
+    ${insideFolder ? `<div class="letters-new-item" id="newChoiceFile"><i class="ri-file-upload-line"></i> Upload File</div>` : ""}
   `;
-  menu.querySelector(".choice-subfolder").onclick = () => { menu.remove(); openLettersFolderModal(); };
-  menu.querySelector(".choice-file").onclick      = () => { menu.remove(); openLettersFileModal(); };
-
-  anchor.style.position = "relative";
-  anchor.appendChild(menu);
-
-  // Position it below the anchor
-  const rect = anchor.getBoundingClientRect();
-  menu.style.top   = anchor.offsetHeight + 4 + "px";
-  menu.style.right = "0";
-
+  anchorEl.style.position = "relative";
+  anchorEl.appendChild(menu);
+  menu.querySelector("#newChoiceFolder").onclick = (e) => { e.stopPropagation(); menu.remove(); openLettersFolderModal(); };
+  if (insideFolder) {
+    menu.querySelector("#newChoiceFile").onclick = (e) => { e.stopPropagation(); menu.remove(); openLettersFileModal(); };
+  }
   setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }), 0);
 }
-
-// ── Copy / Paste / Duplicate ──
 
 function lettersCopyItem(type, id, name, sourceFolderId) {
   lettersClipboard = { type, id, name, sourceFolderId };
@@ -2123,15 +2415,12 @@ function bindLettersKebabs(container) {
     btn.addEventListener("click", e => {
       e.stopPropagation();
       closeAllLettersKebabs();
-
       const type  = btn.dataset.type;
       const id    = parseInt(btn.dataset.id);
       const name  = btn.dataset.name;
       const ftype = btn.dataset.filetype || "";
-
       const menu = document.createElement("div");
       menu.className = "letters-kebab-menu";
-
       if (type === "file") {
         menu.innerHTML = `
           <div class="kebab-item km-preview"><i class="ri-eye-line"></i> Preview</div>
@@ -2158,23 +2447,14 @@ function bindLettersKebabs(container) {
       }
       menu.querySelector(".km-rename").onclick = () => { closeAllLettersKebabs(); openLettersRename(type, id, name); };
       menu.querySelector(".km-delete").onclick = () => { closeAllLettersKebabs(); openLettersDelete(type, id, name); };
-
-      // ── Attach to body so it's never clipped by overflow:hidden parents ──
       document.body.appendChild(menu);
-
-      // Position relative to the button
       const rect = btn.getBoundingClientRect();
       const menuW = 160;
       let left = rect.right - menuW;
       let top  = rect.bottom + 4;
-
-      // Flip up if it would go off screen bottom
       if (top + 200 > window.innerHeight) top = rect.top - 200;
-      // Keep within left edge
       if (left < 8) left = 8;
-
       menu.style.cssText = `position:fixed;top:${top}px;left:${left}px;min-width:${menuW}px;z-index:9999;`;
-
       setTimeout(() => {
         document.addEventListener("click", closeAllLettersKebabs, { once: true });
         document.addEventListener("scroll", closeAllLettersKebabs, { once: true, capture: true });
@@ -2187,8 +2467,6 @@ function bindLettersKebabs(container) {
 function closeAllLettersKebabs() {
   document.querySelectorAll(".letters-kebab-menu").forEach(m => m.remove());
 }
-
-/* ── Rename ── */
 
 function openLettersRename(type, id, currentName) {
   const modal = document.getElementById("lettersRenameModal");
@@ -2211,15 +2489,12 @@ function openLettersRename(type, id, currentName) {
       close();
       const curFolder = lettersCurrentFolder();
       if (type === "folder" && curFolder?.id === id) curFolder.name = newName;
-      fetchLettersContent();
-      fetchLettersRecent();
+      fetchLettersContent(); fetchLettersRecent();
       showToast("Renamed successfully.", "success");
     } catch { showToast("Network error.", "error"); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Rename'; }
   };
 }
-
-/* ── Delete ── */
 
 function openLettersDelete(type, id, name) {
   const modal = document.getElementById("lettersDeleteModal");
@@ -2240,45 +2515,11 @@ function openLettersDelete(type, id, name) {
       close();
       const curFolder = lettersCurrentFolder();
       if (type === "folder" && curFolder?.id === id) lettersFolderStack.pop();
-      fetchLettersContent();
-      fetchLettersRecent();
+      fetchLettersContent(); fetchLettersRecent();
       showToast("Deleted.", "success");
     } catch { showToast("Network error.", "error"); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete'; }
   };
-}
-
-/* ── Create folder ── */
-
-function openLettersNewChoiceMenu(anchorEl) {
-  document.querySelectorAll(".letters-new-menu").forEach(m => m.remove());
-
-  const insideFolder = lettersCurrentFolder() !== null;
-
-  const menu = document.createElement("div");
-  menu.className = "letters-new-menu";
-  menu.innerHTML = `
-    <div class="letters-new-item" id="newChoiceFolder"><i class="ri-folder-add-line"></i> New Folder</div>
-    ${insideFolder ? `<div class="letters-new-item" id="newChoiceFile"><i class="ri-file-upload-line"></i> Upload File</div>` : ""}
-  `;
-
-  anchorEl.style.position = "relative";
-  anchorEl.appendChild(menu);
-
-  menu.querySelector("#newChoiceFolder").onclick = (e) => {
-    e.stopPropagation();
-    menu.remove();
-    openLettersFolderModal();
-  };
-  if (insideFolder) {
-    menu.querySelector("#newChoiceFile").onclick = (e) => {
-      e.stopPropagation();
-      menu.remove();
-      openLettersFileModal();
-    };
-  }
-
-  setTimeout(() => document.addEventListener("click", () => menu.remove(), { once: true }), 0);
 }
 
 function openLettersFolderModal() {
@@ -2305,8 +2546,6 @@ function openLettersFolderModal() {
   };
 }
 
-/* ── Upload file ── */
-
 function openLettersFileModal() {
   const modal = document.getElementById("lettersFileModal");
   document.getElementById("newFileInput").value = "";
@@ -2317,12 +2556,10 @@ function openLettersFileModal() {
   document.getElementById("lettersFileModalClose").onclick = close;
   document.getElementById("lettersFileModalCancel").onclick = close;
   modal.onclick = e => { if (e.target === modal) close(); };
-
   document.getElementById("newFileInput").onchange = function () {
     const f = this.files[0];
     if (f) document.getElementById("lettersFileUploadHint").innerHTML = `<i class="ri-file-line"></i> ${f.name} (${formatFileSize(f.size)})`;
   };
-
   document.getElementById("lettersFileModalConfirm").onclick = async () => {
     const fileInput    = document.getElementById("newFileInput");
     const uploaderName = document.getElementById("newFileUploader").value.trim();

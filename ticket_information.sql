@@ -3,8 +3,7 @@ CREATE TABLE ticket_information (
     subject VARCHAR(255) NOT NULL,
     description TEXT NOT NULL,
     airmac_esn VARCHAR(100),
-    status VARCHAR(50) NOT NULL,
-    attached_files TEXT
+    status VARCHAR(50) NOT NULL
 );
 
 SELECT * FROM ticket_information;

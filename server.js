@@ -72,19 +72,33 @@ CREATE TABLE IF NOT EXISTS problematic_sites (
     await pool.query(createProbTable);
     console.log('Problematic sites table ready ✅');
 
-    // Run migrations safely — each one is independent
     const migrations = [
       `ALTER TABLE problematic_sites ALTER COLUMN "Sitename" DROP NOT NULL`,
       `ALTER TABLE problematic_sites ADD COLUMN IF NOT EXISTS "Region" TEXT`,
     ];
     for (const sql of migrations) {
-      try { await pool.query(sql); } catch(e) { /* column already exists or constraint already dropped */ }
+      try { await pool.query(sql); } catch(e) { /* already applied */ }
     }
     console.log('Problematic sites migrations applied ✅');
   } catch (err) {
     console.error('Problematic sites setup error:', err.message);
   }
 })();
+
+const createTicketTable = `
+CREATE TABLE IF NOT EXISTS ticket_information (
+  id SERIAL PRIMARY KEY,
+  subject VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  airmac_esn VARCHAR(100),
+  status VARCHAR(50) NOT NULL DEFAULT 'Open',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+pool.query(createTicketTable)
+  .then(() => console.log('Ticket table ready ✅'))
+  .catch(err => console.error('Ticket table creation error:', err));
 
 /* ================= AUTH ROUTE ================= */
 
@@ -258,8 +272,6 @@ app.post("/api/problematic-sites", async (req, res) => {
     "KAD Name","KAD Visit Date","Site Online Date","Found Problem / Cause in the Site","Solution"];
 
   const body = req.body || {};
-
-  // Collect non-empty fields
   const entries = allowed
     .map(k => [k, body[k]])
     .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "");
@@ -269,10 +281,7 @@ app.post("/api/problematic-sites", async (req, res) => {
   try {
     let result;
     if (entries.length === 0) {
-      // Nothing filled in — insert blank row
-      result = await pool.query(
-        `INSERT INTO problematic_sites ("Sitename") VALUES (NULL) RETURNING *`
-      );
+      result = await pool.query(`INSERT INTO problematic_sites ("Sitename") VALUES (NULL) RETURNING *`);
     } else {
       const cols = entries.map(([k]) => `"${k}"`).join(", ");
       const placeholders = entries.map((_, i) => `$${i + 1}`).join(", ");
@@ -289,7 +298,6 @@ app.post("/api/problematic-sites", async (req, res) => {
     res.status(500).json({ error: "Failed to insert: " + err.message });
   }
 });
-
 
 /* ================= PROBLEMATIC SITES — EXPORT EXCEL ================= */
 
@@ -390,6 +398,7 @@ app.get("/api/problematic-sites/export-excel", async (req, res) => {
     res.status(500).json({ error: "Failed to export: " + err.message });
   }
 });
+
 /* ================= PROBLEMATIC SITES — PUT ================= */
 
 app.put("/api/problematic-sites/:id", async (req, res) => {
@@ -414,7 +423,6 @@ app.put("/api/problematic-sites/:id", async (req, res) => {
   }
 });
 
-
 /* ================= PROBLEMATIC SITES — DELETE ================= */
 
 app.delete("/api/problematic-sites", async (req, res) => {
@@ -434,9 +442,97 @@ app.delete("/api/problematic-sites", async (req, res) => {
   }
 });
 
+/* ================= TICKETS — GET ================= */
+
+app.get("/api/tickets", async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    let query = "SELECT * FROM ticket_information";
+    const params = [];
+    const conditions = [];
+
+    if (status && status !== "all") {
+      params.push(status);
+      conditions.push(`status = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      conditions.push(`(subject ILIKE $${params.length} OR CAST(id AS TEXT) ILIKE $${params.length})`);
+    }
+    if (conditions.length) query += " WHERE " + conditions.join(" AND ");
+    query += " ORDER BY id DESC";
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET /api/tickets error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TICKETS — POST ================= */
+
+app.post("/api/tickets", async (req, res) => {
+  const { subject, description, airmac_esn, status } = req.body || {};
+  if (!subject?.trim())      return res.status(400).json({ error: "Subject is required" });
+  if (!description?.trim())  return res.status(400).json({ error: "Description is required" });
+  try {
+    const result = await pool.query(
+      `INSERT INTO ticket_information (subject, description, airmac_esn, status)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [subject.trim(), description.trim(), airmac_esn?.trim() || null, status || "Open"]
+    );
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error("POST /api/tickets error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TICKETS — PUT ================= */
+
+app.put("/api/tickets/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+  const { subject, description, airmac_esn, status } = req.body || {};
+  try {
+    const result = await pool.query(
+      `UPDATE ticket_information
+       SET subject     = COALESCE($1, subject),
+           description = COALESCE($2, description),
+           airmac_esn  = COALESCE($3, airmac_esn),
+           status      = COALESCE($4, status)
+       WHERE id = $5
+       RETURNING *`,
+      [subject || null, description || null, airmac_esn ?? null, status || null, id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "Ticket not found" });
+    res.json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error("PUT /api/tickets/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TICKETS — DELETE ================= */
+
+app.delete("/api/tickets/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+  try {
+    const result = await pool.query(
+      "DELETE FROM ticket_information WHERE id = $1 RETURNING id", [id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "Ticket not found" });
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error("DELETE /api/tickets/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* ================= LETTERS — SETUP ================= */
 
-// Check multer is available, otherwise provide instructions
 let multer;
 try {
   multer = require('multer');
@@ -457,20 +553,18 @@ const lettersUpload = multer ? multer({
       cb(null, `${Date.now()}_${base}${ext}`);
     }
   }),
-  limits: { fileSize: 500 * 1024 * 1024 } // 500 MB
+  limits: { fileSize: 500 * 1024 * 1024 }
 }) : null;
 
 /* ── GET /api/letters/folders ── */
 app.get('/api/letters/folders', async (req, res) => {
   try {
-    // ?parent_id=N for subfolders, no param = root folders (parent_id IS NULL)
     const rawParent = req.query.parent_id;
     const parentId  = (rawParent !== undefined && rawParent !== '') ? parseInt(rawParent) : null;
     if (parentId !== null && isNaN(parentId)) return res.status(400).json({ error: 'Invalid parent_id' });
 
     let result;
     if (parentId !== null) {
-      // Subfolders of a specific folder — exclude the folder itself to prevent loops
       result = await pool.query(`
         SELECT f.id, f.folder_name, f.parent_id, f.created_at,
                (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id) +
@@ -481,7 +575,6 @@ app.get('/api/letters/folders', async (req, res) => {
          ORDER BY f.folder_name
       `, [parentId]);
     } else {
-      // Root folders only
       result = await pool.query(`
         SELECT f.id, f.folder_name, f.parent_id, f.created_at,
                (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id) +
@@ -537,7 +630,6 @@ app.put('/api/letters/folders/:id', async (req, res) => {
 app.delete('/api/letters/folders/:id', async (req, res) => {
   const id = parseInt(req.params.id);
   try {
-    // Files are CASCADE deleted by the DB constraint
     const result = await pool.query(`DELETE FROM folders WHERE id = $1`, [id]);
     if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
     res.json({ success: true, deleted: result.rowCount });
@@ -575,22 +667,10 @@ app.get('/api/letters/uploaders', async (req, res) => {
   }
 });
 
-/* ── GET /api/letters/uploaders ── */
-app.get('/api/letters/uploaders', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT DISTINCT uploader_name FROM files WHERE uploader_name IS NOT NULL ORDER BY uploader_name`
-    );
-    res.json(result.rows.map(r => r.uploader_name));
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
 /* ── GET /api/letters/files/recent ── */
 app.get('/api/letters/files/recent', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT * FROM files ORDER BY created_at DESC LIMIT 8`
-    );
+    const result = await pool.query(`SELECT * FROM files ORDER BY created_at DESC LIMIT 8`);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -608,7 +688,6 @@ app.post('/api/letters/files', (req, res, next) => {
     const file_path = '/uploads/letters/' + req.file.filename;
     const file_size = req.file.size;
     const file_name = req.file.originalname;
-    // Derive a short type from the file extension so it fits in VARCHAR(50)
     const ext = require('path').extname(file_name).toLowerCase().replace('.', '');
     const mimeMap = { pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', txt: 'text', png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', mp4: 'video', webm: 'video', mov: 'video', avi: 'video', mkv: 'video' };
     const file_type = mimeMap[ext] || ext || req.file.mimetype.split('/')[1]?.slice(0, 50) || 'file';
@@ -649,7 +728,6 @@ app.delete('/api/letters/files/:id', async (req, res) => {
     const { rows } = await pool.query(`SELECT file_path FROM files WHERE id = $1`, [id]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
     await pool.query(`DELETE FROM files WHERE id = $1`, [id]);
-    // Remove physical file
     try {
       const fs       = require('fs');
       const filePath = require('path').join(__dirname, 'public', rows[0].file_path);
@@ -669,7 +747,6 @@ app.get('/api/letters/files/:id/download', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
     const f        = rows[0];
     const filePath = require('path').join(__dirname, 'public', f.file_path);
-    // Update last_access
     await pool.query(`UPDATE files SET last_access = NOW() WHERE id = $1`, [id]);
     res.download(filePath, f.file_name, err => {
       if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk' });
@@ -688,22 +765,17 @@ app.post('/api/letters/files/:id/copy', async (req, res) => {
     const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
     const f = rows[0];
-
-    // Copy the physical file with a new timestamp prefix
     const fs   = require('fs');
     const path = require('path');
     const ext  = path.extname(f.file_name);
     const base = path.basename(f.file_name, ext).replace(/\s*\(copy.*\)$/, '').trimEnd();
     const newFileName = `${base} (copy)${ext}`;
-
     const oldPath = path.join(__dirname, 'public', f.file_path);
     const newFile = `${Date.now()}_${path.basename(f.file_path)}`;
     const newRelPath = '/uploads/letters/' + newFile;
     const newAbsPath = path.join(__dirname, 'public', newRelPath);
-
     fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
     fs.copyFileSync(oldPath, newAbsPath);
-
     const result = await pool.query(
       `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
@@ -722,24 +794,18 @@ app.post('/api/letters/folders/:id/copy', async (req, res) => {
   const { target_parent_id } = req.body || {};
   if (!target_parent_id) return res.status(400).json({ error: 'target_parent_id is required' });
   try {
-    // Get source folder
     const { rows: folderRows } = await pool.query(`SELECT * FROM folders WHERE id = $1`, [id]);
     if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
     const srcFolder = folderRows[0];
-
-    // Create new folder copy
     const newName = srcFolder.folder_name + ' (copy)';
     const { rows: newFolderRows } = await pool.query(
       `INSERT INTO folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
       [newName, parseInt(target_parent_id)]
     );
     const newFolderId = newFolderRows[0].id;
-
-    // Copy all files inside
     const { rows: files } = await pool.query(`SELECT * FROM files WHERE folder_id = $1`, [id]);
     const fs   = require('fs');
     const path = require('path');
-
     for (const f of files) {
       try {
         const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
@@ -755,7 +821,6 @@ app.post('/api/letters/folders/:id/copy', async (req, res) => {
         );
       } catch { /* skip files that can't be copied */ }
     }
-
     res.status(201).json({ success: true, folder_id: newFolderId, folder_name: newName });
   } catch (err) {
     console.error('Copy folder error:', err.message);
@@ -773,7 +838,6 @@ app.get('/api/letters/files/:id/preview', async (req, res) => {
     const filePath = require('path').join(__dirname, 'public', f.file_path);
     const fs       = require('fs');
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
-    // Set correct content-type for inline display
     const ext = require('path').extname(f.file_name).toLowerCase();
     const mimeTypes = {
       '.pdf':  'application/pdf',
@@ -813,3 +877,4 @@ server.on('error', (err) => {
   else console.error('Server error:', err);
   process.exit(1);
 });
+
