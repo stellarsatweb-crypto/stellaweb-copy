@@ -87,14 +87,12 @@ async function loadTerminals() {
           </div>
         </div>
         <div class="term-region-body">
-          <div class="term-region-select-row">
+          <div class="term-region-controls-row">
             <select id="termRegionSelect" class="term-region-select">
               <option value="">— Select Region —</option>
             </select>
-            <button class="tool-btn apply-btn" id="termGoBtn" disabled><i class="ri-arrow-right-line"></i> Go</button>
+            <button class="tool-btn" id="termNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
           </div>
-          <div class="term-region-or">or</div>
-          <button class="tool-btn" id="termNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
         </div>
       </div>
     </div>
@@ -104,7 +102,6 @@ async function loadTerminals() {
       <div class="table-card">
         <div class="table-card-header">
           <div style="display:flex;align-items:center;gap:10px;">
-            <button class="tool-btn" id="termBackBtn"><i class="ri-arrow-left-line"></i></button>
             <span id="regionTitle" class="table-title-text">Records</span>
           </div>
           <div class="table-tools">
@@ -132,7 +129,7 @@ async function loadTerminals() {
             <label>Sort by</label>
             <select id="sortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;"></select>
           </div>
-          <button class="tool-btn" id="toggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
+          <button class="tool-btn" id="toggleSortDir">ASC</button>
           <button class="tool-btn apply-btn" id="applyFilterSort"><i class="ri-check-line"></i> Apply</button>
           <button class="tool-btn" id="clearFilterSort"><i class="ri-close-line"></i> Clear</button>
         </div>
@@ -187,7 +184,8 @@ async function loadTerminals() {
 
     <!-- Add Choice Modal -->
     <div id="addChoiceModal" class="modal-overlay hidden">
-      <div class="modal-box" style="max-width:420px;padding:36px 32px;">
+      <div class="modal-box" style="max-width:420px;padding:36px 32px;position:relative;">
+        <button class="modal-close-btn" id="choiceModalClose" style="position:absolute;top:14px;right:14px;background:#f1f5f9;border:none;color:#64748b;"><i class="ri-close-line"></i></button>
         <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Terminal</h3>
         <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
         <div style="display:flex;flex-direction:column;gap:12px;">
@@ -200,7 +198,6 @@ async function loadTerminals() {
             <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
           </button>
         </div>
-        <button class="tool-btn" id="choiceModalClose" style="width:100%;margin-top:16px;">Cancel</button>
       </div>
     </div>
 
@@ -216,7 +213,7 @@ async function loadTerminals() {
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> All fields are optional unless marked</span>
           <div class="modal-actions">
-            <button class="tool-btn" id="cancelAddRowFooter">Cancel</button>
+            <button class="tool-btn small-btn" id="cancelAddRowFooter">Cancel</button>
             <button class="tool-btn apply-btn" id="confirmAddRow"><i class="ri-save-line"></i> Save Terminal</button>
           </div>
         </div>
@@ -273,11 +270,6 @@ async function loadTerminals() {
 
   // Region select
   document.getElementById('termRegionSelect').addEventListener('change', function () {
-    document.getElementById('termGoBtn').disabled = !this.value;
-  });
-
-  // Go button
-  document.getElementById('termGoBtn').addEventListener('click', () => {
     const sel = document.getElementById('termRegionSelect');
     const region = sel.value;
     if (!region) return;
@@ -288,13 +280,7 @@ async function loadTerminals() {
     fetchTerminals(region);
   });
 
-  // Back
-  document.getElementById('termBackBtn').addEventListener('click', () => {
-    document.getElementById('termTableView').classList.add('hidden');
-    document.getElementById('termRegionView').classList.remove('hidden');
-    terminalCurrentRegion = null;
-  });
-
+  
   // Add New Region
   document.getElementById('termNewRegionBtn').addEventListener('click', () => {
     document.getElementById('newRegionInput').value = '';
@@ -568,12 +554,13 @@ function renderTerminalTable() {
     return;
   }
   const columns = Object.keys(terminalFiltered[0]);
+  const visibleColumns = columns.filter(col => col !== 'id');
   const start = (terminalPage - 1) * terminalRowsPerPage;
   const pageData = terminalFiltered.slice(start, start + terminalRowsPerPage);
   thead.innerHTML = `
     <tr>
       ${terminalSelectMode ? '<th class="select-col"><input type="checkbox" id="selectAll"></th>' : ''}
-      ${columns.map(col => `<th>${col}</th>`).join("")}
+      ${visibleColumns.map(col => `<th>${col}</th>`).join("")}
       <th class="actions-col">Actions</th>
     </tr>
   `;
@@ -589,7 +576,7 @@ function renderTerminalTable() {
     return `
       <tr class="${isChecked ? 'selected-row' : ''}" data-idx="${globalIdx}">
         ${terminalSelectMode ? `<td class="select-col"><input type="checkbox" class="row-check" ${isChecked ? 'checked' : ''}></td>` : ''}
-        ${columns.map(col => `<td>${row[col] ?? ''}</td>`).join("")}
+        ${visibleColumns.map(col => `<td>${row[col] ?? ''}</td>`).join("")}
         <td class="actions-col">
           <button class="row-action-btn edit-btn" data-idx="${globalIdx}" title="Edit"><i class="ri-edit-line"></i></button>
           <button class="row-action-btn delete-single-btn" data-idx="${globalIdx}" title="Delete"><i class="ri-delete-bin-line"></i></button>
@@ -665,7 +652,7 @@ function openEditModal(idx) {
     if (c.includes("status")) return "ri-checkbox-circle-line";
     return "ri-input-field";
   };
-  document.getElementById("editRowFields").innerHTML = cols.map(col => `
+  document.getElementById("editRowFields").innerHTML = cols.filter(col => col !== 'id').map(col => `
     <div class="add-field-item">
       <label class="add-field-label"><i class="${getIcon(col)}"></i> ${col}</label>
       <input type="text" data-col="${col}" class="add-field-input edit-field-input"
@@ -716,7 +703,7 @@ function openAddModal() {
     if (c.includes("status")) return "ri-checkbox-circle-line";
     return "ri-input-field";
   };
-  document.getElementById("addRowFields").innerHTML = cols.map(col => `
+  document.getElementById("addRowFields").innerHTML = cols.filter(col => col !== 'id').map(col => `
     <div class="add-field-item">
       <label class="add-field-label"><i class="${getIcon(col)}"></i> ${col}</label>
       <input type="text" data-col="${col}" class="add-field-input" placeholder="Enter ${col.toLowerCase()}…" autocomplete="off">
@@ -877,15 +864,16 @@ const probRowsPerPage = 10;
 let probSortDir = 1;
 let probSelectedRows = new Set();
 let probSelectMode = false;
-let probCurrentRegion = "all";
+let probCurrentRegion = null;
+let probRegionsList = []; // loaded dynamically from /api/regions
 
 const PROB_COLUMNS = [
   { key: "Sitename",                         icon: "ri-map-pin-line",         type: "text" },
   { key: "Province",                          icon: "ri-earth-line",           type: "text" },
   { key: "Municipality",                      icon: "ri-building-line",        type: "text" },
-  { key: "Region",                            icon: "ri-map-2-line",           type: "select",
-    options: ["Benguet", "Ifugao", "Ilocos", "Kalinga", "Pangasinan", "Quezon"] },
-  { key: "Status",                            icon: "ri-checkbox-circle-line", type: "text" },
+  { key: "Region",                            icon: "ri-map-2-line",           type: "select", options: [] }, // filled dynamically
+  { key: "Status",                            icon: "ri-checkbox-circle-line", type: "select",
+    options: ["Online","Offline","In Progress","For Monitoring","Unknown"] },
   { key: "Cause (Assume)",                    icon: "ri-question-line",        type: "text" },
   { key: "Remarks",                           icon: "ri-chat-3-line",          type: "textarea" },
   { key: "KAD Name",                          icon: "ri-user-line",            type: "text" },
@@ -895,102 +883,119 @@ const PROB_COLUMNS = [
   { key: "Solution",                          icon: "ri-tools-line",           type: "textarea" },
 ];
 
-function applyProbRegionFilter() {
-  if (probCurrentRegion === "all") {
-    probFiltered = [...probData];
-  } else {
-    probFiltered = probData.filter(row =>
-      String(row["Region"] ?? "").toLowerCase() === probCurrentRegion.toLowerCase() ||
-      String(row["Province"] ?? "").toLowerCase().includes(probCurrentRegion.toLowerCase()) ||
-      String(row["Municipality"] ?? "").toLowerCase().includes(probCurrentRegion.toLowerCase())
-    );
-  }
-}
 
 async function loadProblematicSites() {
   probData = []; probFiltered = []; probPage = 1;
   probSelectedRows = new Set(); probSelectMode = false;
-  probCurrentRegion = "all";
+  probCurrentRegion = null;
+
+  // Load regions dynamically
+  try {
+    const rRes = await fetch("/api/regions");
+    probRegionsList = rRes.ok ? await rRes.json() : [];
+  } catch { probRegionsList = []; }
+
+  // Update Region column options dynamically
+  const regionCol = PROB_COLUMNS.find(c => c.key === "Region");
+  if (regionCol) regionCol.options = probRegionsList.map(r => r.region_name);
+
+  const regionOptions = probRegionsList.map(r =>
+    `<option value="${r.region_name}">${r.region_name}</option>`
+  ).join("");
 
   mainContent.innerHTML = `
     <div class="terminals-header">
       <h2><i class="ri-error-warning-line"></i> Problematic Sites</h2>
-      <div class="terminals-actions">
-        <div class="dropdown-wrapper">
-          <button class="dropdown-btn"><i class="ri-map-pin-2-line"></i> <span id="probRegionLabel">All Regions</span> <i class="ri-arrow-down-s-line"></i></button>
-          <select id="probRegionSelect" class="hidden-select">
-            <option value="all">All Regions</option>
-            <option value="benguet">Benguet</option>
-            <option value="ifugao">Ifugao</option>
-            <option value="ilocos">Ilocos</option>
-            <option value="kalinga">Kalinga</option>
-            <option value="pangasinan">Pangasinan</option>
-            <option value="quezon">Quezon</option>
-          </select>
+    </div>
+
+    <!-- Region selection view -->
+    <div id="probRegionView">
+      <div class="term-region-card">
+        <div class="term-region-header">
+          <i class="ri-map-pin-2-line"></i>
+          <div>
+            <h3>Select a Region</h3>
+            <p>Choose a region to view or manage its problematic site records.</p>
+          </div>
+        </div>
+        <div class="term-region-body">
+          <div class="term-region-controls-row">
+            <select id="probRegionSelect" class="term-region-select">
+              <option value="">— Select Region —</option>
+              ${regionOptions}
+            </select>
+            <button class="tool-btn" id="probNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="table-card">
-      <div class="table-card-header">
-        <span>Problematic Sites Records</span>
-        <div class="table-tools">
-          <button class="tool-btn" id="probBtnAdd"><i class="ri-add-line"></i> Add</button>
-          <button class="tool-btn" id="probBtnSortFilter"><i class="ri-sliders-h-line"></i> Filter & Sort</button>
-          <button class="tool-btn" id="probBtnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
-          <button class="tool-btn apply-btn" id="probExportExcel"><i class="ri-file-excel-line"></i> Export Excel</button>
+    <!-- Table view (hidden until region selected) -->
+    <div id="probTableView" class="hidden">
+      <div class="table-card">
+        <div class="table-card-header">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="tool-btn" id="probBackBtn" style="padding:6px 10px;"><i class="ri-arrow-left-line"></i></button>
+            <span id="probRegionTitle" class="table-title-text">Records</span>
+          </div>
+          <div class="table-tools">
+            <button class="tool-btn" id="probBtnAdd"><i class="ri-add-line"></i> Add</button>
+            <button class="tool-btn" id="probBtnSortFilter"><i class="ri-sliders-h-line"></i> Filter & Sort</button>
+            <button class="tool-btn" id="probBtnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
+            <button class="tool-btn apply-btn" id="probExportExcel"><i class="ri-file-excel-line"></i> Export Excel</button>
+          </div>
         </div>
-      </div>
 
-      <div id="probSortFilterBar" class="filter-bar hidden">
-        <div class="filter-group">
-          <label>Province</label>
-          <input type="text" id="probFilterProvince" placeholder="e.g. BENGUET">
+        <div id="probSortFilterBar" class="filter-bar hidden">
+          <div class="filter-group">
+            <label>Province</label>
+            <input type="text" id="probFilterProvince" placeholder="e.g. BENGUET">
+          </div>
+          <div class="filter-group">
+            <label>Municipality</label>
+            <input type="text" id="probFilterMuni" placeholder="e.g. ATOK">
+          </div>
+          <div class="filter-group">
+            <label>Status</label>
+            <select id="probFilterStatus" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
+              <option value="">All Statuses</option>
+              <option>Offline</option>
+              <option>Online</option>
+              <option>In Progress</option>
+              <option>For Monitoring</option>
+              <option>Unknown</option>
+            </select>
+          </div>
+          <div class="filter-sort-divider"></div>
+          <div class="filter-group">
+            <label>Sort by</label>
+            <select id="probSortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
+              ${PROB_COLUMNS.map(c => `<option value="${c.key}">${c.key}</option>`).join("")}
+            </select>
+          </div>
+          <button class="tool-btn" id="probToggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
+          <button class="tool-btn apply-btn" id="probApplyFilterSort"><i class="ri-check-line"></i> Apply</button>
+          <button class="tool-btn" id="probClearFilterSort"><i class="ri-close-line"></i> Clear</button>
         </div>
-        <div class="filter-group">
-          <label>Municipality</label>
-          <input type="text" id="probFilterMuni" placeholder="e.g. ATOK">
-        </div>
-        <div class="filter-group">
-          <label>Status</label>
-          <select id="probFilterStatus" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
-            <option value="">All Statuses</option>
-            <option>Offline</option>
-            <option>Online</option>
-            <option>In Progress</option>
-            <option>For Monitoring</option>
-            <option>Unknown</option>
-          </select>
-        </div>
-        <div class="filter-sort-divider"></div>
-        <div class="filter-group">
-          <label>Sort by</label>
-          <select id="probSortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
-            ${PROB_COLUMNS.map(c => `<option value="${c.key}">${c.key}</option>`).join("")}
-          </select>
-        </div>
-        <button class="tool-btn" id="probToggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
-        <button class="tool-btn apply-btn" id="probApplyFilterSort"><i class="ri-check-line"></i> Apply</button>
-        <button class="tool-btn" id="probClearFilterSort"><i class="ri-close-line"></i> Clear</button>
-      </div>
 
-      <div id="probBulkActions" class="bulk-actions hidden">
-        <span id="probSelectedCount">0 rows selected</span>
-        <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
-      </div>
+        <div id="probBulkActions" class="bulk-actions hidden">
+          <span id="probSelectedCount">0 rows selected</span>
+          <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
+        </div>
 
-      <div class="table-wrapper terminals-table-wrapper">
-        <table class="data-grid terminals-grid">
-          <thead id="probThead"></thead>
-          <tbody id="probTbody">
-            <tr><td colspan="15" class="loading-cell"><i class="ri-loader-4-line spin"></i> Loading data…</td></tr>
-          </tbody>
-        </table>
+        <div class="table-wrapper terminals-table-wrapper">
+          <table class="data-grid terminals-grid">
+            <thead id="probThead"></thead>
+            <tbody id="probTbody">
+              <tr><td colspan="15" class="loading-cell"><i class="ri-loader-4-line spin"></i> Loading data…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination-bar" id="probPagination"></div>
       </div>
-
-      <div class="pagination-bar" id="probPagination"></div>
     </div>
 
+    <!-- Confirm Delete Modal -->
     <div id="probConfirmDeleteModal" class="modal-overlay hidden">
       <div class="modal-box confirm-modal-box">
         <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
@@ -1003,6 +1008,26 @@ async function loadProblematicSites() {
       </div>
     </div>
 
+    <!-- Add Choice Modal -->
+    <div id="probAddChoiceModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:420px;padding:36px 32px;position:relative;">
+        <button class="modal-close-btn" id="probChoiceClose" style="position:absolute;top:14px;right:14px;background:#f1f5f9;border:none;color:#64748b;"><i class="ri-close-line"></i></button>
+        <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Problematic Site</h3>
+        <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <button class="tool-btn apply-btn" id="probChooseManual" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;">
+            <i class="ri-edit-2-line" style="font-size:20px;"></i>
+            <div style="text-align:left;"><div style="font-weight:700;">Manual Entry</div><div style="font-size:12px;opacity:0.85;font-weight:400;">Fill in a form to add one record</div></div>
+          </button>
+          <button class="tool-btn" id="probChooseImport" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;border-color:#2f4b85;color:#2f4b85;">
+            <i class="ri-upload-cloud-2-line" style="font-size:20px;"></i>
+            <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual Add Modal -->
     <div id="probAddModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
@@ -1013,19 +1038,56 @@ async function loadProblematicSites() {
           </div>
           <button class="modal-close-btn" id="probCancelAdd"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-body">
-          <div id="probAddFields" class="add-fields-grid"></div>
-        </div>
+        <div class="add-modal-body"><div id="probAddFields" class="add-fields-grid"></div></div>
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> Sitename is required</span>
           <div class="modal-actions">
-            <button class="tool-btn" id="probCancelAddFooter">Cancel</button>
+            <button class="tool-btn small-btn" id="probCancelAddFooter">Cancel</button>
             <button class="tool-btn apply-btn" id="probConfirmAdd"><i class="ri-save-line"></i> Save</button>
           </div>
         </div>
       </div>
     </div>
 
+    <!-- Import Modal -->
+    <div id="probImportModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:480px;padding:36px 32px;">
+        <h3 style="margin:0 0 6px;font-size:20px;color:#1e293b;"><i class="ri-upload-cloud-2-line" style="color:#2f4b85"></i> Import Records</h3>
+        <p style="color:#64748b;font-size:13px;margin:0 0 22px;">Upload a CSV or XLSX file. Column headers must match the fields (Sitename, Province, Municipality, Region, Status, etc.).</p>
+        <div class="import-drop-zone" id="probImportDropZone">
+          <i class="ri-file-upload-line" style="font-size:36px;color:#2f4b85;"></i>
+          <p style="margin:8px 0 4px;font-weight:600;color:#1e293b;">Drop file here or click to browse</p>
+          <p style="font-size:12px;color:#94a3b8;">CSV or XLSX, up to 50MB</p>
+          <input type="file" id="probImportFileInput" accept=".csv,.xlsx,.xls" class="hidden">
+        </div>
+        <div id="probImportFileName" style="font-size:13px;color:#2f4b85;margin:10px 0 0;min-height:18px;"></div>
+        <div id="probImportProgress" style="display:none;margin-top:14px;">
+          <div style="background:#e2e8f0;border-radius:99px;height:6px;overflow:hidden;">
+            <div id="probImportProgressBar" style="height:100%;background:#2f4b85;width:0%;transition:width 0.3s;border-radius:99px;"></div>
+          </div>
+          <div id="probImportProgressText" style="font-size:12px;color:#64748b;margin-top:6px;"></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
+          <button class="tool-btn" id="probImportCancelBtn">Cancel</button>
+          <button class="tool-btn apply-btn" id="probImportConfirmBtn" disabled><i class="ri-upload-2-line"></i> Import</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Region Modal -->
+    <div id="probNewRegionModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:400px;padding:32px;">
+        <h3 style="margin:0 0 6px;font-size:18px;color:#1e293b;"><i class="ri-map-pin-add-line" style="color:#2f4b85"></i> Add New Region</h3>
+        <p style="color:#64748b;font-size:13px;margin:0 0 18px;">Enter the name of the new region to add it to the system.</p>
+        <input type="text" id="probNewRegionInput" class="add-field-input" placeholder="e.g. MOUNTAIN PROVINCE" style="width:100%;box-sizing:border-box;">
+        <div class="modal-actions" style="margin-top:16px;">
+          <button class="tool-btn" id="probNewRegionCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="probNewRegionConfirm"><i class="ri-save-line"></i> Create Region</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Modal -->
     <div id="probEditModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
@@ -1036,13 +1098,11 @@ async function loadProblematicSites() {
           </div>
           <button class="modal-close-btn" id="probCancelEdit"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-body">
-          <div id="probEditFields" class="add-fields-grid"></div>
-        </div>
+        <div class="add-modal-body"><div id="probEditFields" class="add-fields-grid"></div></div>
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> Changes are saved to the database</span>
           <div class="modal-actions">
-            <button class="tool-btn" id="probCancelEditFooter">Cancel</button>
+            <button class="tool-btn small-btn" id="probCancelEditFooter">Cancel</button>
             <button class="tool-btn apply-btn" id="probConfirmEdit"><i class="ri-save-line"></i> Save Changes</button>
           </div>
         </div>
@@ -1050,14 +1110,64 @@ async function loadProblematicSites() {
     </div>
   `;
 
+  // Region select → show table view
   document.getElementById("probRegionSelect").addEventListener("change", function () {
     const val = this.value;
-    document.getElementById("probRegionLabel").innerText = val === "all" ? "All Regions" : val.charAt(0).toUpperCase() + val.slice(1);
+    if (!val) return;
     probCurrentRegion = val;
-    applyProbRegionFilter();
-    probPage = 1; renderProbTable(); renderProbPagination();
+    document.getElementById("probRegionTitle").textContent = val + " — Problematic Sites";
+    document.getElementById("probRegionView").classList.add("hidden");
+    document.getElementById("probTableView").classList.remove("hidden");
+    fetchProbData(val);
   });
 
+  // Back button → return to region selection
+  document.getElementById("probBackBtn").addEventListener("click", () => {
+    document.getElementById("probTableView").classList.add("hidden");
+    document.getElementById("probRegionView").classList.remove("hidden");
+    document.getElementById("probRegionSelect").value = "";
+    probData = []; probFiltered = []; probCurrentRegion = null;
+  });
+
+  // Add New Region
+  document.getElementById("probNewRegionBtn").addEventListener("click", () => {
+    document.getElementById("probNewRegionInput").value = "";
+    document.getElementById("probNewRegionModal").classList.remove("hidden");
+  });
+  document.getElementById("probNewRegionCancel").addEventListener("click", () =>
+    document.getElementById("probNewRegionModal").classList.add("hidden"));
+  document.getElementById("probNewRegionModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("probNewRegionModal"))
+      document.getElementById("probNewRegionModal").classList.add("hidden");
+  });
+  document.getElementById("probNewRegionConfirm").addEventListener("click", async () => {
+    const name = document.getElementById("probNewRegionInput").value.trim().toUpperCase();
+    if (!name) { showToast("Region name is required.", "error"); return; }
+    const btn = document.getElementById("probNewRegionConfirm");
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Creating…';
+    try {
+      const res = await fetch("/api/regions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ region_name: name })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast("Failed: " + (result.error || "Unknown"), "error"); return; }
+      showToast(`Region "${result.region_name}" created.`, "success");
+      document.getElementById("probNewRegionModal").classList.add("hidden");
+      const rRes = await fetch("/api/regions");
+      probRegionsList = rRes.ok ? await rRes.json() : probRegionsList;
+      const rCol = PROB_COLUMNS.find(c => c.key === "Region");
+      if (rCol) rCol.options = probRegionsList.map(r => r.region_name);
+      const sel = document.getElementById("probRegionSelect");
+      const newOpt = document.createElement("option");
+      newOpt.value = result.region_name;
+      newOpt.textContent = result.region_name;
+      sel.appendChild(newOpt);
+    } catch { showToast("Network error.", "error"); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Create Region'; }
+  });
+
+  // Sort & Filter bar — wired after table view shown via event delegation
   document.getElementById("probBtnSortFilter").addEventListener("click", () => {
     document.getElementById("probSortFilterBar").classList.toggle("hidden");
     document.getElementById("probBtnSortFilter").classList.toggle("active-tool",
@@ -1067,13 +1177,12 @@ async function loadProblematicSites() {
     probSortDir *= -1;
     this.innerHTML = probSortDir === 1 ? '<i class="ri-arrow-up-line"></i> ASC' : '<i class="ri-arrow-down-line"></i> DESC';
   });
-
   document.getElementById("probApplyFilterSort").addEventListener("click", () => {
     const prov = document.getElementById("probFilterProvince").value.trim().toUpperCase();
     const muni = document.getElementById("probFilterMuni").value.trim().toUpperCase();
     const stat = document.getElementById("probFilterStatus").value;
     const col  = document.getElementById("probSortColSelect").value;
-    applyProbRegionFilter();
+    probFiltered = [...probData];
     if (prov) probFiltered = probFiltered.filter(r => String(r["Province"] ?? "").toUpperCase().includes(prov));
     if (muni) probFiltered = probFiltered.filter(r => String(r["Municipality"] ?? "").toUpperCase().includes(muni));
     if (stat) probFiltered = probFiltered.filter(r => String(r["Status"] ?? "") === stat);
@@ -1082,16 +1191,16 @@ async function loadProblematicSites() {
     document.getElementById("probSortFilterBar").classList.add("hidden");
     document.getElementById("probBtnSortFilter").classList.remove("active-tool");
   });
-
   document.getElementById("probClearFilterSort").addEventListener("click", () => {
     ["probFilterProvince","probFilterMuni"].forEach(id => document.getElementById(id).value = "");
     document.getElementById("probFilterStatus").value = "";
     document.getElementById("probToggleSortDir").innerHTML = '<i class="ri-arrow-up-line"></i> ASC';
     probSortDir = 1;
-    applyProbRegionFilter();
+    probFiltered = [...probData];
     probPage = 1; renderProbTable(); renderProbPagination();
   });
 
+  // Select mode
   document.getElementById("probBtnSelect").addEventListener("click", () => {
     probSelectMode = !probSelectMode;
     probSelectedRows.clear();
@@ -1100,6 +1209,7 @@ async function loadProblematicSites() {
     renderProbTable();
   });
 
+  // Bulk delete
   document.getElementById("probDeleteSelected").addEventListener("click", async () => {
     if (probSelectedRows.size === 0) { showToast("No rows selected.", "error"); return; }
     const toDeleteRows = Array.from(probSelectedRows).map(idx => probFiltered[idx]);
@@ -1127,10 +1237,10 @@ async function loadProblematicSites() {
     });
   });
 
+  // Export Excel
   document.getElementById("probExportExcel").addEventListener("click", async () => {
     const btn = document.getElementById("probExportExcel");
-    btn.disabled = true;
-    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Generating…';
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Generating…';
     try {
       const res = await fetch("/api/problematic-sites/export-excel");
       if (!res.ok) { showToast("Export failed.", "error"); return; }
@@ -1140,22 +1250,35 @@ async function loadProblematicSites() {
       a.download = `problematic_sites_${Date.now()}.xlsx`;
       a.click();
       showToast("Excel file downloaded.", "success");
-    } catch (err) {
-      showToast("Export error: " + err.message, "error");
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="ri-file-excel-line"></i> Export Excel';
-    }
+    } catch (err) { showToast("Export error: " + err.message, "error"); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-file-excel-line"></i> Export Excel'; }
   });
 
-  document.getElementById("probBtnAdd").addEventListener("click", () => openProbAddModal());
-
-  await fetchProbData();
+  // Add button → choice modal
+  document.getElementById("probBtnAdd").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.remove("hidden");
+  });
+  document.getElementById("probChoiceClose").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.add("hidden");
+  });
+  document.getElementById("probAddChoiceModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("probAddChoiceModal"))
+      document.getElementById("probAddChoiceModal").classList.add("hidden");
+  });
+  document.getElementById("probChooseManual").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.add("hidden");
+    openProbAddModal();
+  });
+  document.getElementById("probChooseImport").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.add("hidden");
+    openProbImportModal();
+  });
 }
 
-async function fetchProbData() {
+async function fetchProbData(region) {
   try {
-    const res = await fetch("/api/problematic-sites");
+    const url = region ? `/api/problematic-sites?region=${encodeURIComponent(region)}` : "/api/problematic-sites";
+    const res = await fetch(url);
     if (!res.ok) throw new Error("Server error");
     const data = await res.json();
     if (!data.length) {
@@ -1166,7 +1289,7 @@ async function fetchProbData() {
       return;
     }
     probData = data;
-    applyProbRegionFilter();
+    probFiltered = [...probData];
     probPage = 1;
     renderProbTable(); renderProbPagination();
   } catch (err) {
@@ -1183,7 +1306,8 @@ function renderProbTable() {
     tbody.innerHTML = `<tr><td colspan="15" class="empty-cell"><i class="ri-search-line"></i> No results match your search</td></tr>`;
     return;
   }
-  const columns = Object.keys(probFiltered[0]);
+  const allCols = Object.keys(probFiltered[0]);
+  const columns = allCols.filter(c => c !== "id");
   const start = (probPage - 1) * probRowsPerPage;
   const pageData = probFiltered.slice(start, start + probRowsPerPage);
 
@@ -1211,7 +1335,6 @@ function renderProbTable() {
       : statusVal.includes("offline") ? "high"
       : statusVal.includes("progress") ? "progress"
       : statusVal.includes("monitoring") ? "medium" : "pending";
-
     return `
       <tr class="${isChecked ? 'selected-row' : ''}">
         ${probSelectMode ? `<td class="select-col"><input type="checkbox" class="prob-row-check" ${isChecked ? 'checked' : ''}></td>` : ''}
@@ -1296,9 +1419,9 @@ function showProbConfirmDeleteModal(count, onConfirm) {
     `You are about to permanently delete <strong>${count} record${count > 1 ? 's' : ''}</strong>.<br>This action <strong>cannot be undone</strong>.`;
   modal.classList.remove("hidden");
   const confirmBtn = document.getElementById("probConfirmDeleteBtn");
-  const cancelBtn = document.getElementById("probCancelDeleteBtn");
+  const cancelBtn  = document.getElementById("probCancelDeleteBtn");
   const newConfirm = confirmBtn.cloneNode(true); confirmBtn.replaceWith(newConfirm);
-  const newCancel = cancelBtn.cloneNode(true); cancelBtn.replaceWith(newCancel);
+  const newCancel  = cancelBtn.cloneNode(true);  cancelBtn.replaceWith(newCancel);
   const close = () => modal.classList.add("hidden");
   document.getElementById("probCancelDeleteBtn").onclick = close;
   modal.onclick = e => { if (e.target === modal) close(); };
@@ -1306,6 +1429,10 @@ function showProbConfirmDeleteModal(count, onConfirm) {
 }
 
 function buildProbFields(containerId, rowData = {}) {
+  // Refresh Region options in case new regions were added
+  const regionCol = PROB_COLUMNS.find(c => c.key === "Region");
+  if (regionCol && probRegionsList.length) regionCol.options = probRegionsList.map(r => r.region_name);
+
   const container = document.getElementById(containerId);
   container.innerHTML = PROB_COLUMNS.map(col => {
     const raw = rowData[col.key];
@@ -1315,7 +1442,7 @@ function buildProbFields(containerId, rowData = {}) {
       input = `<textarea data-col="${col.key}" class="add-field-input prob-textarea" rows="2">${raw ?? ""}</textarea>`;
     } else if (col.type === "select") {
       input = `<select data-col="${col.key}" class="add-field-input">
-        <option value="">— Select Status —</option>
+        <option value="">— Select —</option>
         ${col.options.map(o => `<option value="${o}" ${val === o ? "selected" : ""}>${o}</option>`).join("")}
       </select>`;
     } else {
@@ -1342,6 +1469,11 @@ function getProbFormData(containerId) {
 
 function openProbAddModal() {
   buildProbFields("probAddFields");
+  // Pre-fill Region with currently selected region
+  if (probCurrentRegion) {
+    const regionEl = document.querySelector('#probAddFields [data-col="Region"]');
+    if (regionEl) regionEl.value = probCurrentRegion;
+  }
   const modal = document.getElementById("probAddModal");
   modal.classList.remove("hidden");
   const close = () => modal.classList.add("hidden");
@@ -1355,23 +1487,111 @@ function openProbAddModal() {
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
     try {
       const res = await fetch("/api/problematic-sites", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newRow)
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newRow)
       });
-      let result;
-      try { result = await res.json(); } catch(e) { result = {}; }
-      if (!res.ok) { showToast("Save failed: " + (result.error || res.statusText || "Unknown error"), "error"); return; }
+      let result; try { result = await res.json(); } catch(e) { result = {}; }
+      if (!res.ok) { showToast("Save failed: " + (result.error || res.statusText), "error"); return; }
       const saved = result.row || newRow;
       probData.unshift(saved);
-      applyProbRegionFilter();
+      probFiltered = [...probData];
       probPage = 1; renderProbTable(); renderProbPagination();
       close(); showToast("Record added successfully.", "success");
-    } catch (err) {
-      console.error("Save error:", err);
-      showToast("Network error: " + err.message, "error");
-    }
+    } catch (err) { showToast("Network error: " + err.message, "error"); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save'; }
+  };
+}
+
+function openProbImportModal() {
+  const modal  = document.getElementById("probImportModal");
+  const zone   = document.getElementById("probImportDropZone");
+  const input  = document.getElementById("probImportFileInput");
+  const fname  = document.getElementById("probImportFileName");
+  const prog   = document.getElementById("probImportProgress");
+  const bar    = document.getElementById("probImportProgressBar");
+  const txt    = document.getElementById("probImportProgressText");
+  const impBtn = document.getElementById("probImportConfirmBtn");
+
+  let parsedRows = [];
+
+  fname.textContent = "";
+  prog.style.display = "none";
+  bar.style.width = "0%";
+  txt.textContent = "";
+  impBtn.disabled = true;
+  input.value = "";
+
+  modal.classList.remove("hidden");
+  const close = () => modal.classList.add("hidden");
+  document.getElementById("probImportCancelBtn").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  zone.onclick = () => input.click();
+  zone.ondragover = e => { e.preventDefault(); zone.style.background = "#eff6ff"; };
+  zone.ondragleave = () => { zone.style.background = ""; };
+  zone.ondrop = e => { e.preventDefault(); zone.style.background = ""; if (e.dataTransfer.files[0]) handleProbImportFile(e.dataTransfer.files[0]); };
+  input.onchange = () => { if (input.files[0]) handleProbImportFile(input.files[0]); };
+
+  async function handleProbImportFile(file) {
+    fname.textContent = `📄 ${file.name}`;
+    parsedRows = [];
+    impBtn.disabled = true;
+    try {
+      if (file.name.endsWith(".csv")) {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+        parsedRows = lines.slice(1).map(line => {
+          const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,)|^(?=,))/g) || [];
+          const row = {};
+          headers.forEach((h, i) => { row[h] = (vals[i] || "").replace(/^"|"$/g, "").trim(); });
+          return row;
+        }).filter(r => Object.values(r).some(v => v));
+      } else {
+        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js");
+        const ab = await file.arrayBuffer();
+        const wb = XLSX.read(ab, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        parsedRows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      }
+      fname.textContent = `📄 ${file.name} — ${parsedRows.length} rows found`;
+      impBtn.disabled = parsedRows.length === 0;
+    } catch (err) {
+      fname.textContent = `⚠️ Could not read file: ${err.message}`;
+    }
+  }
+
+  impBtn.onclick = async () => {
+    if (!parsedRows.length) return;
+    impBtn.disabled = true;
+    prog.style.display = "block";
+    let inserted = 0, skipped = 0;
+    const PROB_KEYS = PROB_COLUMNS.map(c => c.key);
+    for (let i = 0; i < parsedRows.length; i++) {
+      const raw = parsedRows[i];
+      // Map CSV headers to DB columns (case-insensitive)
+      const row = {};
+      PROB_KEYS.forEach(key => {
+        const match = Object.keys(raw).find(k => k.trim().toLowerCase() === key.toLowerCase());
+        if (match !== undefined) row[key] = String(raw[match] ?? "").trim();
+      });
+      // Always stamp the selected region so records stay in the right region
+      row["Region"] = probCurrentRegion;
+      try {
+        const res = await fetch("/api/problematic-sites", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(row)
+        });
+        if (res.ok) { const r = await res.json(); probData.unshift(r.row || row); inserted++; }
+        else skipped++;
+      } catch { skipped++; }
+      const pct = Math.round(((i + 1) / parsedRows.length) * 100);
+      bar.style.width = pct + "%";
+      txt.textContent = `Importing… ${i + 1} of ${parsedRows.length}`;
+    }
+    txt.textContent = `Done — ${inserted} inserted, ${skipped} skipped.`;
+    probFiltered = [...probData];
+    probPage = 1; renderProbTable(); renderProbPagination();
+    showToast(`Imported ${inserted} record(s).`, inserted > 0 ? "success" : "error");
+    setTimeout(() => close(), 1800);
   };
 }
 
@@ -3155,4 +3375,3 @@ function runCounters() {
 
 /* ================= INITIAL LOAD ================= */
 loadDashboard();
-

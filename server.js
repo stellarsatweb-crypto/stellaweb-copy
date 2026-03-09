@@ -501,7 +501,16 @@ app.put('/api/terminals/:region/:id', async (req, res) => {
 
 app.get("/api/problematic-sites", async (req, res) => {
   try {
-    const result = await pool.query(`SELECT * FROM problematic_sites ORDER BY id DESC`);
+    const region = req.query.region;
+    let result;
+    if (region) {
+      result = await pool.query(
+        `SELECT * FROM problematic_sites WHERE UPPER("Region") = UPPER($1) ORDER BY id DESC`,
+        [region]
+      );
+    } else {
+      result = await pool.query(`SELECT * FROM problematic_sites ORDER BY id DESC`);
+    }
     res.json(result.rows);
   } catch (err) {
     console.error("GET problematic-sites error:", err.message);
