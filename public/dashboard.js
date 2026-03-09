@@ -45,6 +45,8 @@ document.getElementById("toggleSidebar").addEventListener("click", () => {
 /* ================= TERMINALS ================= */
 
 let terminalData = [];
+let terminalCurrentRegion = null;
+let terminalImportFile = null;
 let terminalFiltered = [];
 let terminalPage = 1;
 const terminalRowsPerPage = 10;
@@ -54,6 +56,15 @@ let terminalSelectedRows = new Set();
 let terminalSelectMode = false;
 
 async function loadTerminals() {
+  terminalData        = [];
+  terminalFiltered    = [];
+  terminalPage        = 1;
+  terminalSelectMode  = false;
+  terminalSelectedRows = new Set();
+  terminalSortCol     = null;
+  terminalSortDir     = 1;
+  terminalCurrentRegion = null;
+  
   mainContent.innerHTML = `
     <div class="terminals-header">
       <h2><i class="ri-computer-line"></i> Terminals</h2>
@@ -62,77 +73,92 @@ async function loadTerminals() {
           <i class="ri-search-line"></i>
           <input type="text" id="terminalSearch" placeholder="Search here…">
         </div>
-        <div class="dropdown-wrapper">
-          <button class="dropdown-btn"><i class="ri-map-pin-2-line"></i> <span id="regionLabel">Benguet</span> <i class="ri-arrow-down-s-line"></i></button>
-          <select id="regionSelect" class="hidden-select">
-            <option value="benguet">Benguet</option>
-            <option value="ifugao">Ifugao</option>
-            <option value="ilocos">Ilocos</option>
-            <option value="kalinga">Kalinga</option>
-            <option value="pangasinan">Pangasinan</option>
-            <option value="quezon">Quezon</option>
-          </select>
+      </div>
+    </div>
+
+    <!-- Region selection view -->
+    <div id="termRegionView">
+      <div class="term-region-card">
+        <div class="term-region-header">
+          <i class="ri-map-pin-2-line"></i>
+          <div>
+            <h3>Select a Region</h3>
+            <p>Choose a region to view or manage its terminal records.</p>
+          </div>
+        </div>
+        <div class="term-region-body">
+          <div class="term-region-select-row">
+            <select id="termRegionSelect" class="term-region-select">
+              <option value="">— Select Region —</option>
+            </select>
+            <button class="tool-btn apply-btn" id="termGoBtn" disabled><i class="ri-arrow-right-line"></i> Go</button>
+          </div>
+          <div class="term-region-or">or</div>
+          <button class="tool-btn" id="termNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
         </div>
       </div>
     </div>
 
-    <div class="table-card">
-      <div class="table-card-header">
-        <span id="regionTitle">Benguet Records</span>
-        <div class="table-tools">
-          <button class="tool-btn" id="btnAdd"><i class="ri-add-line"></i> Add</button>
-          <button class="tool-btn" id="btnSortFilter"><i class="ri-sliders-h-line"></i> Sort & Filter</button>
-          <button class="tool-btn" id="btnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
+    <!-- Terminal table view (hidden until region selected) -->
+    <div id="termTableView" class="hidden">
+      <div class="table-card">
+        <div class="table-card-header">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="tool-btn" id="termBackBtn"><i class="ri-arrow-left-line"></i></button>
+            <span id="regionTitle" class="table-title-text">Records</span>
+          </div>
+          <div class="table-tools">
+            <button class="tool-btn" id="btnAdd"><i class="ri-add-line"></i> Add</button>
+            <button class="tool-btn" id="btnSortFilter"><i class="ri-sliders-h-line"></i> Sort & Filter</button>
+            <button class="tool-btn" id="btnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
+          </div>
         </div>
-      </div>
 
-      <div id="sortFilterBar" class="filter-bar hidden">
-        <div class="filter-group">
-          <label>Province</label>
-          <input type="text" id="filterProvince" placeholder="e.g. BENGUET">
+        <div id="sortFilterBar" class="filter-bar hidden">
+          <div class="filter-group">
+            <label>Province</label>
+            <input type="text" id="filterProvince" placeholder="e.g. BENGUET">
+          </div>
+          <div class="filter-group">
+            <label>Municipality</label>
+            <input type="text" id="filterMuni" placeholder="e.g. ATOK">
+          </div>
+          <div class="filter-group">
+            <label>Region</label>
+            <input type="text" id="filterRegion" placeholder="e.g. CAR">
+          </div>
+          <div class="filter-sort-divider"></div>
+          <div class="filter-group">
+            <label>Sort by</label>
+            <select id="sortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;"></select>
+          </div>
+          <button class="tool-btn" id="toggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
+          <button class="tool-btn apply-btn" id="applyFilterSort"><i class="ri-check-line"></i> Apply</button>
+          <button class="tool-btn" id="clearFilterSort"><i class="ri-close-line"></i> Clear</button>
         </div>
-        <div class="filter-group">
-          <label>Municipality</label>
-          <input type="text" id="filterMuni" placeholder="e.g. ATOK">
-        </div>
-        <div class="filter-group">
-          <label>Region</label>
-          <input type="text" id="filterRegion" placeholder="e.g. CAR">
-        </div>
-        <div class="filter-sort-divider"></div>
-        <div class="filter-group">
-          <label>Sort by</label>
-          <select id="sortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;"></select>
-        </div>
-        <button class="tool-btn" id="toggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
-        <button class="tool-btn apply-btn" id="applyFilterSort"><i class="ri-check-line"></i> Apply</button>
-        <button class="tool-btn" id="clearFilterSort"><i class="ri-close-line"></i> Clear</button>
-      </div>
 
-      <div id="bulkActions" class="bulk-actions hidden">
-        <span id="selectedCount">0 rows selected</span>
-        <button class="tool-btn danger-btn" id="deleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
-        <button class="tool-btn" id="exportSelected"><i class="ri-download-line"></i> Export CSV</button>
-      </div>
+        <div id="bulkActions" class="bulk-actions hidden">
+          <span id="selectedCount">0 rows selected</span>
+          <button class="tool-btn danger-btn" id="deleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
+          <button class="tool-btn" id="exportSelected"><i class="ri-download-line"></i> Export CSV</button>
+        </div>
 
-      <div class="table-wrapper terminals-table-wrapper">
-        <table class="data-grid terminals-grid" id="terminalTable">
-          <thead id="terminalThead"></thead>
-          <tbody id="terminalTbody"></tbody>
-        </table>
+        <div class="table-wrapper terminals-table-wrapper">
+          <table class="data-grid terminals-grid" id="terminalTable">
+            <thead id="terminalThead"></thead>
+            <tbody id="terminalTbody"></tbody>
+          </table>
+        </div>
+        <div class="pagination-bar" id="terminalPagination"></div>
       </div>
-
-      <div class="pagination-bar" id="terminalPagination"></div>
     </div>
 
     <!-- Confirm Delete Modal -->
     <div id="confirmDeleteModal" class="modal-overlay hidden">
       <div class="modal-box confirm-modal-box">
-        <div class="confirm-modal-icon danger-icon">
-          <i class="ri-delete-bin-2-line"></i>
-        </div>
+        <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
         <h3 class="confirm-modal-title">Delete Records</h3>
-        <p class="confirm-modal-msg" id="confirmDeleteMsg">Are you sure you want to delete the selected records?</p>
+        <p class="confirm-modal-msg" id="confirmDeleteMsg">Are you sure?</p>
         <div class="confirm-modal-actions">
           <button class="tool-btn" id="cancelDeleteBtn">Cancel</button>
           <button class="tool-btn danger-btn" id="confirmDeleteBtn"><i class="ri-delete-bin-line"></i> Yes, Delete</button>
@@ -145,15 +171,10 @@ async function loadTerminals() {
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
           <div class="add-modal-icon" style="background:rgba(255,255,255,0.15)"><i class="ri-edit-line"></i></div>
-          <div class="add-modal-title">
-            <h3>Edit Terminal</h3>
-            <p>Update the details for this terminal entry.</p>
-          </div>
+          <div class="add-modal-title"><h3>Edit Terminal</h3><p>Update the details for this terminal entry.</p></div>
           <button class="modal-close-btn" id="cancelEditRow"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-body">
-          <div id="editRowFields" class="add-fields-grid"></div>
-        </div>
+        <div class="add-modal-body"><div id="editRowFields" class="add-fields-grid"></div></div>
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> Changes will be saved to the database</span>
           <div class="modal-actions">
@@ -164,20 +185,34 @@ async function loadTerminals() {
       </div>
     </div>
 
-    <!-- Add Row Modal -->
+    <!-- Add Choice Modal -->
+    <div id="addChoiceModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:420px;padding:36px 32px;">
+        <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Terminal</h3>
+        <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <button class="tool-btn apply-btn" id="chooseManualBtn" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;">
+            <i class="ri-edit-2-line" style="font-size:20px;"></i>
+            <div style="text-align:left;"><div style="font-weight:700;">Manual Entry</div><div style="font-size:12px;opacity:0.85;font-weight:400;">Fill in a form to add one record</div></div>
+          </button>
+          <button class="tool-btn" id="chooseImportBtn" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;border-color:#2f4b85;color:#2f4b85;">
+            <i class="ri-upload-cloud-2-line" style="font-size:20px;"></i>
+            <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
+          </button>
+        </div>
+        <button class="tool-btn" id="choiceModalClose" style="width:100%;margin-top:16px;">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Manual Add Row Modal -->
     <div id="addRowModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
           <div class="add-modal-icon"><i class="ri-router-line"></i></div>
-          <div class="add-modal-title">
-            <h3>Add New Terminal</h3>
-            <p>Fill in the details to register a new terminal entry.</p>
-          </div>
+          <div class="add-modal-title"><h3>Add New Terminal</h3><p>Fill in the details to register a new terminal entry.</p></div>
           <button class="modal-close-btn" id="cancelAddRow"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-body">
-          <div id="addRowFields" class="add-fields-grid"></div>
-        </div>
+        <div class="add-modal-body"><div id="addRowFields" class="add-fields-grid"></div></div>
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> All fields are optional unless marked</span>
           <div class="modal-actions">
@@ -187,116 +222,306 @@ async function loadTerminals() {
         </div>
       </div>
     </div>
+
+    <!-- Import File Modal -->
+    <div id="importModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:480px;padding:36px 32px;">
+        <h3 style="margin:0 0 6px;font-size:20px;color:#1e293b;"><i class="ri-upload-cloud-2-line" style="color:#2f4b85"></i> Import Records</h3>
+        <p style="color:#64748b;font-size:13px;margin:0 0 22px;">Upload a CSV or XLSX file. Column headers must match the database fields.</p>
+        <div class="import-drop-zone" id="importDropZone">
+          <i class="ri-file-upload-line" style="font-size:36px;color:#2f4b85;"></i>
+          <p style="margin:8px 0 4px;font-weight:600;color:#1e293b;">Drop file here or click to browse</p>
+          <p style="font-size:12px;color:#94a3b8;">CSV or XLSX, up to 50MB</p>
+          <input type="file" id="importFileInput" accept=".csv,.xlsx,.xls" class="hidden">
+        </div>
+        <div id="importFileName" style="font-size:13px;color:#2f4b85;margin:10px 0 0;min-height:18px;"></div>
+        <div id="importProgress" style="display:none;margin-top:14px;">
+          <div style="background:#e2e8f0;border-radius:99px;height:6px;overflow:hidden;">
+            <div id="importProgressBar" style="height:100%;background:#2f4b85;width:0%;transition:width 0.3s;border-radius:99px;"></div>
+          </div>
+          <div id="importProgressText" style="font-size:12px;color:#64748b;margin-top:6px;"></div>
+        </div>
+        <div class="modal-actions" style="margin-top:20px;">
+          <button class="tool-btn" id="importCancelBtn">Cancel</button>
+          <button class="tool-btn apply-btn" id="importConfirmBtn" disabled><i class="ri-upload-2-line"></i> Import</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Region Modal -->
+    <div id="newRegionModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:400px;padding:32px;">
+        <h3 style="margin:0 0 6px;font-size:18px;color:#1e293b;"><i class="ri-map-pin-add-line" style="color:#2f4b85"></i> Add New Region</h3>
+        <p style="color:#64748b;font-size:13px;margin:0 0 18px;">Enter the name of the new region to add it to the system.</p>
+        <input type="text" id="newRegionInput" class="add-field-input" placeholder="e.g. MOUNTAIN PROVINCE" style="width:100%;box-sizing:border-box;">
+        <div class="modal-actions" style="margin-top:16px;">
+          <button class="tool-btn" id="newRegionCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="newRegionConfirm"><i class="ri-save-line"></i> Create Region</button>
+        </div>
+      </div>
+    </div>
   `;
 
-  document.getElementById("regionSelect").addEventListener("change", function () {
-    const val = this.value;
-    document.getElementById("regionLabel").innerText = capitalize(val);
-    document.getElementById("regionTitle").innerText = capitalize(val) + " Records";
-    fetchTerminals(val);
+  
+  // Load regions into dropdown
+  fetchRegions();
+
+  // Search
+  document.getElementById('terminalSearch').addEventListener('input', () => {
+    applyTerminalSearch(); renderTerminalTable(); renderTerminalPagination();
   });
 
-  document.getElementById("terminalSearch").addEventListener("input", () => {
-    applyTerminalSearch();
-    terminalPage = 1;
-    renderTerminalTable();
-    renderTerminalPagination();
+  // Region select
+  document.getElementById('termRegionSelect').addEventListener('change', function () {
+    document.getElementById('termGoBtn').disabled = !this.value;
   });
 
-  document.getElementById("btnSortFilter").addEventListener("click", () => {
-    document.getElementById("sortFilterBar").classList.toggle("hidden");
-    document.getElementById("btnSortFilter").classList.toggle("active-tool",
-      !document.getElementById("sortFilterBar").classList.contains("hidden"));
+  // Go button
+  document.getElementById('termGoBtn').addEventListener('click', () => {
+    const sel = document.getElementById('termRegionSelect');
+    const region = sel.value;
+    if (!region) return;
+    terminalCurrentRegion = region;
+    document.getElementById('regionTitle').textContent = region + ' Records';
+    document.getElementById('termRegionView').classList.add('hidden');
+    document.getElementById('termTableView').classList.remove('hidden');
+    fetchTerminals(region);
   });
 
-  document.getElementById("btnSelect").addEventListener("click", () => {
+  // Back
+  document.getElementById('termBackBtn').addEventListener('click', () => {
+    document.getElementById('termTableView').classList.add('hidden');
+    document.getElementById('termRegionView').classList.remove('hidden');
+    terminalCurrentRegion = null;
+  });
+
+  // Add New Region
+  document.getElementById('termNewRegionBtn').addEventListener('click', () => {
+    document.getElementById('newRegionInput').value = '';
+    document.getElementById('newRegionModal').classList.remove('hidden');
+  });
+  document.getElementById('newRegionCancel').addEventListener('click', () => document.getElementById('newRegionModal').classList.add('hidden'));
+  document.getElementById('newRegionModal').addEventListener('click', e => { if (e.target === document.getElementById('newRegionModal')) document.getElementById('newRegionModal').classList.add('hidden'); });
+  document.getElementById('newRegionConfirm').addEventListener('click', async () => {
+    const name = document.getElementById('newRegionInput').value.trim();
+    if (!name) { showToast('Region name is required.', 'error'); return; }
+    const btn = document.getElementById('newRegionConfirm');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Creating…';
+    try {
+      const res = await fetch('/api/regions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ region_name: name }) });
+      const result = await res.json();
+      if (!res.ok) { showToast('Failed: ' + (result.error || 'Unknown'), 'error'); return; }
+      showToast(`Region "${result.region_name}" created.`, 'success');
+      document.getElementById('newRegionModal').classList.add('hidden');
+      await fetchRegions();
+      // Auto-select the new region
+      document.getElementById('termRegionSelect').value = result.region_name;
+      document.getElementById('termGoBtn').disabled = false;
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Create Region'; }
+  });
+
+  // Sort/Filter bindings (wired after table view shown)
+  document.getElementById('btnSortFilter').addEventListener('click', () => {
+    document.getElementById('sortFilterBar').classList.toggle('hidden');
+    document.getElementById('btnSortFilter').classList.toggle('active-tool', !document.getElementById('sortFilterBar').classList.contains('hidden'));
+  });
+
+  document.getElementById('btnSelect').addEventListener('click', () => {
     terminalSelectMode = !terminalSelectMode;
     terminalSelectedRows.clear();
-    document.getElementById("btnSelect").classList.toggle("active-tool", terminalSelectMode);
-    document.getElementById("bulkActions").classList.toggle("hidden", !terminalSelectMode);
+    document.getElementById('btnSelect').classList.toggle('active-tool', terminalSelectMode);
+    document.getElementById('bulkActions').classList.toggle('hidden', !terminalSelectMode);
     renderTerminalTable();
   });
 
-  document.getElementById("deleteSelected").addEventListener("click", async () => {
-    if (terminalSelectedRows.size === 0) { showToast("No rows selected.", "error"); return; }
-    const toDeleteRows = Array.from(terminalSelectedRows).map(idx => terminalFiltered[idx]);
-    showConfirmDeleteModal(toDeleteRows.length, async () => {
-      const deleteBtn = document.getElementById("deleteSelected");
-      deleteBtn.disabled = true;
-      deleteBtn.innerHTML = '<i class="ri-loader-4-line spin"></i> Deleting…';
-      const region = document.getElementById("regionSelect").value;
-      const firstCol = Object.keys(toDeleteRows[0])[0];
-      const ids = toDeleteRows.map(row => row[firstCol]);
+  document.getElementById('deleteSelected').addEventListener('click', async () => {
+    if (!terminalSelectedRows.size) { showToast('No rows selected.', 'error'); return; }
+    const toDelete = Array.from(terminalSelectedRows).map(i => terminalFiltered[i]);
+    showConfirmDeleteModal(toDelete.length, async () => {
+      const btn = document.getElementById('deleteSelected');
+      btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Deleting…';
       try {
-        const res = await fetch(`/api/terminals/${region}`, {
-          method: "DELETE", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ column: firstCol, ids })
+        const ids = toDelete.map(r => r.id);
+        const res = await fetch(`/api/terminals/${encodeURIComponent(terminalCurrentRegion)}`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids })
         });
         const result = await res.json();
-        if (!res.ok) { showToast("Delete failed: " + (result.error || "Unknown error"), "error"); return; }
-        const toDeleteSet = new Set(toDeleteRows);
-        terminalFiltered = terminalFiltered.filter(r => !toDeleteSet.has(r));
-        terminalData = terminalData.filter(r => !toDeleteSet.has(r));
-        terminalSelectedRows.clear();
-        updateSelectedCount();
+        if (!res.ok) { showToast('Delete failed: ' + (result.error || 'Unknown'), 'error'); return; }
+        const delSet = new Set(toDelete);
+        terminalFiltered = terminalFiltered.filter(r => !delSet.has(r));
+        terminalData     = terminalData.filter(r => !delSet.has(r));
+        terminalSelectedRows.clear(); updateSelectedCount();
         const maxPage = Math.max(1, Math.ceil(terminalFiltered.length / terminalRowsPerPage));
         if (terminalPage > maxPage) terminalPage = maxPage;
         renderTerminalTable(); renderTerminalPagination();
-        showToast(`${result.deleted} record(s) deleted successfully.`, "success");
-      } catch (err) { showToast("Network error — could not delete records.", "error"); }
-      finally { deleteBtn.disabled = false; deleteBtn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete Selected'; }
+        showToast(`${result.deleted} record(s) deleted.`, 'success');
+      } catch { showToast('Network error.', 'error'); }
+      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete Selected'; }
     });
   });
 
-  document.getElementById("exportSelected").addEventListener("click", () => {
-    if (terminalSelectedRows.size === 0) { alert("No rows selected."); return; }
-    const selectedRows = Array.from(terminalSelectedRows).sort((a, b) => a - b).map(idx => terminalFiltered[idx]);
-    const columns = Object.keys(selectedRows[0]);
-    const escape = val => { const str = String(val ?? ""); return str.includes(",") || str.includes('"') || str.includes("\n") ? `"${str.replace(/"/g, '""')}"` : str; };
-    const csvContent = [columns.map(escape).join(","), ...selectedRows.map(row => columns.map(col => escape(row[col])).join(","))].join("\n");
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csvContent], { type: "text/csv;charset=utf-8;" }));
-    a.download = `terminals_export_${Date.now()}.csv`; a.click();
+  document.getElementById('exportSelected').addEventListener('click', () => {
+    if (!terminalSelectedRows.size) { showToast('No rows selected.', 'error'); return; }
+    const rows = Array.from(terminalSelectedRows).sort((a,b)=>a-b).map(i => terminalFiltered[i]);
+    const cols = Object.keys(rows[0]);
+    const esc  = v => { const s = String(v??''); return s.includes(',')||s.includes('"')||s.includes('\n') ? `"${s.replace(/"/g,'""')}"` : s; };
+    const csv  = [cols.map(esc).join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `terminals_${terminalCurrentRegion}_${Date.now()}.csv`; a.click();
   });
 
-  document.getElementById("btnAdd").addEventListener("click", () => openAddModal());
+  // Add button → choice modal
+  document.getElementById('btnAdd').addEventListener('click', () => {
+    document.getElementById('addChoiceModal').classList.remove('hidden');
+  });
+  document.getElementById('choiceModalClose').addEventListener('click', () => document.getElementById('addChoiceModal').classList.add('hidden'));
+  document.getElementById('addChoiceModal').addEventListener('click', e => { if (e.target === document.getElementById('addChoiceModal')) document.getElementById('addChoiceModal').classList.add('hidden'); });
+  document.getElementById('chooseManualBtn').addEventListener('click', () => {
+    document.getElementById('addChoiceModal').classList.add('hidden');
+    openAddModal();
+  });
+  document.getElementById('chooseImportBtn').addEventListener('click', () => {
+    document.getElementById('addChoiceModal').classList.add('hidden');
+    openImportModal();
+  });
 
-  document.getElementById("toggleSortDir").addEventListener("click", function () {
+  // Import modal
+  bindImportModal();
+
+  // Sort/filter apply
+  document.getElementById('toggleSortDir').addEventListener('click', function () {
     terminalSortDir *= -1;
     this.innerHTML = terminalSortDir === 1 ? '<i class="ri-arrow-up-line"></i> ASC' : '<i class="ri-arrow-down-line"></i> DESC';
   });
-
-  document.getElementById("applyFilterSort").addEventListener("click", () => {
-    const prov = document.getElementById("filterProvince").value.trim().toUpperCase();
-    const muni = document.getElementById("filterMuni").value.trim().toUpperCase();
-    const reg = document.getElementById("filterRegion").value.trim().toUpperCase();
-    const col = document.getElementById("sortColSelect").value;
+  document.getElementById('applyFilterSort').addEventListener('click', () => {
+    const prov = document.getElementById('filterProvince').value.trim().toUpperCase();
+    const muni = document.getElementById('filterMuni').value.trim().toUpperCase();
+    const reg  = document.getElementById('filterRegion').value.trim().toUpperCase();
+    const col  = document.getElementById('sortColSelect').value;
     terminalFiltered = terminalData.filter(row =>
-      (!prov || String(row["PROVINCE"] ?? "").toUpperCase().includes(prov)) &&
-      (!muni || String(row["MUNICIPALITY"] ?? "").toUpperCase().includes(muni)) &&
-      (!reg || String(row["REGION"] ?? "").toUpperCase().includes(reg))
+      (!prov || String(row['PROVINCE']??'').toUpperCase().includes(prov)) &&
+      (!muni || String(row['MUNICIPALITY']??'').toUpperCase().includes(muni)) &&
+      (!reg  || String(row['REGION']??'').toUpperCase().includes(reg))
     );
-    if (col) {
-      terminalSortCol = col;
-      terminalFiltered.sort((a, b) =>
-        String(a[col] ?? "").localeCompare(String(b[col] ?? ""), undefined, { numeric: true }) * terminalSortDir
-      );
-    }
+    if (col) terminalFiltered.sort((a, b) => String(a[col]??'').localeCompare(String(b[col]??''), undefined, { numeric: true }) * terminalSortDir);
     terminalPage = 1; renderTerminalTable(); renderTerminalPagination();
-    document.getElementById("sortFilterBar").classList.add("hidden");
-    document.getElementById("btnSortFilter").classList.remove("active-tool");
+    document.getElementById('sortFilterBar').classList.add('hidden');
+    document.getElementById('btnSortFilter').classList.remove('active-tool');
   });
-
-  document.getElementById("clearFilterSort").addEventListener("click", () => {
-    terminalFiltered = [...terminalData];
-    terminalSortCol = null; terminalSortDir = 1;
-    ["filterProvince","filterMuni","filterRegion"].forEach(id => document.getElementById(id).value = "");
-    document.getElementById("toggleSortDir").innerHTML = '<i class="ri-arrow-up-line"></i> ASC';
+  document.getElementById('clearFilterSort').addEventListener('click', () => {
+    terminalFiltered = [...terminalData]; terminalSortCol = null; terminalSortDir = 1;
+    ['filterProvince','filterMuni','filterRegion'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('toggleSortDir').innerHTML = '<i class="ri-arrow-up-line"></i> ASC';
     terminalPage = 1; renderTerminalTable(); renderTerminalPagination();
   });
-
-  fetchTerminals("benguet");
 }
+
+async function fetchRegions() {
+  try {
+    const res  = await fetch('/api/regions');
+    const data = await res.json();
+    const sel  = document.getElementById('termRegionSelect');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">— Select Region —</option>' +
+      data.map(r => `<option value="${r.region_name}">${r.region_name}</option>`).join('');
+  } catch { showToast('Could not load regions.', 'error'); }
+}
+
+function openImportModal() {
+  terminalImportFile = null;
+  const fileInput = document.getElementById('importFileInput');
+  const nameEl    = document.getElementById('importFileName');
+  const confirmBtn = document.getElementById('importConfirmBtn');
+  const prog      = document.getElementById('importProgress');
+  const bar       = document.getElementById('importProgressBar');
+  if (nameEl)     nameEl.textContent = '';
+  if (confirmBtn) confirmBtn.disabled = true;
+  if (prog)       prog.style.display = 'none';
+  if (bar)        bar.style.width = '0%';
+  if (fileInput)  fileInput.value = '';
+  document.getElementById('importModal').classList.remove('hidden');
+}
+
+function bindImportModal() {
+  const dropZone   = document.getElementById('importDropZone');
+  const fileInput  = document.getElementById('importFileInput');
+  const nameEl     = document.getElementById('importFileName');
+  const confirmBtn = document.getElementById('importConfirmBtn');
+  const cancelBtn  = document.getElementById('importCancelBtn');
+
+  const setFile = (f) => {
+    if (!f) return;
+    terminalImportFile = f;
+    nameEl.textContent = f.name;
+    confirmBtn.disabled = false;
+  };
+
+  const closeImport = () => {
+    document.getElementById('importModal').classList.add('hidden');
+    terminalImportFile = null;
+    nameEl.textContent = '';
+    confirmBtn.disabled = true;
+    fileInput.value = '';
+    document.getElementById('importProgress').style.display = 'none';
+    document.getElementById('importProgressBar').style.width = '0%';
+  };
+
+  dropZone.onclick     = () => fileInput.click();
+  fileInput.onclick    = e => e.stopPropagation();
+  cancelBtn.onclick    = closeImport;
+  document.getElementById('importModal').onclick = e => {
+    if (e.target === document.getElementById('importModal')) closeImport();
+  };
+  dropZone.ondragover  = e => { e.preventDefault(); dropZone.classList.add('drop-hover'); };
+  dropZone.ondragleave = () => dropZone.classList.remove('drop-hover');
+  dropZone.ondrop      = e => { e.preventDefault(); dropZone.classList.remove('drop-hover'); setFile(e.dataTransfer.files[0]); };
+  fileInput.onchange   = function () { setFile(this.files[0]); };
+
+  confirmBtn.onclick = async () => {
+    if (!terminalImportFile || !terminalCurrentRegion) {
+      showToast('Please select a file first.', 'error'); return;
+    }
+    const btn = confirmBtn;
+    const prog = document.getElementById('importProgress');
+    const bar  = document.getElementById('importProgressBar');
+    const txt  = document.getElementById('importProgressText');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Importing…';
+    prog.style.display = 'block'; bar.style.width = '30%'; txt.textContent = 'Uploading file…';
+    const fd = new FormData();
+    fd.append('file', terminalImportFile);
+    try {
+      bar.style.width = '60%'; txt.textContent = 'Processing rows…';
+      const res    = await fetch('/api/terminals/' + encodeURIComponent(terminalCurrentRegion) + '/import', { method: 'POST', body: fd });
+      const result = await res.json();
+      bar.style.width = '100%';
+      if (!res.ok) { showToast('Import failed: ' + (result.error || 'Unknown'), 'error'); return; }
+      const unmappedList = result.unmappedColumns && result.unmappedColumns.length
+        ? ' | Unrecognised: ' + result.unmappedColumns.slice(0,3).join(', ') + (result.unmappedColumns.length > 3 ? '…' : '')
+        : '';
+      txt.textContent = 'Imported ' + result.inserted + ' of ' + result.total + ' rows — ' + (result.mappedColumns || 0) + ' columns matched, ' + (result.skipped || 0) + ' skipped.' + unmappedList;
+      if (result.inserted > 0) {
+        let msg = 'Imported ' + result.inserted + ' record' + (result.inserted !== 1 ? 's' : '') + ' successfully.';
+        if (result.unmappedColumns && result.unmappedColumns.length)
+          msg += ' ' + result.unmappedColumns.length + ' unrecognised column(s) ignored.';
+        showToast(msg, 'success');
+      } else {
+        const errDetail = (result.errors && result.errors[0]) || result.error || 'Check that your file has the correct column headers.';
+        showToast('Import failed — 0 records inserted. ' + errDetail, 'error');
+      }
+      setTimeout(() => { closeImport(); fetchTerminals(terminalCurrentRegion); }, 1400);
+    } catch (err) {
+      showToast('Network error during import.', 'error');
+      console.error('Import error:', err);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-upload-2-line"></i> Import';
+    }
+  };
+}
+
 
 function toggleBar(id) { document.getElementById(id).classList.toggle("hidden"); }
 function hideBar(id) { document.getElementById(id).classList.add("hidden"); }
@@ -308,7 +533,7 @@ async function fetchTerminals(region) {
   tbody.innerHTML = `<tr><td colspan="20" class="loading-cell"><i class="ri-loader-4-line spin"></i> Loading data…</td></tr>`;
   thead.innerHTML = "";
   try {
-    const res = await fetch(`/api/terminals/${region}`);
+    const res = await fetch(`/api/terminals/${encodeURIComponent(region)}`);
     if (!res.ok) throw new Error("Server error");
     const data = await res.json();
     if (!data || data.length === 0) {
@@ -394,7 +619,7 @@ function renderTerminalTable() {
         try {
           const res = await fetch(`/api/terminals/${region}`, {
             method: "DELETE", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ column: firstCol, ids: [row[firstCol]] })
+            body: JSON.stringify({ ids: [row.id] })
           });
           const result = await res.json();
           if (!res.ok) { showToast("Delete failed: " + (result.error || "Unknown error"), "error"); return; }
@@ -461,9 +686,9 @@ function openEditModal(idx) {
     const region = document.getElementById("regionSelect").value;
     const firstCol = cols[0];
     try {
-      const res = await fetch(`/api/terminals/${region}/${encodeURIComponent(row[firstCol])}`, {
+      const res = await fetch(`/api/terminals/${encodeURIComponent(terminalCurrentRegion)}/${row.id}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ column: firstCol, data: updatedRow })
+        body: JSON.stringify({ data: updatedRow })
       });
       const result = await res.json();
       if (!res.ok) { showToast("Update failed: " + (result.error || "Unknown error"), "error"); return; }
@@ -2930,3 +3155,4 @@ function runCounters() {
 
 /* ================= INITIAL LOAD ================= */
 loadDashboard();
+

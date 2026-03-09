@@ -4,6 +4,7 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const ExcelJS = require('exceljs');
+const multer  = require('multer');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -145,112 +146,356 @@ app.post('/api/auth', async (req, res) => {
 
 /* ================= TERMINALS TABLE MAP ================= */
 
-const allowedTables = {
-  benguet:    "benguet_inventory",
-  ifugao:     "ifugao_inventory",
-  ilocos:     "ilocos_inventory",
-  kalinga:    "kalinga_inventory",
-  pangasinan: "pangasinan_inventory",
-  quezon:     "quezon_inventory"
-};
+/* ================= REGIONS API ================= */
+
+// GET all regions
+app.get('/api/regions', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM regions ORDER BY lot_number`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new region
+app.post('/api/regions', async (req, res) => {
+  const { region_name } = req.body || {};
+  if (!region_name?.trim()) return res.status(400).json({ error: 'region_name is required' });
+  try {
+    const maxLot = await pool.query(`SELECT COALESCE(MAX(lot_number),0)+1 AS next FROM regions`);
+    const next = maxLot.rows[0].next;
+    const result = await pool.query(
+      `INSERT INTO regions (lot_number, region_name) VALUES ($1, $2) RETURNING *`,
+      [next, region_name.trim().toUpperCase()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Region already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* ================= GET TERMINALS ================= */
 
-app.get("/api/terminals/:region", async (req, res) => {
-  const { region } = req.params;
-  const table = allowedTables[region];
-  if (!table) return res.status(400).json({ error: "Invalid region" });
+app.get('/api/terminals/:region', async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
   try {
-    const result = await pool.query(`SELECT * FROM ${table}`);
+    const result = await pool.query(
+      `SELECT * FROM site_inventory WHERE UPPER(region_name) = $1 ORDER BY id`,
+      [region]
+    );
     res.json(result.rows);
   } catch (err) {
-    console.error("DB ERROR:", err.message);
-    res.status(500).json({ error: "Database query failed" });
+    console.error('DB ERROR:', err.message);
+    res.status(500).json({ error: 'Database query failed' });
   }
 });
 
 /* ================= ADD TERMINAL (POST) ================= */
 
-app.post("/api/terminals/:region", async (req, res) => {
-  const { region } = req.params;
-  const table = allowedTables[region];
-  if (!table) return res.status(400).json({ error: "Invalid region" });
-  const data = req.body;
-  const filteredEntries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "");
-  if (filteredEntries.length === 0) return res.status(400).json({ error: "No data provided" });
-  const columns = filteredEntries.map(([k]) => `"${k}"`).join(", ");
-  const placeholders = filteredEntries.map((_, i) => `$${i + 1}`).join(", ");
-  const values = filteredEntries.map(([, v]) => v);
+app.post('/api/terminals/:region', async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  const data   = req.body || {};
+  // Always set region_name
+  data.region_name = region;
+  const filteredEntries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '');
+  if (filteredEntries.length === 0) return res.status(400).json({ error: 'No data provided' });
+  const columns      = filteredEntries.map(([k]) => `"${k}"`).join(', ');
+  const placeholders = filteredEntries.map((_, i) => `$${i + 1}`).join(', ');
+  const values       = filteredEntries.map(([, v]) => v);
   try {
-    const result = await pool.query(`INSERT INTO ${table} (${columns}) VALUES (${placeholders}) RETURNING *`, values);
+    const result = await pool.query(
+      `INSERT INTO site_inventory (${columns}) VALUES (${placeholders}) RETURNING *`,
+      values
+    );
     return res.status(201).json({ success: true, row: result.rows[0] });
   } catch (err) {
-    console.error("INSERT ERROR:", err.message);
-    return res.status(500).json({ error: "Failed to insert record: " + err.message });
+    console.error('INSERT ERROR:', err.message);
+    return res.status(500).json({ error: 'Failed to insert record: ' + err.message });
   }
 });
 
+/* ================= IMPORT TERMINALS (CSV/XLSX upload) ================= */
+
+app.post('/api/terminals/:region/import', multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } }).single('file'), async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  try {
+    const ext = req.file.originalname.split('.').pop().toLowerCase();
+    let raw = [];
+
+    // ── Fetch valid DB columns first (used for header detection too) ─────────
+    const colsRes   = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'site_inventory' AND column_name NOT IN ('id','region_name')`
+    );
+    const validCols = colsRes.rows.map(r => r.column_name);
+
+    // ── resolveHeader: map any file header string → exact DB column name ─────
+    // Handles: column reordering, embedded newlines, extra spaces, case differences
+    const normWS = s => String(s).replace(/\s+/g, ' ').trim().toLowerCase();
+    const resolveHeader = (fileHeader) => {
+      const raw = String(fileHeader);
+      const t   = raw.trim();
+      const n   = normWS(raw);
+      if (!t) return null;
+      // 1. Exact match
+      if (validCols.includes(t))                              return t;
+      // 2. Normalized whitespace (collapses \n, \t, multiple spaces)
+      const nm = validCols.find(c => normWS(c) === n);
+      if (nm)                                                 return nm;
+      // 3. Case-insensitive exact
+      const ci = validCols.find(c => c.toLowerCase() === t.toLowerCase());
+      if (ci)                                                 return ci;
+      // 4. Trim trailing/leading spaces then case-insensitive (e.g. "SPARE MODEM USED ")
+      const ts = validCols.find(c => c.trim().toLowerCase() === t.toLowerCase());
+      if (ts)                                                 return ts;
+      return null;
+    };
+
+    // ── Helper: extract plain string from ExcelJS cell value ─────────────────
+    const cellStr = (val) => {
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'object') {
+        if (Array.isArray(val.richText)) return val.richText.map(r => r.text ?? '').join('').trim();
+        if (val.result !== undefined)    return String(val.result).trim();
+        if (val instanceof Date)         return val.toISOString().slice(0, 10);
+        if (val.text !== undefined)      return String(val.text).trim();
+      }
+      return String(val).trim();
+    };
+
+    // ── Helper: score a row as a header candidate ─────────────────────────────
+    // Normalizes all whitespace before matching so "PHASE 1\n ORIGINAL AIRMAC" matches "PHASE 1 ORIGINAL AIRMAC"
+    const normWS2 = s => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const scoreAsHeader = (cells) => {
+      let score = 0;
+      for (const c of cells) {
+        if (!c.trim()) continue;
+        if (validCols.some(v => normWS2(v) === normWS2(c))) score++;
+      }
+      return score;
+    };
+
+    if (ext === 'csv') {
+      // Full RFC-4180 CSV parser — handles quoted fields with embedded newlines and commas
+      const text   = req.file.buffer.toString('utf8');
+      const fields = [];
+      let cur = '', inQ = false, i = 0;
+      while (i < text.length) {
+        const ch = text[i], nx = text[i + 1];
+        if (ch === '"' && inQ && nx === '"') { cur += '"'; i += 2; continue; }
+        if (ch === '"') { inQ = !inQ; i++; continue; }
+        if (ch === ',' && !inQ) { fields.push(cur); cur = ''; i++; continue; }
+        if ((ch === '\n' || ch === '\r') && !inQ) {
+          // end of record
+          if (ch === '\r' && nx === '\n') i++;
+          fields.push(cur); cur = '';
+          i++;
+          // mark end of record with a sentinel
+          fields.push('\x00ROW\x00');
+          continue;
+        }
+        cur += ch; i++;
+      }
+      if (cur !== '') fields.push(cur);
+
+      // Split fields back into rows using sentinel
+      const allRows = [];
+      let rowBuf = [];
+      for (const f of fields) {
+        if (f === '\x00ROW\x00') { if (rowBuf.length) { allRows.push(rowBuf); rowBuf = []; } }
+        else rowBuf.push(f.trim());
+      }
+      if (rowBuf.length) allRows.push(rowBuf);
+
+      // Find header row by DB-column match score (checks normalized headers)
+      let headerIdx = 0, bestScore = -1;
+      for (let r = 0; r < Math.min(15, allRows.length); r++) {
+        const score = scoreAsHeader(allRows[r]);
+        if (score > bestScore) { bestScore = score; headerIdx = r; }
+      }
+
+      const headers = allRows[headerIdx];
+      raw = allRows.slice(headerIdx + 1)
+        .filter(row => row.some(v => v))
+        .map(vals => {
+          const obj = {};
+          headers.forEach((h, i) => { obj[h] = vals[i] ?? ''; });
+          return obj;
+        });
+
+    } else if (ext === 'xlsx') {
+      const ExcelJS = require('exceljs');
+      const wb      = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.file.buffer);
+
+      const ws = wb.worksheets.find(s => s.rowCount > 0) || wb.worksheets[0];
+      if (!ws) return res.status(400).json({ error: 'No worksheet found in file' });
+
+      // Scan first 15 rows — pick the one with the HIGHEST DB-column match score
+      let headerRowNum = 1, bestScore = -1;
+      for (let r = 1; r <= Math.min(15, ws.rowCount); r++) {
+        const cells = [];
+        ws.getRow(r).eachCell({ includeEmpty: false }, cell => cells.push(cellStr(cell.value)));
+        const score = scoreAsHeader(cells);
+        if (score > bestScore) { bestScore = score; headerRowNum = r; }
+      }
+
+      // Build colIndex map: DB column name → file column index (1-based)
+      // This is what makes order-independent mapping work:
+      // instead of assuming col 1 = first DB col, we match each header by name
+      const headerRow = ws.getRow(headerRowNum);
+      const colIndexMap = {}; // dbColName → excelColNum (1-based)
+      headerRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+        const raw = cellStr(cell.value);
+        if (!raw) return;
+        const dbCol = resolveHeader(raw);
+        if (dbCol) colIndexMap[dbCol] = colNum;
+      });
+
+      // Collect data rows — read each cell by its mapped column index, not position
+      ws.eachRow((row, rowNum) => {
+        if (rowNum <= headerRowNum) return;
+        const obj = {};
+        let hasValue = false;
+        for (const [dbCol, colNum] of Object.entries(colIndexMap)) {
+          const v = cellStr(row.getCell(colNum).value);
+          obj[dbCol] = v;
+          if (v) hasValue = true;
+        }
+        if (hasValue) raw.push(obj);
+      });
+
+    } else {
+      return res.status(400).json({ error: 'Only .csv and .xlsx files are supported. Please convert .xls files to .xlsx first.' });
+    }
+
+    if (!raw.length) return res.status(400).json({ error: 'File has no data rows' });
+
+    // ── For CSV: raw rows use original file header strings as keys
+    //    For XLSX: raw rows already use resolved DB column names as keys
+    //    We normalise both paths here into DB column name → value
+    // ── Header → DB column resolver (used by both CSV and XLSX paths) ─────────
+    // (resolveHeader is defined above in the XLSX block; re-expose for CSV path)
+    const fileHeaders = Object.keys(raw[0]);
+
+    // Check if raw rows already have DB col names as keys (XLSX path sets this directly)
+    // For CSV path, keys are still the raw file header strings — map them now
+    const firstKey = fileHeaders[0];
+    const alreadyMapped = validCols.includes(firstKey) || firstKey === 'region_name';
+
+    let headerMap = {}; // fileHeader → dbCol  (only used for CSV path)
+    if (!alreadyMapped) {
+      for (const fh of fileHeaders) {
+        if (!fh.trim()) continue;
+        const dbCol = resolveHeader(fh);
+        if (dbCol) headerMap[fh] = dbCol;
+      }
+    }
+
+    const mappedCount = alreadyMapped
+      ? Object.keys(raw[0]).filter(k => validCols.includes(k)).length
+      : Object.keys(headerMap).length;
+
+    if (mappedCount === 0) {
+      return res.status(400).json({
+        error: `No columns matched the database schema. File headers found: ${fileHeaders.slice(0, 6).join(', ')}`
+      });
+    }
+
+    // ── Report unmapped file headers back to client ───────────────────────────
+    const unmapped = alreadyMapped ? [] : fileHeaders.filter(fh => fh.trim() && !headerMap[fh]);
+
+    // ── Insert rows ───────────────────────────────────────────────────────────
+    let inserted = 0, skipped = 0;
+    const errors = [];
+
+    for (const row of raw) {
+      const colNames = ['region_name'];
+      const vals     = [region];
+
+      if (alreadyMapped) {
+        // XLSX path: keys are already DB col names
+        for (const [dbCol, v] of Object.entries(row)) {
+          if (dbCol === 'region_name' || dbCol === 'id') continue;
+          if (!validCols.includes(dbCol)) continue;
+          colNames.push(dbCol);
+          vals.push((v === '' || v === null || v === undefined) ? null : String(v).trim());
+        }
+      } else {
+        // CSV path: map via headerMap
+        for (const [fh, dbCol] of Object.entries(headerMap)) {
+          const v = row[fh];
+          colNames.push(dbCol);
+          vals.push((v === '' || v === null || v === undefined) ? null : String(v).trim());
+        }
+      }
+
+      if (vals.slice(1).every(v => v === null || v === '')) { skipped++; continue; }
+
+      const quotedCols   = colNames.map(c => `"${c.replace(/"/g, '""')}"`).join(', ');
+      const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
+
+      try {
+        await pool.query(`INSERT INTO site_inventory (${quotedCols}) VALUES (${placeholders})`, vals);
+        inserted++;
+      } catch (rowErr) {
+        skipped++;
+        if (errors.length < 5) errors.push(rowErr.message);
+      }
+    }
+
+    res.json({ success: true, inserted, skipped, total: raw.length, mappedColumns: mappedCount, unmappedColumns: unmapped, errors });
+
+  } catch (err) {
+    console.error('IMPORT ERROR:', err.message, err.stack);
+    res.status(500).json({ error: 'Import failed: ' + err.message });
+  }
+});
+
+
 /* ================= DELETE TERMINAL ================= */
 
-app.delete("/api/terminals/:region", async (req, res) => {
-  const { region } = req.params;
-  const table = allowedTables[region];
-  console.log("DELETE request — region:", region, "| body:", req.body);
-  if (!table) return res.status(400).json({ error: "Invalid region" });
-  const { column, ids } = req.body || {};
-  if (!column || !ids || !Array.isArray(ids) || ids.length === 0)
-    return res.status(400).json({ error: "column and ids array are required" });
-  if (!/^[a-zA-Z0-9_ \-]+$/.test(column))
-    return res.status(400).json({ error: "Invalid column name: " + column });
+app.delete('/api/terminals/:region', async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  const { ids } = req.body || {};
+  if (!ids || !Array.isArray(ids) || !ids.length)
+    return res.status(400).json({ error: 'ids array is required' });
   try {
-    const colInfo = await pool.query(
-      `SELECT data_type FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
-      [table, column]
-    );
-    const dataType = colInfo.rows[0]?.data_type || 'text';
-    const isNumeric = ['integer','bigint','smallint','numeric','real','double precision'].includes(dataType);
-    const values = isNumeric ? ids.map(Number) : ids.map(String);
-    const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
-    const result = await pool.query(`DELETE FROM ${table} WHERE "${column}" IN (${placeholders})`, values);
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
+    const result = await pool.query(`DELETE FROM site_inventory WHERE id IN (${placeholders})`, ids.map(Number));
     return res.json({ success: true, deleted: result.rowCount });
   } catch (err) {
-    console.error("DELETE SQL ERROR:", err.message);
-    return res.status(500).json({ error: "Failed to delete records: " + err.message });
+    console.error('DELETE SQL ERROR:', err.message);
+    return res.status(500).json({ error: 'Failed to delete records: ' + err.message });
   }
 });
 
 /* ================= EDIT TERMINAL (PUT) ================= */
 
-app.put("/api/terminals/:region/:id", async (req, res) => {
-  const { region, id } = req.params;
-  const table = allowedTables[region];
-  if (!table) return res.status(400).json({ error: "Invalid region" });
-  const { column, data } = req.body || {};
-  if (!column || !data || typeof data !== "object")
-    return res.status(400).json({ error: "column and data are required" });
-  if (!/^[a-zA-Z0-9_ \-]+$/.test(column))
-    return res.status(400).json({ error: "Invalid column name" });
-  const colInfo = await pool.query(
-    `SELECT data_type FROM information_schema.columns WHERE table_name = $1 AND column_name = $2`,
-    [table, column]
-  );
-  const dataType = colInfo.rows[0]?.data_type || "text";
-  const isNumeric = ["integer","bigint","smallint","numeric","real","double precision"].includes(dataType);
-  const idValue = isNumeric ? Number(id) : String(id);
-  const entries = Object.entries(data).filter(([k]) => k !== column && /^[a-zA-Z0-9_ \-]+$/.test(k));
-  if (entries.length === 0) return res.status(400).json({ error: "No valid fields to update" });
-  const setClauses = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(", ");
-  const values = entries.map(([, v]) => v === "" ? null : v);
-  values.push(idValue);
+app.put('/api/terminals/:region/:id', async (req, res) => {
+  const id   = parseInt(req.params.id);
+  const { data } = req.body || {};
+  if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data is required' });
+  const entries = Object.entries(data).filter(([k]) => k !== 'id' && /^[a-zA-Z0-9_ \-"]+$/.test(k));
+  if (!entries.length) return res.status(400).json({ error: 'No valid fields to update' });
+  const setClauses = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(', ');
+  const values     = entries.map(([, v]) => v === '' ? null : v);
+  values.push(id);
   try {
-    const result = await pool.query(`UPDATE ${table} SET ${setClauses} WHERE "${column}" = $${values.length} RETURNING *`, values);
-    if (result.rowCount === 0) return res.status(404).json({ error: "Record not found" });
+    const result = await pool.query(
+      `UPDATE site_inventory SET ${setClauses} WHERE id = $${values.length} RETURNING *`,
+      values
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Record not found' });
     return res.json({ success: true, row: result.rows[0] });
   } catch (err) {
-    console.error("UPDATE ERROR:", err.message);
-    return res.status(500).json({ error: "Failed to update record: " + err.message });
+    console.error('UPDATE ERROR:', err.message);
+    return res.status(500).json({ error: 'Failed to update record: ' + err.message });
   }
 });
+
 
 /* ================= PROBLEMATIC SITES — GET ================= */
 
@@ -533,12 +778,7 @@ app.delete("/api/tickets/:id", async (req, res) => {
 
 /* ================= LETTERS — SETUP ================= */
 
-let multer;
-try {
-  multer = require('multer');
-} catch(e) {
-  console.warn('multer not installed — file uploads will fail. Run: npm install multer');
-}
+// multer required at top of file
 
 const lettersUpload = multer ? multer({
   storage: multer.diskStorage({
@@ -877,4 +1117,3 @@ server.on('error', (err) => {
   else console.error('Server error:', err);
   process.exit(1);
 });
-
