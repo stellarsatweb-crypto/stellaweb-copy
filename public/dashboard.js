@@ -26,20 +26,812 @@ document.querySelectorAll(".menu li").forEach(item => {
     if (text === "Ticket") loadTickets();
     if (text === "Terminals") loadTerminals();
     if (text === "Letters") loadLetters();
+    if (text === "Reports") loadReports();
+    if (text === "Map") loadMap();
   });
 });
+
+/* ================= REPORTS ================= */
+
+let expandedReportId = null;
+let allReportData    = [];
+
+function loadReports() {
+  expandedReportId = null;
+  allReportData    = [];
+
+  mainContent.innerHTML = `
+    <div class="rpt-page">
+      <div class="rpt-topbar">
+        <h2 class="rpt-title"><i class="ri-bar-chart-2-line"></i> Reports</h2>
+        <div class="rpt-topbar-right">
+          <div class="rpt-search-box">
+            <i class="ri-search-line"></i>
+            <input type="text" id="rptSearch" placeholder="Search region, ticket…">
+          </div>
+          <button class="tool-btn apply-btn" id="rptAddBtn">
+            <i class="ri-add-line"></i> Add Report
+          </button>
+        </div>
+      </div>
+
+      <div class="rpt-btn-row">
+        <button class="rpt-main-btn"><i class="ri-file-chart-line"></i> Regional Progress Report</button>
+      </div>
+
+      <div class="rpt-date-bar">
+        <i class="ri-calendar-line"></i>
+        January 25 &ndash; February 23, 2026
+      </div>
+
+      <div class="rpt-card">
+        <table class="rpt-table" id="rptTable">
+          <thead>
+            <tr class="rpt-thead-row">
+              <th>Region</th>
+              <th>Date / Duration</th>
+              <th>Remarks</th>
+              <th>Ticket No.</th>
+              <th>Ticket</th>
+              <th>MIR</th>
+              <th>Utilization</th>
+              <th>Progress</th>
+            </tr>
+          </thead>
+          <tbody id="rptTbody">
+            <tr><td colspan="8" class="rpt-empty-cell">
+              <i class="ri-loader-4-line spin"></i> Loading…
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  fetchReports();
+
+  document.getElementById('rptSearch').addEventListener('input', function () {
+    const q = this.value.toLowerCase();
+    const filtered = allReportData.filter(r =>
+      (r.region||'').toLowerCase().includes(q) ||
+      (r.ticket_no||'').toLowerCase().includes(q) ||
+      (r.ticket||'').toLowerCase().includes(q) ||
+      (r.remarks||'').toLowerCase().includes(q)
+    );
+    renderReportRows(filtered);
+  });
+
+  document.getElementById('rptAddBtn').addEventListener('click', () => openReportModal());
+}
+
+async function fetchReports() {
+  try {
+    const res  = await fetch('/api/reports');
+    const data = await res.json();
+    allReportData = data;
+    renderReportRows(data);
+  } catch (err) {
+    document.getElementById('rptTbody').innerHTML =
+      `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load reports</td></tr>`;
+  }
+}
+
+function renderReportRows(data) {
+  const tbody = document.getElementById('rptTbody');
+  if (!tbody) return;
+
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No reports found</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = '';
+
+  data.forEach(row => {
+    const util     = parseFloat(row.utilization) || 0;
+    const progress = parseFloat(row.progress)    || 0;
+    const isExpanded    = expandedReportId === row.id;
+    const progressColor = progress >= 80 ? '#22c55e' : progress >= 50 ? '#f59e0b' : '#ef4444';
+    const utilColor     = util     >= 80 ? '#22c55e' : util     >= 50 ? '#f59e0b' : '#ef4444';
+    const circumference = 2 * Math.PI * 20;
+    const dash          = (progress / 100) * circumference;
+    const remarksCls    = (row.remarks||'').replace(/\s+/g,'-').toLowerCase();
+
+    // ── Main row ──────────────────────────────────────────────────────────────
+    const tr = document.createElement('tr');
+    tr.className = 'rpt-row';
+    tr.dataset.id = row.id;
+    tr.innerHTML = `
+      <td><span class="rpt-region-badge">${row.region||'—'}</span></td>
+      <td class="rpt-cell-muted">${row.date_start ? row.date_start + ' – ' + (row.date_end||'?') : '—'}</td>
+      <td><span class="rpt-remarks-tag rpt-remarks-${remarksCls}">${row.remarks||'—'}</span></td>
+      <td class="rpt-cell-ticket">${row.ticket_no||'—'}</td>
+      <td class="rpt-cell-muted">${row.ticket||'—'}</td>
+      <td class="rpt-cell-center"><span class="rpt-mir-val">${row.mir||'—'}</span></td>
+      <td class="rpt-cell-util">
+        <div class="rpt-util-bar-wrap">
+          <div class="rpt-util-bar-bg">
+            <div class="rpt-util-bar-fill" style="width:${util}%;background:${utilColor};"></div>
+          </div>
+          <span class="rpt-util-pct" style="color:${utilColor};">${util}%</span>
+        </div>
+      </td>
+      <td class="rpt-cell-progress">
+        <div class="rpt-progress-wrap">
+          <div class="rpt-circle-wrap">
+            <svg width="52" height="52" viewBox="0 0 52 52">
+              <circle cx="26" cy="26" r="20" fill="none" stroke="#e5e7eb" stroke-width="4"/>
+              <circle cx="26" cy="26" r="20" fill="none" stroke="${progressColor}" stroke-width="4"
+                stroke-dasharray="${dash.toFixed(2)} ${circumference.toFixed(2)}"
+                stroke-dashoffset="${(circumference*0.25).toFixed(2)}"
+                stroke-linecap="round"/>
+              <text x="26" y="30" text-anchor="middle" font-size="10" font-weight="700" fill="${progressColor}">${progress}%</text>
+            </svg>
+          </div>
+          <button class="rpt-expand-btn ${isExpanded?'expanded':''}" data-id="${row.id}" title="Toggle reminders">
+            <i class="ri-arrow-down-s-line"></i>
+          </button>
+        </div>
+      </td>
+
+    `;
+    tbody.appendChild(tr);
+
+    // ── Expand row ────────────────────────────────────────────────────────────
+    const expandTr = document.createElement('tr');
+    expandTr.className = 'rpt-expand-row' + (isExpanded ? ' open' : '');
+    expandTr.dataset.id = row.id;
+    expandTr.innerHTML = `
+      <td colspan="8" class="rpt-expand-cell">
+        <div class="rpt-reminder-wrap ${isExpanded?'open':''}" id="rpt-reminder-wrap-${row.id}">
+          <div class="rpt-reminder-panel">
+            <div class="rpt-rem-header">
+              <span><i class="ri-alarm-warning-line"></i> Reminder — ${row.region||''}</span>
+              <div class="rpt-rem-actions">
+                <button class="tool-btn apply-btn rpt-add-rem-btn" data-report-id="${row.id}" data-region="${row.region||''}">
+                  <i class="ri-add-line"></i> Add
+                </button>
+                <button class="tool-btn rpt-filter-rem-btn"><i class="ri-filter-3-line"></i> Filter</button>
+              </div>
+            </div>
+            <div class="rpt-rem-table-wrap">
+              <table class="rpt-rem-table">
+                <thead>
+                  <tr>
+                    <th>Site Name</th><th>Start Date</th><th>End Date</th>
+                    <th>Condition</th><th>Evidence</th><th>Status</th><th>Remarks</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="rpt-rem-tbody-${row.id}">
+                  <tr><td colspan="8" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(expandTr);
+
+    // Load reminders if expanded
+    if (isExpanded) fetchReminders(row.id);
+  });
+
+  // ── Bind events ──────────────────────────────────────────────────────────────
+
+  // Expand/collapse
+  document.querySelectorAll('.rpt-expand-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+      const id = parseInt(this.dataset.id);
+      expandedReportId = (expandedReportId === id) ? null : id;
+      renderReportRows(allReportData.filter(r => {
+        const q = document.getElementById('rptSearch')?.value.toLowerCase() || '';
+        return !q ||
+          (r.region||'').toLowerCase().includes(q) ||
+          (r.ticket_no||'').toLowerCase().includes(q) ||
+          (r.ticket||'').toLowerCase().includes(q) ||
+          (r.remarks||'').toLowerCase().includes(q);
+      }));
+      if (expandedReportId) {
+        setTimeout(() => {
+          document.querySelector('.rpt-expand-row.open')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
+        }, 350);
+      }
+    });
+  });
+
+
+
+  // Add reminder
+  document.querySelectorAll('.rpt-add-rem-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      openReminderModal(parseInt(btn.dataset.reportId), btn.dataset.region);
+    });
+  });
+}
+
+// ── Fetch & render reminders ─────────────────────────────────────────────────
+async function fetchReminders(reportId) {
+  const tbody = document.getElementById(`rpt-rem-tbody-${reportId}`);
+  if (!tbody) return;
+  try {
+    const res  = await fetch(`/api/reports/${reportId}/reminders`);
+    const data = await res.json();
+    renderReminderRows(reportId, data);
+  } catch {
+    tbody.innerHTML = `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load</td></tr>`;
+  }
+}
+
+function renderReminderRows(reportId, data) {
+  const tbody = document.getElementById(`rpt-rem-tbody-${reportId}`);
+  if (!tbody) return;
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No reminders yet</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = data.map(r => {
+    const condCls = (r.condition||'').toLowerCase();
+    const statusCls = (r.status||'').replace(/\s+/g,'-').toLowerCase();
+    const evidenceCell = r.evidence
+      ? `<a href="${r.evidence}" target="_blank" class="rpt-evidence-btn" title="View evidence"><i class="ri-image-2-line"></i></a>`
+      : `<label class="rpt-evidence-btn rpt-evidence-upload" data-id="${r.id}" title="Upload evidence" style="cursor:pointer;">
+           <i class="ri-upload-2-line"></i>
+           <input type="file" accept="image/*" class="hidden rpt-evidence-file" data-id="${r.id}">
+         </label>`;
+    return `
+      <tr class="rpt-rem-row" data-id="${r.id}">
+        <td>${r.site_name||'—'}</td>
+        <td class="rpt-cell-muted">${r.start_date ? r.start_date.slice(0,10) : '—'}</td>
+        <td class="rpt-cell-muted">${r.end_date   ? r.end_date.slice(0,10)   : '—'}</td>
+        <td><span class="rpt-condition rpt-condition-${condCls}">${r.condition||'—'}</span></td>
+        <td class="rpt-cell-center">${evidenceCell}</td>
+        <td>
+          <select class="rpt-status-select rpt-status-${statusCls}" data-id="${r.id}">
+            <option ${r.status==='Pending'     ?'selected':''}>Pending</option>
+            <option ${r.status==='In Progress' ?'selected':''}>In Progress</option>
+            <option ${r.status==='Resolved'    ?'selected':''}>Resolved</option>
+            <option ${r.status==='Closed'      ?'selected':''}>Closed</option>
+          </select>
+        </td>
+        <td class="rpt-cell-muted">${r.remarks||'—'}</td>
+        <td class="rpt-actions-td">
+          <button class="row-action-btn edit-btn rpt-rem-edit-btn" data-id="${r.id}" data-report-id="${reportId}" title="Edit"><i class="ri-edit-line"></i></button>
+          <button class="row-action-btn delete-single-btn rpt-rem-del-btn" data-id="${r.id}" data-report-id="${reportId}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  // Status dropdown live update
+  tbody.querySelectorAll('.rpt-status-select').forEach(sel => {
+    sel.addEventListener('change', async function () {
+      try {
+        await fetch(`/api/reminders/${this.dataset.id}/status`, {
+          method:'PATCH', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ status: this.value })
+        });
+        showToast('Status updated.', 'success');
+      } catch { showToast('Update failed.', 'error'); }
+    });
+  });
+
+  // Evidence upload
+  tbody.querySelectorAll('.rpt-evidence-file').forEach(input => {
+    input.addEventListener('change', async function () {
+      if (!this.files[0]) return;
+      const fd = new FormData();
+      fd.append('evidence', this.files[0]);
+      try {
+        const res = await fetch(`/api/reminders/${this.dataset.id}/evidence`, { method:'POST', body:fd });
+        const result = await res.json();
+        if (result.success) { fetchReminders(reportId); showToast('Evidence uploaded.', 'success'); }
+      } catch { showToast('Upload failed.', 'error'); }
+    });
+  });
+
+  // Edit reminder
+  tbody.querySelectorAll('.rpt-rem-edit-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const res  = await fetch(`/api/reminders`);
+      const all  = await res.json();
+      const item = all.find(r => r.id === parseInt(btn.dataset.id));
+      if (item) openReminderModal(parseInt(btn.dataset.reportId), null, item);
+    });
+  });
+
+  // Delete reminder
+  tbody.querySelectorAll('.rpt-rem-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const remId    = parseInt(btn.dataset.id);
+      const reportId = parseInt(btn.dataset.reportId);
+      showConfirmDeleteModal(1, async () => {
+        try {
+          await fetch(`/api/reminders/${remId}`, { method:'DELETE' });
+          fetchReminders(reportId);
+          showToast('Reminder deleted.', 'success');
+        } catch { showToast('Delete failed.', 'error'); }
+      });
+    });
+  });
+}
+
+// ── Report Add/Edit Modal ─────────────────────────────────────────────────────
+function openReportModal(existing = null) {
+  const isEdit = !!existing;
+  const m = document.createElement('div');
+  m.id = 'rptReportModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="modal-box add-modal-box">
+      <div class="add-modal-header">
+        <div class="add-modal-icon"><i class="ri-bar-chart-2-line"></i></div>
+        <div class="add-modal-title">
+          <h3>${isEdit ? 'Edit Report' : 'Add Report'}</h3>
+          <p>${isEdit ? 'Update the regional progress record.' : 'Create a new regional progress entry.'}</p>
+        </div>
+        <button class="modal-close-btn" id="rptModalClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="add-modal-body">
+        <div class="add-fields-grid">
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-map-pin-line"></i> Region *</label>
+            <input type="text" id="rpt-f-region" class="add-field-input" placeholder="e.g. BENGUET" value="${existing?.region||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-calendar-line"></i> Start Date</label>
+            <input type="date" id="rpt-f-date-start" class="add-field-input" value="${existing?.date_start||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-calendar-check-line"></i> End Date</label>
+            <input type="date" id="rpt-f-date-end" class="add-field-input" value="${existing?.date_end||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-chat-1-line"></i> Remarks</label>
+            <input type="text" id="rpt-f-remarks" class="add-field-input" placeholder="e.g. On track" value="${existing?.remarks||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-ticket-2-line"></i> Ticket No.</label>
+            <input type="text" id="rpt-f-ticketno" class="add-field-input" placeholder="e.g. TK-1021" value="${existing?.ticket_no||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-file-list-line"></i> Ticket Label</label>
+            <input type="text" id="rpt-f-ticket" class="add-field-input" placeholder="e.g. Network Upgrade" value="${existing?.ticket||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-signal-wifi-line"></i> MIR</label>
+            <input type="text" id="rpt-f-mir" class="add-field-input" placeholder="e.g. 80%" value="${existing?.mir||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-percent-line"></i> Utilization (%)</label>
+            <input type="number" id="rpt-f-util" class="add-field-input" placeholder="0–100" min="0" max="100" value="${existing?.utilization||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-donut-chart-line"></i> Progress (%)</label>
+            <input type="number" id="rpt-f-progress" class="add-field-input" placeholder="0–100" min="0" max="100" value="${existing?.progress||''}">
+          </div>
+        </div>
+      </div>
+      <div class="add-modal-footer">
+        <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
+        <div class="modal-actions">
+          <button class="tool-btn" id="rptModalCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="rptModalSave"><i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Report'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('rptModalClose').onclick  = close;
+  document.getElementById('rptModalCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  document.getElementById('rptModalSave').onclick = async () => {
+    const region = document.getElementById('rpt-f-region').value.trim();
+    if (!region) { showToast('Region is required.', 'error'); return; }
+    const payload = {
+      region,
+      date_start: document.getElementById('rpt-f-date-start').value || null,
+      date_end:   document.getElementById('rpt-f-date-end').value   || null,
+      remarks:    document.getElementById('rpt-f-remarks').value.trim()  || null,
+      ticket_no:     document.getElementById('rpt-f-ticketno').value.trim() || null,
+      ticket:        document.getElementById('rpt-f-ticket').value.trim()   || null,
+      mir:           document.getElementById('rpt-f-mir').value.trim()      || null,
+      utilization:   document.getElementById('rpt-f-util').value            || null,
+      progress:      document.getElementById('rpt-f-progress').value        || null,
+    };
+    const btn = document.getElementById('rptModalSave');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+    try {
+      const url    = isEdit ? `/api/reports/${existing.id}` : '/api/reports';
+      const method = isEdit ? 'PUT' : 'POST';
+      const res    = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const result = await res.json();
+      if (!res.ok) { showToast('Save failed: ' + (result.error||'Unknown'), 'error'); return; }
+      close();
+      await fetchReports();
+      showToast(isEdit ? 'Report updated.' : 'Report added.', 'success');
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Report'}`; }
+  };
+}
+
+// ── Reminder Add/Edit Modal ───────────────────────────────────────────────────
+function openReminderModal(reportId, region, existing = null) {
+  const isEdit = !!existing;
+  const m = document.createElement('div');
+  m.id = 'rptReminderModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="modal-box add-modal-box">
+      <div class="add-modal-header">
+        <div class="add-modal-icon" style="background:rgba(255,255,255,0.15)"><i class="ri-alarm-warning-line"></i></div>
+        <div class="add-modal-title">
+          <h3>${isEdit ? 'Edit Reminder' : 'Add Reminder'}</h3>
+          <p>${region ? 'Region: ' + region : ''}</p>
+        </div>
+        <button class="modal-close-btn" id="remModalClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="add-modal-body">
+        <div class="add-fields-grid">
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-map-pin-line"></i> Site Name *</label>
+            <input type="text" id="rem-f-site" class="add-field-input" placeholder="e.g. BENGUET-SITE-01" value="${existing?.site_name||''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-calendar-line"></i> Start Date</label>
+            <input type="date" id="rem-f-start" class="add-field-input" value="${existing?.start_date?existing.start_date.slice(0,10):''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-calendar-check-line"></i> End Date</label>
+            <input type="date" id="rem-f-end" class="add-field-input" value="${existing?.end_date?existing.end_date.slice(0,10):''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-wifi-line"></i> Condition</label>
+            <select id="rem-f-condition" class="add-field-input">
+              <option ${(existing?.condition||'')===''        ?'selected':''} value="">— Select —</option>
+              <option ${(existing?.condition||'')==='Online'  ?'selected':''}>Online</option>
+              <option ${(existing?.condition||'')==='Offline' ?'selected':''}>Offline</option>
+            </select>
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-checkbox-circle-line"></i> Status</label>
+            <select id="rem-f-status" class="add-field-input">
+              <option ${(existing?.status||'')==='Pending'     ?'selected':''}>Pending</option>
+              <option ${(existing?.status||'')==='In Progress' ?'selected':''}>In Progress</option>
+              <option ${(existing?.status||'')==='Resolved'    ?'selected':''}>Resolved</option>
+              <option ${(existing?.status||'')==='Closed'      ?'selected':''}>Closed</option>
+            </select>
+          </div>
+          <div class="add-field-item" style="grid-column:1/-1;">
+            <label class="add-field-label"><i class="ri-sticky-note-line"></i> Remarks</label>
+            <input type="text" id="rem-f-remarks" class="add-field-input" placeholder="Optional notes…" value="${existing?.remarks||''}">
+          </div>
+          <div class="add-field-item" style="grid-column:1/-1;">
+            <label class="add-field-label"><i class="ri-image-2-line"></i> Evidence Image
+              ${existing?.evidence ? '<span style="font-size:11px;color:#22c55e;margin-left:6px;"><i class="ri-checkbox-circle-fill"></i> File already uploaded</span>' : ''}
+            </label>
+            <div class="rem-evidence-drop" id="rem-evidence-drop">
+              <i class="ri-upload-cloud-2-line" style="font-size:28px;color:#2f4b85;"></i>
+              <span class="rem-evidence-drop-text">Drop image here or <u>click to browse</u></span>
+              <span class="rem-evidence-filename" id="rem-evidence-filename"></span>
+              <input type="file" id="rem-f-evidence" accept="image/*" class="hidden">
+            </div>
+            ${existing?.evidence ? `<a href="${existing.evidence}" target="_blank" class="rem-evidence-preview-link"><i class="ri-external-link-line"></i> View current evidence</a>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="add-modal-footer">
+        <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
+        <div class="modal-actions">
+          <button class="tool-btn" id="remModalCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="remModalSave"><i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Reminder'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('remModalClose').onclick  = close;
+  document.getElementById('remModalCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  // Evidence drop zone
+  const evidenceDrop  = document.getElementById('rem-evidence-drop');
+  const evidenceInput = document.getElementById('rem-f-evidence');
+  const evidenceName  = document.getElementById('rem-evidence-filename');
+  evidenceDrop.addEventListener('click', () => evidenceInput.click());
+  evidenceInput.addEventListener('click', e => e.stopPropagation());
+  evidenceInput.addEventListener('change', function () {
+    if (this.files[0]) { evidenceName.textContent = this.files[0].name; evidenceDrop.classList.add('rem-evidence-has-file'); }
+  });
+  evidenceDrop.addEventListener('dragover', e => { e.preventDefault(); evidenceDrop.classList.add('rem-evidence-drag'); });
+  evidenceDrop.addEventListener('dragleave', () => evidenceDrop.classList.remove('rem-evidence-drag'));
+  evidenceDrop.addEventListener('drop', e => {
+    e.preventDefault(); evidenceDrop.classList.remove('rem-evidence-drag');
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith('image/')) {
+      const dt = new DataTransfer(); dt.items.add(f);
+      evidenceInput.files = dt.files;
+      evidenceName.textContent = f.name;
+      evidenceDrop.classList.add('rem-evidence-has-file');
+    }
+  });
+
+  document.getElementById('remModalSave').onclick = async () => {
+    const site = document.getElementById('rem-f-site').value.trim();
+    if (!site) { showToast('Site name is required.', 'error'); return; }
+    const payload = {
+      report_id:  reportId,
+      site_name:  site,
+      start_date: document.getElementById('rem-f-start').value     || null,
+      end_date:   document.getElementById('rem-f-end').value       || null,
+      condition:  document.getElementById('rem-f-condition').value || null,
+      status:     document.getElementById('rem-f-status').value    || null,
+      remarks:    document.getElementById('rem-f-remarks').value.trim() || null,
+    };
+    const btn = document.getElementById('remModalSave');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+    try {
+      const url    = isEdit ? `/api/reminders/${existing.id}` : '/api/reminders';
+      const method = isEdit ? 'PUT' : 'POST';
+      const res    = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const result = await res.json();
+      if (!res.ok) { showToast('Save failed: ' + (result.error||'Unknown'), 'error'); return; }
+      const savedId = result.id;
+      // Upload evidence if a file was selected
+      const evidenceFile = document.getElementById('rem-f-evidence')?.files[0];
+      if (evidenceFile && savedId) {
+        const fd = new FormData();
+        fd.append('evidence', evidenceFile);
+        try {
+          await fetch(`/api/reminders/${savedId}/evidence`, { method: 'POST', body: fd });
+        } catch { /* non-fatal — reminder saved, evidence upload failed */ }
+      }
+      close();
+      fetchReminders(reportId);
+      showToast(isEdit ? 'Reminder updated.' : 'Reminder added.', 'success');
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Reminder'}`; }
+  };
+}
+
+/* ================= MAP ================= */
+
+function loadMap() {
+  mainContent.innerHTML = `
+    <div class="map-page">
+      <div class="map-topbar">
+        <h2 class="map-title"><i class="ri-map-2-line"></i> Site Map</h2>
+        <div class="map-topbar-right">
+          <div class="map-search-box">
+            <i class="ri-search-line"></i>
+            <input type="text" id="mapSearch" placeholder="Search site or region…">
+          </div>
+          <div class="map-legend">
+            <span class="map-legend-item"><span class="map-dot map-dot-online"></span> Online</span>
+            <span class="map-legend-item"><span class="map-dot map-dot-offline"></span> Offline</span>
+          </div>
+        </div>
+      </div>
+      <div class="map-card">
+        <div id="mapContainer" class="map-container"></div>
+      </div>
+    </div>
+  `;
+
+  // Load Leaflet CSS
+  if (!document.getElementById('leafletCss')) {
+    const link = document.createElement('link');
+    link.id   = 'leafletCss';
+    link.rel  = 'stylesheet';
+    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(link);
+  }
+
+  // Load Leaflet JS then init map
+  if (typeof L === 'undefined') {
+    const script = document.createElement('script');
+    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    script.onload = () => initMap();
+    document.head.appendChild(script);
+  } else {
+    initMap();
+  }
+}
+
+function initMap() {
+  const container = document.getElementById('mapContainer');
+  if (!container) return;
+
+  // Center on the Philippines
+  const map = L.map('mapContainer', { zoomControl: false }).setView([16.5, 121.0], 7);
+
+  // Custom zoom control position
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+  // Tile layer — clean light style
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+    maxZoom: 19
+  }).addTo(map);
+
+  // Custom marker icons
+  function makeIcon(color) {
+    return L.divIcon({
+      className: '',
+      html: `<div class="map-marker" style="background:${color};box-shadow:0 2px 8px ${color}88;">
+               <i class="ri-map-pin-2-fill"></i>
+             </div>`,
+      iconSize: [32, 32],
+      iconAnchor: [16, 32],
+      popupAnchor: [0, -34],
+    });
+  }
+
+  const onlineIcon  = makeIcon('#22c55e');
+  const offlineIcon = makeIcon('#ef4444');
+
+  // Load sites from site_inventory and plot them
+  fetch('/api/terminals/all-sites')
+    .then(r => r.json())
+    .then(sites => {
+      let plotted = 0;
+      sites.forEach(site => {
+        const lat = parseFloat(site['LAT'] || site['PHASE 1 LAT'] || '');
+        const lng = parseFloat(site['LONG'] || site['PHASE 1 LONG'] || '');
+        if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
+
+        const isOnline = true; // placeholder — extend with real status later
+        const icon = isOnline ? onlineIcon : offlineIcon;
+        const name = site['SITENAME'] || site['NO.'] || 'Unknown Site';
+        const region = site['region_name'] || site['REGION'] || '—';
+        const province = site['PROVINCE'] || '—';
+
+        L.marker([lat, lng], { icon })
+          .addTo(map)
+          .bindPopup(`
+            <div class="map-popup">
+              <div class="map-popup-name">${name}</div>
+              <div class="map-popup-row"><i class="ri-map-pin-line"></i> ${province}</div>
+              <div class="map-popup-row"><i class="ri-earth-line"></i> ${region}</div>
+              <span class="map-popup-badge ${isOnline ? 'online' : 'offline'}">${isOnline ? 'Online' : 'Offline'}</span>
+            </div>
+          `, { maxWidth: 220 });
+        plotted++;
+      });
+
+      if (plotted === 0) {
+        showToast('No sites with coordinates found.', 'error');
+      } else {
+        showToast(`${plotted} site${plotted !== 1 ? 's' : ''} plotted on map.`, 'success');
+      }
+    })
+    .catch(() => {
+      showToast('Could not load site data.', 'error');
+    });
+
+  // Search filter
+  document.getElementById('mapSearch')?.addEventListener('input', function () {
+    // Visual search hint — full filtering would require re-rendering markers
+    const q = this.value.toLowerCase();
+    document.querySelectorAll('.leaflet-marker-icon').forEach(el => {
+      el.style.opacity = q ? '0.3' : '1';
+    });
+    if (!q) return;
+    map.eachLayer(layer => {
+      if (layer.getPopup) {
+        const html = layer.getPopup?.()?.getContent?.() || '';
+        if (typeof html === 'string' && html.toLowerCase().includes(q)) {
+          layer._icon && (layer._icon.style.opacity = '1');
+        }
+      }
+    });
+  });
+}
 
 /* ================= LOGOUT ================= */
 
 document.getElementById("logout").addEventListener("click", () => {
-  localStorage.removeItem("user");
-  window.location.href = "index.html";
+  showLogoutModal();
 });
+
+function showLogoutModal() {
+  if (document.getElementById("logoutModal")) return;
+
+  const modal = document.createElement("div");
+  modal.id = "logoutModal";
+  modal.className = "logout-modal-overlay";
+  modal.innerHTML = `
+    <div class="logout-modal-box">
+      <div class="logout-modal-icon-wrap">
+        <div class="logout-modal-icon-ring">
+          <i class="ri-logout-circle-r-line"></i>
+        </div>
+      </div>
+
+      <div class="logout-modal-body">
+        <h2 class="logout-modal-title">Leaving so soon?</h2>
+        <p class="logout-modal-sub">You're about to sign out of your session.<br>Any unsaved changes will be lost.</p>
+
+        <div class="logout-user-card">
+          <div class="logout-user-avatar"><i class="ri-user-3-line"></i></div>
+          <div class="logout-user-info">
+            <span class="logout-user-name">${JSON.parse(localStorage.getItem("user") || "{}").name || "Admin User"}</span>
+            <span class="logout-user-role">Dashboard Administrator</span>
+          </div>
+          <span class="logout-user-badge"><i class="ri-checkbox-circle-fill"></i> Active</span>
+        </div>
+
+        <div class="logout-actions">
+          <button class="logout-cancel-btn" id="logoutCancel">
+            <i class="ri-arrow-left-line"></i> Stay Logged In
+          </button>
+          <button class="logout-confirm-btn" id="logoutConfirm">
+            <i class="ri-logout-circle-r-line"></i> Yes, Log Out
+          </button>
+        </div>
+
+        <p class="logout-hint"><i class="ri-shield-keyhole-line"></i> Your session data will be cleared for security.</p>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Animate in
+  requestAnimationFrame(() => modal.classList.add("open"));
+
+  const close = () => {
+    modal.classList.remove("open");
+    modal.classList.add("closing");
+    setTimeout(() => modal.remove(), 300);
+  };
+
+  document.getElementById("logoutCancel").onclick = close;
+  modal.addEventListener("click", e => { if (e.target === modal) close(); });
+
+  document.getElementById("logoutConfirm").onclick = () => {
+    const btn = document.getElementById("logoutConfirm");
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Signing out…';
+    setTimeout(() => {
+      localStorage.removeItem("user");
+      window.location.href = "index.html";
+    }, 900);
+  };
+}
 
 /* ================= SIDEBAR TOGGLE ================= */
 
+// Sync body class and persist collapsed state
+function syncSidebar(sidebar) {
+  const isCollapsed = sidebar.classList.contains("collapsed");
+  document.body.classList.toggle("sidebar-collapsed", isCollapsed);
+  localStorage.setItem("sidebarCollapsed", isCollapsed ? "1" : "0");
+}
+
+// Restore sidebar state on page load (before first paint)
+(function () {
+  const sidebar = document.getElementById("sidebar");
+  if (!sidebar) return;
+  if (localStorage.getItem("sidebarCollapsed") === "1") {
+    sidebar.classList.add("collapsed");
+  } else {
+    sidebar.classList.remove("collapsed");
+  }
+  syncSidebar(sidebar);
+})();
+
 document.getElementById("toggleSidebar").addEventListener("click", () => {
-  document.getElementById("sidebar").classList.toggle("collapsed");
+  const sidebar = document.getElementById("sidebar");
+  sidebar.classList.toggle("collapsed");
+  syncSidebar(sidebar);
 });
 
 /* ================= TERMINALS ================= */
@@ -87,14 +879,12 @@ async function loadTerminals() {
           </div>
         </div>
         <div class="term-region-body">
-          <div class="term-region-select-row">
+          <div class="term-region-controls-row">
             <select id="termRegionSelect" class="term-region-select">
               <option value="">— Select Region —</option>
             </select>
-            <button class="tool-btn apply-btn" id="termGoBtn" disabled><i class="ri-arrow-right-line"></i> Go</button>
+            <button class="tool-btn" id="termNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
           </div>
-          <div class="term-region-or">or</div>
-          <button class="tool-btn" id="termNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
         </div>
       </div>
     </div>
@@ -104,7 +894,6 @@ async function loadTerminals() {
       <div class="table-card">
         <div class="table-card-header">
           <div style="display:flex;align-items:center;gap:10px;">
-            <button class="tool-btn" id="termBackBtn"><i class="ri-arrow-left-line"></i></button>
             <span id="regionTitle" class="table-title-text">Records</span>
           </div>
           <div class="table-tools">
@@ -132,7 +921,7 @@ async function loadTerminals() {
             <label>Sort by</label>
             <select id="sortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;"></select>
           </div>
-          <button class="tool-btn" id="toggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
+          <button class="tool-btn" id="toggleSortDir">ASC</button>
           <button class="tool-btn apply-btn" id="applyFilterSort"><i class="ri-check-line"></i> Apply</button>
           <button class="tool-btn" id="clearFilterSort"><i class="ri-close-line"></i> Clear</button>
         </div>
@@ -187,7 +976,8 @@ async function loadTerminals() {
 
     <!-- Add Choice Modal -->
     <div id="addChoiceModal" class="modal-overlay hidden">
-      <div class="modal-box" style="max-width:420px;padding:36px 32px;">
+      <div class="modal-box" style="max-width:420px;padding:36px 32px;position:relative;">
+        <button class="modal-close-btn" id="choiceModalClose" style="position:absolute;top:14px;right:14px;background:#f1f5f9;border:none;color:#64748b;"><i class="ri-close-line"></i></button>
         <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Terminal</h3>
         <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
         <div style="display:flex;flex-direction:column;gap:12px;">
@@ -200,7 +990,6 @@ async function loadTerminals() {
             <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
           </button>
         </div>
-        <button class="tool-btn" id="choiceModalClose" style="width:100%;margin-top:16px;">Cancel</button>
       </div>
     </div>
 
@@ -216,7 +1005,7 @@ async function loadTerminals() {
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> All fields are optional unless marked</span>
           <div class="modal-actions">
-            <button class="tool-btn" id="cancelAddRowFooter">Cancel</button>
+            <button class="tool-btn small-btn" id="cancelAddRowFooter">Cancel</button>
             <button class="tool-btn apply-btn" id="confirmAddRow"><i class="ri-save-line"></i> Save Terminal</button>
           </div>
         </div>
@@ -273,11 +1062,6 @@ async function loadTerminals() {
 
   // Region select
   document.getElementById('termRegionSelect').addEventListener('change', function () {
-    document.getElementById('termGoBtn').disabled = !this.value;
-  });
-
-  // Go button
-  document.getElementById('termGoBtn').addEventListener('click', () => {
     const sel = document.getElementById('termRegionSelect');
     const region = sel.value;
     if (!region) return;
@@ -288,13 +1072,7 @@ async function loadTerminals() {
     fetchTerminals(region);
   });
 
-  // Back
-  document.getElementById('termBackBtn').addEventListener('click', () => {
-    document.getElementById('termTableView').classList.add('hidden');
-    document.getElementById('termRegionView').classList.remove('hidden');
-    terminalCurrentRegion = null;
-  });
-
+  
   // Add New Region
   document.getElementById('termNewRegionBtn').addEventListener('click', () => {
     document.getElementById('newRegionInput').value = '';
@@ -568,12 +1346,13 @@ function renderTerminalTable() {
     return;
   }
   const columns = Object.keys(terminalFiltered[0]);
+  const visibleColumns = columns.filter(col => col !== 'id');
   const start = (terminalPage - 1) * terminalRowsPerPage;
   const pageData = terminalFiltered.slice(start, start + terminalRowsPerPage);
   thead.innerHTML = `
     <tr>
       ${terminalSelectMode ? '<th class="select-col"><input type="checkbox" id="selectAll"></th>' : ''}
-      ${columns.map(col => `<th>${col}</th>`).join("")}
+      ${visibleColumns.map(col => `<th>${col}</th>`).join("")}
       <th class="actions-col">Actions</th>
     </tr>
   `;
@@ -589,7 +1368,7 @@ function renderTerminalTable() {
     return `
       <tr class="${isChecked ? 'selected-row' : ''}" data-idx="${globalIdx}">
         ${terminalSelectMode ? `<td class="select-col"><input type="checkbox" class="row-check" ${isChecked ? 'checked' : ''}></td>` : ''}
-        ${columns.map(col => `<td>${row[col] ?? ''}</td>`).join("")}
+        ${visibleColumns.map(col => `<td>${row[col] ?? ''}</td>`).join("")}
         <td class="actions-col">
           <button class="row-action-btn edit-btn" data-idx="${globalIdx}" title="Edit"><i class="ri-edit-line"></i></button>
           <button class="row-action-btn delete-single-btn" data-idx="${globalIdx}" title="Delete"><i class="ri-delete-bin-line"></i></button>
@@ -665,7 +1444,7 @@ function openEditModal(idx) {
     if (c.includes("status")) return "ri-checkbox-circle-line";
     return "ri-input-field";
   };
-  document.getElementById("editRowFields").innerHTML = cols.map(col => `
+  document.getElementById("editRowFields").innerHTML = cols.filter(col => col !== 'id').map(col => `
     <div class="add-field-item">
       <label class="add-field-label"><i class="${getIcon(col)}"></i> ${col}</label>
       <input type="text" data-col="${col}" class="add-field-input edit-field-input"
@@ -716,7 +1495,7 @@ function openAddModal() {
     if (c.includes("status")) return "ri-checkbox-circle-line";
     return "ri-input-field";
   };
-  document.getElementById("addRowFields").innerHTML = cols.map(col => `
+  document.getElementById("addRowFields").innerHTML = cols.filter(col => col !== 'id').map(col => `
     <div class="add-field-item">
       <label class="add-field-label"><i class="${getIcon(col)}"></i> ${col}</label>
       <input type="text" data-col="${col}" class="add-field-input" placeholder="Enter ${col.toLowerCase()}…" autocomplete="off">
@@ -877,15 +1656,16 @@ const probRowsPerPage = 10;
 let probSortDir = 1;
 let probSelectedRows = new Set();
 let probSelectMode = false;
-let probCurrentRegion = "all";
+let probCurrentRegion = null;
+let probRegionsList = []; // loaded dynamically from /api/regions
 
 const PROB_COLUMNS = [
   { key: "Sitename",                         icon: "ri-map-pin-line",         type: "text" },
   { key: "Province",                          icon: "ri-earth-line",           type: "text" },
   { key: "Municipality",                      icon: "ri-building-line",        type: "text" },
-  { key: "Region",                            icon: "ri-map-2-line",           type: "select",
-    options: ["Benguet", "Ifugao", "Ilocos", "Kalinga", "Pangasinan", "Quezon"] },
-  { key: "Status",                            icon: "ri-checkbox-circle-line", type: "text" },
+  { key: "Region",                            icon: "ri-map-2-line",           type: "select", options: [] }, // filled dynamically
+  { key: "Status",                            icon: "ri-checkbox-circle-line", type: "select",
+    options: ["Online","Offline","In Progress","For Monitoring","Unknown"] },
   { key: "Cause (Assume)",                    icon: "ri-question-line",        type: "text" },
   { key: "Remarks",                           icon: "ri-chat-3-line",          type: "textarea" },
   { key: "KAD Name",                          icon: "ri-user-line",            type: "text" },
@@ -895,102 +1675,118 @@ const PROB_COLUMNS = [
   { key: "Solution",                          icon: "ri-tools-line",           type: "textarea" },
 ];
 
-function applyProbRegionFilter() {
-  if (probCurrentRegion === "all") {
-    probFiltered = [...probData];
-  } else {
-    probFiltered = probData.filter(row =>
-      String(row["Region"] ?? "").toLowerCase() === probCurrentRegion.toLowerCase() ||
-      String(row["Province"] ?? "").toLowerCase().includes(probCurrentRegion.toLowerCase()) ||
-      String(row["Municipality"] ?? "").toLowerCase().includes(probCurrentRegion.toLowerCase())
-    );
-  }
-}
 
 async function loadProblematicSites() {
   probData = []; probFiltered = []; probPage = 1;
   probSelectedRows = new Set(); probSelectMode = false;
-  probCurrentRegion = "all";
+  probCurrentRegion = null;
+
+  // Load regions dynamically
+  try {
+    const rRes = await fetch("/api/regions");
+    probRegionsList = rRes.ok ? await rRes.json() : [];
+  } catch { probRegionsList = []; }
+
+  // Update Region column options dynamically
+  const regionCol = PROB_COLUMNS.find(c => c.key === "Region");
+  if (regionCol) regionCol.options = probRegionsList.map(r => r.region_name);
+
+  const regionOptions = probRegionsList.map(r =>
+    `<option value="${r.region_name}">${r.region_name}</option>`
+  ).join("");
 
   mainContent.innerHTML = `
     <div class="terminals-header">
       <h2><i class="ri-error-warning-line"></i> Problematic Sites</h2>
-      <div class="terminals-actions">
-        <div class="dropdown-wrapper">
-          <button class="dropdown-btn"><i class="ri-map-pin-2-line"></i> <span id="probRegionLabel">All Regions</span> <i class="ri-arrow-down-s-line"></i></button>
-          <select id="probRegionSelect" class="hidden-select">
-            <option value="all">All Regions</option>
-            <option value="benguet">Benguet</option>
-            <option value="ifugao">Ifugao</option>
-            <option value="ilocos">Ilocos</option>
-            <option value="kalinga">Kalinga</option>
-            <option value="pangasinan">Pangasinan</option>
-            <option value="quezon">Quezon</option>
-          </select>
+    </div>
+
+    <!-- Region selection view -->
+    <div id="probRegionView">
+      <div class="term-region-card">
+        <div class="term-region-header">
+          <i class="ri-map-pin-2-line"></i>
+          <div>
+            <h3>Select a Region</h3>
+            <p>Choose a region to view or manage its problematic site records.</p>
+          </div>
+        </div>
+        <div class="term-region-body">
+          <div class="term-region-controls-row">
+            <select id="probRegionSelect" class="term-region-select">
+              <option value="">— Select Region —</option>
+              ${regionOptions}
+            </select>
+            <button class="tool-btn" id="probNewRegionBtn"><i class="ri-add-line"></i> Add New Region</button>
+          </div>
         </div>
       </div>
     </div>
 
-    <div class="table-card">
-      <div class="table-card-header">
-        <span>Problematic Sites Records</span>
-        <div class="table-tools">
-          <button class="tool-btn" id="probBtnAdd"><i class="ri-add-line"></i> Add</button>
-          <button class="tool-btn" id="probBtnSortFilter"><i class="ri-sliders-h-line"></i> Filter & Sort</button>
-          <button class="tool-btn" id="probBtnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
-          <button class="tool-btn apply-btn" id="probExportExcel"><i class="ri-file-excel-line"></i> Export Excel</button>
+    <!-- Table view (hidden until region selected) -->
+    <div id="probTableView" class="hidden">
+      <div class="table-card">
+        <div class="table-card-header">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="probRegionTitle" class="table-title-text">Records</span>
+          </div>
+          <div class="table-tools">
+            <button class="tool-btn" id="probBtnAdd"><i class="ri-add-line"></i> Add</button>
+            <button class="tool-btn" id="probBtnSortFilter"><i class="ri-sliders-h-line"></i> Filter & Sort</button>
+            <button class="tool-btn" id="probBtnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
+            <button class="tool-btn apply-btn" id="probExportExcel"><i class="ri-file-excel-line"></i> Export Excel</button>
+          </div>
         </div>
-      </div>
 
-      <div id="probSortFilterBar" class="filter-bar hidden">
-        <div class="filter-group">
-          <label>Province</label>
-          <input type="text" id="probFilterProvince" placeholder="e.g. BENGUET">
+        <div id="probSortFilterBar" class="filter-bar hidden">
+          <div class="filter-group">
+            <label>Province</label>
+            <input type="text" id="probFilterProvince" placeholder="e.g. BENGUET">
+          </div>
+          <div class="filter-group">
+            <label>Municipality</label>
+            <input type="text" id="probFilterMuni" placeholder="e.g. ATOK">
+          </div>
+          <div class="filter-group">
+            <label>Status</label>
+            <select id="probFilterStatus" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
+              <option value="">All Statuses</option>
+              <option>Offline</option>
+              <option>Online</option>
+              <option>In Progress</option>
+              <option>For Monitoring</option>
+              <option>Unknown</option>
+            </select>
+          </div>
+          <div class="filter-sort-divider"></div>
+          <div class="filter-group">
+            <label>Sort by</label>
+            <select id="probSortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
+              ${PROB_COLUMNS.map(c => `<option value="${c.key}">${c.key}</option>`).join("")}
+            </select>
+          </div>
+          <button class="tool-btn" id="probToggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
+          <button class="tool-btn apply-btn" id="probApplyFilterSort"><i class="ri-check-line"></i> Apply</button>
+          <button class="tool-btn" id="probClearFilterSort"><i class="ri-close-line"></i> Clear</button>
         </div>
-        <div class="filter-group">
-          <label>Municipality</label>
-          <input type="text" id="probFilterMuni" placeholder="e.g. ATOK">
-        </div>
-        <div class="filter-group">
-          <label>Status</label>
-          <select id="probFilterStatus" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
-            <option value="">All Statuses</option>
-            <option>Offline</option>
-            <option>Online</option>
-            <option>In Progress</option>
-            <option>For Monitoring</option>
-            <option>Unknown</option>
-          </select>
-        </div>
-        <div class="filter-sort-divider"></div>
-        <div class="filter-group">
-          <label>Sort by</label>
-          <select id="probSortColSelect" style="padding:7px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;outline:none;background:white;">
-            ${PROB_COLUMNS.map(c => `<option value="${c.key}">${c.key}</option>`).join("")}
-          </select>
-        </div>
-        <button class="tool-btn" id="probToggleSortDir"><i class="ri-arrow-up-line"></i> ASC</button>
-        <button class="tool-btn apply-btn" id="probApplyFilterSort"><i class="ri-check-line"></i> Apply</button>
-        <button class="tool-btn" id="probClearFilterSort"><i class="ri-close-line"></i> Clear</button>
-      </div>
 
-      <div id="probBulkActions" class="bulk-actions hidden">
-        <span id="probSelectedCount">0 rows selected</span>
-        <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
-      </div>
+        <div id="probBulkActions" class="bulk-actions hidden">
+          <span id="probSelectedCount">0 rows selected</span>
+          <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
+        </div>
 
-      <div class="table-wrapper terminals-table-wrapper">
-        <table class="data-grid terminals-grid">
-          <thead id="probThead"></thead>
-          <tbody id="probTbody">
-            <tr><td colspan="15" class="loading-cell"><i class="ri-loader-4-line spin"></i> Loading data…</td></tr>
-          </tbody>
-        </table>
+        <div class="table-wrapper terminals-table-wrapper">
+          <table class="data-grid terminals-grid">
+            <thead id="probThead"></thead>
+            <tbody id="probTbody">
+              <tr><td colspan="15" class="loading-cell"><i class="ri-loader-4-line spin"></i> Loading data…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="pagination-bar" id="probPagination"></div>
       </div>
-
-      <div class="pagination-bar" id="probPagination"></div>
     </div>
 
+    <!-- Confirm Delete Modal -->
     <div id="probConfirmDeleteModal" class="modal-overlay hidden">
       <div class="modal-box confirm-modal-box">
         <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
@@ -1003,6 +1799,26 @@ async function loadProblematicSites() {
       </div>
     </div>
 
+    <!-- Add Choice Modal -->
+    <div id="probAddChoiceModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:420px;padding:36px 32px;position:relative;">
+        <button class="modal-close-btn" id="probChoiceClose" style="position:absolute;top:14px;right:14px;background:#f1f5f9;border:none;color:#64748b;"><i class="ri-close-line"></i></button>
+        <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Problematic Site</h3>
+        <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <button class="tool-btn apply-btn" id="probChooseManual" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;">
+            <i class="ri-edit-2-line" style="font-size:20px;"></i>
+            <div style="text-align:left;"><div style="font-weight:700;">Manual Entry</div><div style="font-size:12px;opacity:0.85;font-weight:400;">Fill in a form to add one record</div></div>
+          </button>
+          <button class="tool-btn" id="probChooseImport" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;border-color:#2f4b85;color:#2f4b85;">
+            <i class="ri-upload-cloud-2-line" style="font-size:20px;"></i>
+            <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual Add Modal -->
     <div id="probAddModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
@@ -1013,19 +1829,56 @@ async function loadProblematicSites() {
           </div>
           <button class="modal-close-btn" id="probCancelAdd"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-body">
-          <div id="probAddFields" class="add-fields-grid"></div>
-        </div>
+        <div class="add-modal-body"><div id="probAddFields" class="add-fields-grid"></div></div>
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> Sitename is required</span>
           <div class="modal-actions">
-            <button class="tool-btn" id="probCancelAddFooter">Cancel</button>
+            <button class="tool-btn small-btn" id="probCancelAddFooter">Cancel</button>
             <button class="tool-btn apply-btn" id="probConfirmAdd"><i class="ri-save-line"></i> Save</button>
           </div>
         </div>
       </div>
     </div>
 
+    <!-- Import Modal -->
+    <div id="probImportModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:480px;padding:36px 32px;">
+        <h3 style="margin:0 0 6px;font-size:20px;color:#1e293b;"><i class="ri-upload-cloud-2-line" style="color:#2f4b85"></i> Import Records</h3>
+        <p style="color:#64748b;font-size:13px;margin:0 0 22px;">Upload a CSV or XLSX file. Column headers must match the fields (Sitename, Province, Municipality, Region, Status, etc.).</p>
+        <div class="import-drop-zone" id="probImportDropZone">
+          <i class="ri-file-upload-line" style="font-size:36px;color:#2f4b85;"></i>
+          <p style="margin:8px 0 4px;font-weight:600;color:#1e293b;">Drop file here or click to browse</p>
+          <p style="font-size:12px;color:#94a3b8;">CSV or XLSX, up to 50MB</p>
+          <input type="file" id="probImportFileInput" accept=".csv,.xlsx,.xls" class="hidden">
+        </div>
+        <div id="probImportFileName" style="font-size:13px;color:#2f4b85;margin:10px 0 0;min-height:18px;"></div>
+        <div id="probImportProgress" style="display:none;margin-top:14px;">
+          <div style="background:#e2e8f0;border-radius:99px;height:6px;overflow:hidden;">
+            <div id="probImportProgressBar" style="height:100%;background:#2f4b85;width:0%;transition:width 0.3s;border-radius:99px;"></div>
+          </div>
+          <div id="probImportProgressText" style="font-size:12px;color:#64748b;margin-top:6px;"></div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:20px;">
+          <button class="tool-btn" id="probImportCancelBtn">Cancel</button>
+          <button class="tool-btn apply-btn" id="probImportConfirmBtn" disabled><i class="ri-upload-2-line"></i> Import</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New Region Modal -->
+    <div id="probNewRegionModal" class="modal-overlay hidden">
+      <div class="modal-box" style="max-width:400px;padding:32px;">
+        <h3 style="margin:0 0 6px;font-size:18px;color:#1e293b;"><i class="ri-map-pin-add-line" style="color:#2f4b85"></i> Add New Region</h3>
+        <p style="color:#64748b;font-size:13px;margin:0 0 18px;">Enter the name of the new region to add it to the system.</p>
+        <input type="text" id="probNewRegionInput" class="add-field-input" placeholder="e.g. MOUNTAIN PROVINCE" style="width:100%;box-sizing:border-box;">
+        <div class="modal-actions" style="margin-top:16px;">
+          <button class="tool-btn" id="probNewRegionCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="probNewRegionConfirm"><i class="ri-save-line"></i> Create Region</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Modal -->
     <div id="probEditModal" class="modal-overlay hidden">
       <div class="modal-box add-modal-box">
         <div class="add-modal-header">
@@ -1036,13 +1889,11 @@ async function loadProblematicSites() {
           </div>
           <button class="modal-close-btn" id="probCancelEdit"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-body">
-          <div id="probEditFields" class="add-fields-grid"></div>
-        </div>
+        <div class="add-modal-body"><div id="probEditFields" class="add-fields-grid"></div></div>
         <div class="add-modal-footer">
           <span class="add-modal-hint"><i class="ri-information-line"></i> Changes are saved to the database</span>
           <div class="modal-actions">
-            <button class="tool-btn" id="probCancelEditFooter">Cancel</button>
+            <button class="tool-btn small-btn" id="probCancelEditFooter">Cancel</button>
             <button class="tool-btn apply-btn" id="probConfirmEdit"><i class="ri-save-line"></i> Save Changes</button>
           </div>
         </div>
@@ -1050,14 +1901,58 @@ async function loadProblematicSites() {
     </div>
   `;
 
+  // Region select → show table view
   document.getElementById("probRegionSelect").addEventListener("change", function () {
     const val = this.value;
-    document.getElementById("probRegionLabel").innerText = val === "all" ? "All Regions" : val.charAt(0).toUpperCase() + val.slice(1);
+    if (!val) return;
     probCurrentRegion = val;
-    applyProbRegionFilter();
-    probPage = 1; renderProbTable(); renderProbPagination();
+    document.getElementById("probRegionTitle").textContent = val + " — Problematic Sites";
+    document.getElementById("probRegionView").classList.add("hidden");
+    document.getElementById("probTableView").classList.remove("hidden");
+    fetchProbData(val);
   });
 
+
+
+  // Add New Region
+  document.getElementById("probNewRegionBtn").addEventListener("click", () => {
+    document.getElementById("probNewRegionInput").value = "";
+    document.getElementById("probNewRegionModal").classList.remove("hidden");
+  });
+  document.getElementById("probNewRegionCancel").addEventListener("click", () =>
+    document.getElementById("probNewRegionModal").classList.add("hidden"));
+  document.getElementById("probNewRegionModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("probNewRegionModal"))
+      document.getElementById("probNewRegionModal").classList.add("hidden");
+  });
+  document.getElementById("probNewRegionConfirm").addEventListener("click", async () => {
+    const name = document.getElementById("probNewRegionInput").value.trim().toUpperCase();
+    if (!name) { showToast("Region name is required.", "error"); return; }
+    const btn = document.getElementById("probNewRegionConfirm");
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Creating…';
+    try {
+      const res = await fetch("/api/regions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ region_name: name })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast("Failed: " + (result.error || "Unknown"), "error"); return; }
+      showToast(`Region "${result.region_name}" created.`, "success");
+      document.getElementById("probNewRegionModal").classList.add("hidden");
+      const rRes = await fetch("/api/regions");
+      probRegionsList = rRes.ok ? await rRes.json() : probRegionsList;
+      const rCol = PROB_COLUMNS.find(c => c.key === "Region");
+      if (rCol) rCol.options = probRegionsList.map(r => r.region_name);
+      const sel = document.getElementById("probRegionSelect");
+      const newOpt = document.createElement("option");
+      newOpt.value = result.region_name;
+      newOpt.textContent = result.region_name;
+      sel.appendChild(newOpt);
+    } catch { showToast("Network error.", "error"); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Create Region'; }
+  });
+
+  // Sort & Filter bar — wired after table view shown via event delegation
   document.getElementById("probBtnSortFilter").addEventListener("click", () => {
     document.getElementById("probSortFilterBar").classList.toggle("hidden");
     document.getElementById("probBtnSortFilter").classList.toggle("active-tool",
@@ -1067,13 +1962,12 @@ async function loadProblematicSites() {
     probSortDir *= -1;
     this.innerHTML = probSortDir === 1 ? '<i class="ri-arrow-up-line"></i> ASC' : '<i class="ri-arrow-down-line"></i> DESC';
   });
-
   document.getElementById("probApplyFilterSort").addEventListener("click", () => {
     const prov = document.getElementById("probFilterProvince").value.trim().toUpperCase();
     const muni = document.getElementById("probFilterMuni").value.trim().toUpperCase();
     const stat = document.getElementById("probFilterStatus").value;
     const col  = document.getElementById("probSortColSelect").value;
-    applyProbRegionFilter();
+    probFiltered = [...probData];
     if (prov) probFiltered = probFiltered.filter(r => String(r["Province"] ?? "").toUpperCase().includes(prov));
     if (muni) probFiltered = probFiltered.filter(r => String(r["Municipality"] ?? "").toUpperCase().includes(muni));
     if (stat) probFiltered = probFiltered.filter(r => String(r["Status"] ?? "") === stat);
@@ -1082,16 +1976,16 @@ async function loadProblematicSites() {
     document.getElementById("probSortFilterBar").classList.add("hidden");
     document.getElementById("probBtnSortFilter").classList.remove("active-tool");
   });
-
   document.getElementById("probClearFilterSort").addEventListener("click", () => {
     ["probFilterProvince","probFilterMuni"].forEach(id => document.getElementById(id).value = "");
     document.getElementById("probFilterStatus").value = "";
     document.getElementById("probToggleSortDir").innerHTML = '<i class="ri-arrow-up-line"></i> ASC';
     probSortDir = 1;
-    applyProbRegionFilter();
+    probFiltered = [...probData];
     probPage = 1; renderProbTable(); renderProbPagination();
   });
 
+  // Select mode
   document.getElementById("probBtnSelect").addEventListener("click", () => {
     probSelectMode = !probSelectMode;
     probSelectedRows.clear();
@@ -1100,6 +1994,7 @@ async function loadProblematicSites() {
     renderProbTable();
   });
 
+  // Bulk delete
   document.getElementById("probDeleteSelected").addEventListener("click", async () => {
     if (probSelectedRows.size === 0) { showToast("No rows selected.", "error"); return; }
     const toDeleteRows = Array.from(probSelectedRows).map(idx => probFiltered[idx]);
@@ -1127,10 +2022,10 @@ async function loadProblematicSites() {
     });
   });
 
+  // Export Excel
   document.getElementById("probExportExcel").addEventListener("click", async () => {
     const btn = document.getElementById("probExportExcel");
-    btn.disabled = true;
-    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Generating…';
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Generating…';
     try {
       const res = await fetch("/api/problematic-sites/export-excel");
       if (!res.ok) { showToast("Export failed.", "error"); return; }
@@ -1140,22 +2035,35 @@ async function loadProblematicSites() {
       a.download = `problematic_sites_${Date.now()}.xlsx`;
       a.click();
       showToast("Excel file downloaded.", "success");
-    } catch (err) {
-      showToast("Export error: " + err.message, "error");
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="ri-file-excel-line"></i> Export Excel';
-    }
+    } catch (err) { showToast("Export error: " + err.message, "error"); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-file-excel-line"></i> Export Excel'; }
   });
 
-  document.getElementById("probBtnAdd").addEventListener("click", () => openProbAddModal());
-
-  await fetchProbData();
+  // Add button → choice modal
+  document.getElementById("probBtnAdd").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.remove("hidden");
+  });
+  document.getElementById("probChoiceClose").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.add("hidden");
+  });
+  document.getElementById("probAddChoiceModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("probAddChoiceModal"))
+      document.getElementById("probAddChoiceModal").classList.add("hidden");
+  });
+  document.getElementById("probChooseManual").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.add("hidden");
+    openProbAddModal();
+  });
+  document.getElementById("probChooseImport").addEventListener("click", () => {
+    document.getElementById("probAddChoiceModal").classList.add("hidden");
+    openProbImportModal();
+  });
 }
 
-async function fetchProbData() {
+async function fetchProbData(region) {
   try {
-    const res = await fetch("/api/problematic-sites");
+    const url = region ? `/api/problematic-sites?region=${encodeURIComponent(region)}` : "/api/problematic-sites";
+    const res = await fetch(url);
     if (!res.ok) throw new Error("Server error");
     const data = await res.json();
     if (!data.length) {
@@ -1166,7 +2074,7 @@ async function fetchProbData() {
       return;
     }
     probData = data;
-    applyProbRegionFilter();
+    probFiltered = [...probData];
     probPage = 1;
     renderProbTable(); renderProbPagination();
   } catch (err) {
@@ -1183,7 +2091,8 @@ function renderProbTable() {
     tbody.innerHTML = `<tr><td colspan="15" class="empty-cell"><i class="ri-search-line"></i> No results match your search</td></tr>`;
     return;
   }
-  const columns = Object.keys(probFiltered[0]);
+  const allCols = Object.keys(probFiltered[0]);
+  const columns = allCols.filter(c => c !== "id");
   const start = (probPage - 1) * probRowsPerPage;
   const pageData = probFiltered.slice(start, start + probRowsPerPage);
 
@@ -1211,7 +2120,6 @@ function renderProbTable() {
       : statusVal.includes("offline") ? "high"
       : statusVal.includes("progress") ? "progress"
       : statusVal.includes("monitoring") ? "medium" : "pending";
-
     return `
       <tr class="${isChecked ? 'selected-row' : ''}">
         ${probSelectMode ? `<td class="select-col"><input type="checkbox" class="prob-row-check" ${isChecked ? 'checked' : ''}></td>` : ''}
@@ -1296,9 +2204,9 @@ function showProbConfirmDeleteModal(count, onConfirm) {
     `You are about to permanently delete <strong>${count} record${count > 1 ? 's' : ''}</strong>.<br>This action <strong>cannot be undone</strong>.`;
   modal.classList.remove("hidden");
   const confirmBtn = document.getElementById("probConfirmDeleteBtn");
-  const cancelBtn = document.getElementById("probCancelDeleteBtn");
+  const cancelBtn  = document.getElementById("probCancelDeleteBtn");
   const newConfirm = confirmBtn.cloneNode(true); confirmBtn.replaceWith(newConfirm);
-  const newCancel = cancelBtn.cloneNode(true); cancelBtn.replaceWith(newCancel);
+  const newCancel  = cancelBtn.cloneNode(true);  cancelBtn.replaceWith(newCancel);
   const close = () => modal.classList.add("hidden");
   document.getElementById("probCancelDeleteBtn").onclick = close;
   modal.onclick = e => { if (e.target === modal) close(); };
@@ -1306,6 +2214,10 @@ function showProbConfirmDeleteModal(count, onConfirm) {
 }
 
 function buildProbFields(containerId, rowData = {}) {
+  // Refresh Region options in case new regions were added
+  const regionCol = PROB_COLUMNS.find(c => c.key === "Region");
+  if (regionCol && probRegionsList.length) regionCol.options = probRegionsList.map(r => r.region_name);
+
   const container = document.getElementById(containerId);
   container.innerHTML = PROB_COLUMNS.map(col => {
     const raw = rowData[col.key];
@@ -1315,7 +2227,7 @@ function buildProbFields(containerId, rowData = {}) {
       input = `<textarea data-col="${col.key}" class="add-field-input prob-textarea" rows="2">${raw ?? ""}</textarea>`;
     } else if (col.type === "select") {
       input = `<select data-col="${col.key}" class="add-field-input">
-        <option value="">— Select Status —</option>
+        <option value="">— Select —</option>
         ${col.options.map(o => `<option value="${o}" ${val === o ? "selected" : ""}>${o}</option>`).join("")}
       </select>`;
     } else {
@@ -1342,6 +2254,11 @@ function getProbFormData(containerId) {
 
 function openProbAddModal() {
   buildProbFields("probAddFields");
+  // Pre-fill Region with currently selected region
+  if (probCurrentRegion) {
+    const regionEl = document.querySelector('#probAddFields [data-col="Region"]');
+    if (regionEl) regionEl.value = probCurrentRegion;
+  }
   const modal = document.getElementById("probAddModal");
   modal.classList.remove("hidden");
   const close = () => modal.classList.add("hidden");
@@ -1355,23 +2272,111 @@ function openProbAddModal() {
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
     try {
       const res = await fetch("/api/problematic-sites", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newRow)
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newRow)
       });
-      let result;
-      try { result = await res.json(); } catch(e) { result = {}; }
-      if (!res.ok) { showToast("Save failed: " + (result.error || res.statusText || "Unknown error"), "error"); return; }
+      let result; try { result = await res.json(); } catch(e) { result = {}; }
+      if (!res.ok) { showToast("Save failed: " + (result.error || res.statusText), "error"); return; }
       const saved = result.row || newRow;
       probData.unshift(saved);
-      applyProbRegionFilter();
+      probFiltered = [...probData];
       probPage = 1; renderProbTable(); renderProbPagination();
       close(); showToast("Record added successfully.", "success");
-    } catch (err) {
-      console.error("Save error:", err);
-      showToast("Network error: " + err.message, "error");
-    }
+    } catch (err) { showToast("Network error: " + err.message, "error"); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save'; }
+  };
+}
+
+function openProbImportModal() {
+  const modal  = document.getElementById("probImportModal");
+  const zone   = document.getElementById("probImportDropZone");
+  const input  = document.getElementById("probImportFileInput");
+  const fname  = document.getElementById("probImportFileName");
+  const prog   = document.getElementById("probImportProgress");
+  const bar    = document.getElementById("probImportProgressBar");
+  const txt    = document.getElementById("probImportProgressText");
+  const impBtn = document.getElementById("probImportConfirmBtn");
+
+  let parsedRows = [];
+
+  fname.textContent = "";
+  prog.style.display = "none";
+  bar.style.width = "0%";
+  txt.textContent = "";
+  impBtn.disabled = true;
+  input.value = "";
+
+  modal.classList.remove("hidden");
+  const close = () => modal.classList.add("hidden");
+  document.getElementById("probImportCancelBtn").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  zone.onclick = () => input.click();
+  zone.ondragover = e => { e.preventDefault(); zone.style.background = "#eff6ff"; };
+  zone.ondragleave = () => { zone.style.background = ""; };
+  zone.ondrop = e => { e.preventDefault(); zone.style.background = ""; if (e.dataTransfer.files[0]) handleProbImportFile(e.dataTransfer.files[0]); };
+  input.onchange = () => { if (input.files[0]) handleProbImportFile(input.files[0]); };
+
+  async function handleProbImportFile(file) {
+    fname.textContent = `📄 ${file.name}`;
+    parsedRows = [];
+    impBtn.disabled = true;
+    try {
+      if (file.name.endsWith(".csv")) {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+        parsedRows = lines.slice(1).map(line => {
+          const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,)|^(?=,))/g) || [];
+          const row = {};
+          headers.forEach((h, i) => { row[h] = (vals[i] || "").replace(/^"|"$/g, "").trim(); });
+          return row;
+        }).filter(r => Object.values(r).some(v => v));
+      } else {
+        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js");
+        const ab = await file.arrayBuffer();
+        const wb = XLSX.read(ab, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        parsedRows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      }
+      fname.textContent = `📄 ${file.name} — ${parsedRows.length} rows found`;
+      impBtn.disabled = parsedRows.length === 0;
+    } catch (err) {
+      fname.textContent = `⚠️ Could not read file: ${err.message}`;
+    }
+  }
+
+  impBtn.onclick = async () => {
+    if (!parsedRows.length) return;
+    impBtn.disabled = true;
+    prog.style.display = "block";
+    let inserted = 0, skipped = 0;
+    const PROB_KEYS = PROB_COLUMNS.map(c => c.key);
+    for (let i = 0; i < parsedRows.length; i++) {
+      const raw = parsedRows[i];
+      // Map CSV headers to DB columns (case-insensitive)
+      const row = {};
+      PROB_KEYS.forEach(key => {
+        const match = Object.keys(raw).find(k => k.trim().toLowerCase() === key.toLowerCase());
+        if (match !== undefined) row[key] = String(raw[match] ?? "").trim();
+      });
+      // Always stamp the selected region so records stay in the right region
+      row["Region"] = probCurrentRegion;
+      try {
+        const res = await fetch("/api/problematic-sites", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(row)
+        });
+        if (res.ok) { const r = await res.json(); probData.unshift(r.row || row); inserted++; }
+        else skipped++;
+      } catch { skipped++; }
+      const pct = Math.round(((i + 1) / parsedRows.length) * 100);
+      bar.style.width = pct + "%";
+      txt.textContent = `Importing… ${i + 1} of ${parsedRows.length}`;
+    }
+    txt.textContent = `Done — ${inserted} inserted, ${skipped} skipped.`;
+    probFiltered = [...probData];
+    probPage = 1; renderProbTable(); renderProbPagination();
+    showToast(`Imported ${inserted} record(s).`, inserted > 0 ? "success" : "error");
+    setTimeout(() => close(), 1800);
   };
 }
 
@@ -1466,7 +2471,7 @@ async function loadTickets() {
               <i class="ri-arrow-down-s-line"></i>
             </button>
             <div class="tk-tab-menu hidden" id="tkDeptMenu">
-              ${["All Department","NOC Department","Finance Department","Executive"].map(d =>
+              ${["All Department","NOC Department","Finance Department"].map(d =>
                 `<div class="tk-tab-opt${d === "All Department" ? ' active' : ''}" data-dept="${d}">${d}</div>`
               ).join("")}
             </div>
@@ -1506,37 +2511,93 @@ async function loadTickets() {
 
     <!-- Submit Ticket Modal -->
     <div id="tkSubmitModal" class="modal-overlay hidden">
-      <div class="tk-form-box">
-        <h2 class="tk-form-title">Submit a Ticket</h2>
+      <div class="tka-shell">
 
-        <div class="tk-form-section-label">Ticket Information</div>
-        <div class="tk-form-group">
-          <label class="tk-form-label">Subject <span class="tk-required">*</span></label>
-          <input type="text" id="tkSubjectInput" class="tk-form-input">
-        </div>
-        <div class="tk-form-group">
-          <label class="tk-form-label">Description <span class="tk-required">*</span></label>
-          <textarea id="tkDescInput" class="tk-form-textarea" rows="6"></textarea>
-        </div>
-
-        <div class="tk-form-section-label">Additional Information</div>
-        <div class="tk-form-group">
-          <label class="tk-form-label">Airmac / ESN</label>
-          <input type="text" id="tkEsnInput" class="tk-form-input">
-        </div>
-        <div class="tk-form-group">
-          <label class="tk-form-label">Status</label>
-          <select id="tkStatusInput" class="tk-form-input">
-            <option value="Open">Open</option>
-            <option value="Closed">Closed</option>
-            <option value="On hold">On hold</option>
-          </select>
+        <!-- Header -->
+        <div class="tka-header">
+          <div class="tka-header-bg"></div>
+          <div class="tka-header-content">
+            <div class="tka-header-left">
+              <div class="tka-icon-wrap"><i class="ri-ticket-2-line"></i></div>
+              <div>
+                <div class="tka-header-title">New Ticket</div>
+                <div class="tka-header-sub">Fill in the details below to submit a support request</div>
+              </div>
+            </div>
+            <button class="tka-close-btn" id="tkDiscardBtnX"><i class="ri-close-line"></i></button>
+          </div>
         </div>
 
-        <div class="tk-form-actions">
-          <button class="tool-btn apply-btn" id="tkSubmitBtn" style="padding:11px 28px;font-size:14px;">Submit</button>
-          <button class="tool-btn" id="tkDiscardBtn" style="padding:11px 22px;font-size:14px;">Discard</button>
+        <!-- Body -->
+        <div class="tka-body">
+
+          <!-- Subject -->
+          <div class="tka-field-group">
+            <label class="tka-label">
+              <i class="ri-bookmark-line"></i> Subject
+              <span class="tka-required">*</span>
+            </label>
+            <input type="text" id="tkSubjectInput" class="tka-input" placeholder="Brief summary of the issue…">
+          </div>
+
+          <!-- Description -->
+          <div class="tka-field-group">
+            <label class="tka-label">
+              <i class="ri-file-text-line"></i> Description
+              <span class="tka-required">*</span>
+            </label>
+            <textarea id="tkDescInput" class="tka-textarea" rows="5" placeholder="Describe the issue in detail — include steps to reproduce, impact, and any relevant context…"></textarea>
+          </div>
+
+          <!-- Two-col row: Airmac + Status -->
+          <div class="tka-row">
+            <div class="tka-field-group">
+              <label class="tka-label"><i class="ri-router-line"></i> Airmac / ESN</label>
+              <input type="text" id="tkEsnInput" class="tka-input" placeholder="e.g. AA:BB:CC:DD:EE:FF">
+            </div>
+            <div class="tka-field-group">
+              <label class="tka-label"><i class="ri-flag-line"></i> Status</label>
+              <div class="tka-select-wrap">
+                <select id="tkStatusInput" class="tka-select">
+                  <option value="Open">Open</option>
+                  <option value="Closed">Closed</option>
+                  <option value="On hold">On hold</option>
+                </select>
+                <i class="ri-arrow-down-s-line tka-select-arrow"></i>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Department -->
+          <div class="tka-field-group">
+            <label class="tka-label"><i class="ri-building-4-line"></i> Department</label>
+            <div class="tka-dept-pills">
+              <label class="tka-dept-pill">
+                <input type="radio" name="tkDeptRadio" value="NOC Department" checked>
+                <span><i class="ri-signal-tower-line"></i> NOC Department</span>
+              </label>
+              <label class="tka-dept-pill">
+                <input type="radio" name="tkDeptRadio" value="Finance Department">
+                <span><i class="ri-bank-line"></i> Finance Department</span>
+              </label>
+            </div>
+
+          </div>
+
         </div>
+
+        <!-- Footer -->
+        <div class="tka-footer">
+          <span class="tka-hint"><i class="ri-information-line"></i> Fields marked <span class="tka-required">*</span> are required</span>
+          <div class="tka-footer-actions">
+            <button class="tka-discard-btn" id="tkDiscardBtn">Cancel</button>
+            <button class="tka-submit-btn" id="tkSubmitBtn">
+              <i class="ri-send-plane-line"></i> Submit Ticket
+            </button>
+          </div>
+        </div>
+
       </div>
     </div>
 
@@ -1577,84 +2638,66 @@ async function loadTickets() {
 
     <!-- View Ticket Modal -->
     <div id="tkViewModal" class="modal-overlay hidden">
-      <div class="tk-view-modal" style="max-width:700px;max-height:85vh;overflow-y:auto;">
-        <div class="tk-view-header">
-          <div class="tk-view-title">
-            <i class="ri-ticket-2-line tk-view-icon"></i>
-            <span>Ticket Details</span>
-          </div>
-          <button class="modal-close-btn" id="tkViewCloseBtn" style="background:transparent;border:none;color:#64748b;font-size:24px;cursor:pointer;padding:8px;">
-            <i class="ri-close-line"></i>
-          </button>
-        </div>
+      <div class="tkd-shell">
 
-        <div class="tk-view-body">
-          <div class="tk-view-section">
-            <div class="tk-view-section-title">
-              <i class="ri-information-line"></i>
-              <span>Ticket Information</span>
-            </div>
-            <div class="tk-view-grid">
-              <div class="tk-view-field">
-                <div class="tk-view-label">
-                  <i class="ri-hashtag"></i>
-                  Ticket ID
-                </div>
-                <div class="tk-view-value" id="tkViewId" style="font-weight:600;color:#3b82f6;"></div>
-              </div>
-              <div class="tk-view-field">
-                <div class="tk-view-label">
-                  <i class="ri-bookmark-line"></i>
-                  Subject
-                </div>
-                <div class="tk-view-value" id="tkViewSubject" style="font-weight:500;font-size:16px;"></div>
-              </div>
-              <div class="tk-view-field full-width">
-                <div class="tk-view-label">
-                  <i class="ri-file-text-line"></i>
-                  Description
-                </div>
-                <div class="tk-view-value" id="tkViewDesc" style="white-space: pre-wrap;line-height:1.6;background:#f8fafc;padding:16px;border-radius:8px;border-left:4px solid #3b82f6;"></div>
+        <!-- Left accent bar + header -->
+        <div class="tkd-header">
+          <div class="tkd-header-bg"></div>
+          <div class="tkd-header-content">
+            <div class="tkd-header-left">
+              <div class="tkd-icon-wrap"><i class="ri-ticket-2-line"></i></div>
+              <div>
+                <div class="tkd-header-title">Ticket Details</div>
+                <div class="tkd-header-sub">Full record overview</div>
               </div>
             </div>
+            <button class="tkd-close-btn" id="tkViewCloseBtn"><i class="ri-close-line"></i></button>
           </div>
 
-          <div class="tk-view-section">
-            <div class="tk-view-section-title">
-              <i class="ri-settings-3-line"></i>
-              <span>Additional Information</span>
-            </div>
-            <div class="tk-view-grid">
-              <div class="tk-view-field">
-                <div class="tk-view-label">
-                  <i class="ri-router-line"></i>
-                  Airmac / ESN
-                </div>
-                <div class="tk-view-value" id="tkViewEsn"></div>
-              </div>
-              <div class="tk-view-field">
-                <div class="tk-view-label">
-                  <i class="ri-flag-line"></i>
-                  Status
-                </div>
-                <div class="tk-view-value" id="tkViewStatus"></div>
-              </div>
-              <div class="tk-view-field">
-                <div class="tk-view-label">
-                  <i class="ri-calendar-line"></i>
-                  Created Date
-                </div>
-                <div class="tk-view-value" id="tkViewCreated"></div>
-              </div>
-            </div>
+          <!-- Pill strip: ID + Status + Date -->
+          <div class="tkd-meta-strip">
+            <span class="tkd-meta-pill"><i class="ri-hashtag"></i><span id="tkViewId"></span></span>
+            <span class="tkd-meta-pill" id="tkViewStatus"></span>
+            <span class="tkd-meta-pill"><i class="ri-calendar-line"></i><span id="tkViewCreated"></span></span>
           </div>
         </div>
 
-        <div class="tk-view-footer">
-          <button class="tool-btn" id="tkViewCloseBtnFooter" style="padding:12px 32px;font-size:15px;">
+        <!-- Body -->
+        <div class="tkd-body">
+
+          <!-- Subject -->
+          <div class="tkd-subject-row">
+            <div class="tkd-subject-label">Subject</div>
+            <div class="tkd-subject-value" id="tkViewSubject"></div>
+          </div>
+
+          <!-- Two-column info cards -->
+          <div class="tkd-cards-row">
+            <div class="tkd-info-card">
+              <div class="tkd-card-label"><i class="ri-router-line"></i> Airmac / ESN</div>
+              <div class="tkd-card-value" id="tkViewEsn"></div>
+            </div>
+            <div class="tkd-info-card">
+              <div class="tkd-card-label"><i class="ri-building-4-line"></i> Department</div>
+              <div class="tkd-card-value" id="tkViewDept"></div>
+            </div>
+          </div>
+
+          <!-- Description -->
+          <div class="tkd-desc-block">
+            <div class="tkd-desc-label"><i class="ri-file-text-line"></i> Description</div>
+            <div class="tkd-desc-body" id="tkViewDesc"></div>
+          </div>
+
+        </div>
+
+        <!-- Footer -->
+        <div class="tkd-footer">
+          <button class="tkd-close-footer-btn" id="tkViewCloseBtnFooter">
             <i class="ri-close-line"></i> Close
           </button>
         </div>
+
       </div>
     </div>
 
@@ -1733,6 +2776,8 @@ async function loadTickets() {
     const description = document.getElementById("tkDescInput").value.trim();
     const airmac_esn  = document.getElementById("tkEsnInput").value.trim();
     const status      = document.getElementById("tkStatusInput").value;
+    const deptRadio   = document.querySelector("input[name=tkDeptRadio]:checked");
+    const department  = deptRadio ? deptRadio.value : "NOC Department";
     if (!subject)     { showToast("Subject is required.", "error"); return; }
     if (!description) { showToast("Description is required.", "error"); return; }
 
@@ -1742,7 +2787,7 @@ async function loadTickets() {
       const res    = await fetch("/api/tickets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject, description, airmac_esn, status })
+        body: JSON.stringify({ subject, description, airmac_esn, status, department })
       });
       const result = await res.json();
       if (!res.ok) { showToast("Failed: " + (result.error || "Unknown error"), "error"); return; }
@@ -1750,6 +2795,9 @@ async function loadTickets() {
       document.getElementById("tkSubjectInput").value = "";
       document.getElementById("tkDescInput").value    = "";
       document.getElementById("tkEsnInput").value     = "";
+      const firstRadio = document.querySelector("input[name=tkDeptRadio][value='NOC Department']");
+      if (firstRadio) firstRadio.checked = true;
+
       await fetchTickets();
       showToast("Ticket submitted successfully.", "success");
     } catch (err) {
@@ -1760,6 +2808,9 @@ async function loadTickets() {
   });
 
   // Discard
+  document.getElementById("tkDiscardBtnX")?.addEventListener("click", () => {
+    document.getElementById("tkSubmitModal").classList.add("hidden");
+  });
   document.getElementById("tkDiscardBtn").addEventListener("click", () => {
     document.getElementById("tkSubmitModal").classList.add("hidden");
   });
@@ -1913,266 +2964,50 @@ function openTkDeleteModal(id) {
 }
 
 function openTkViewModal(t) {
-  // Add CSS styles if not already added
-  if (!document.getElementById('tkViewModalStyles')) {
-    const style = document.createElement('style');
-    style.id = 'tkViewModalStyles';
-    style.textContent = `
-      .tk-view-modal {
-        background: white;
-        border-radius: 12px;
-        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-        overflow: visible;
-        animation: modalSlideIn 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-        border: 1px solid rgba(0, 0, 0, 0.06);
-        backdrop-filter: blur(10px);
-        max-height: 90vh;
-        max-width: 90vw;
-      }
-      
-      @keyframes modalSlideIn {
-        from {
-          opacity: 0;
-          transform: translateY(-30px) scale(0.96);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
-      }
-      
-      .tk-view-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 28px 32px 24px;
-        background: linear-gradient(135deg, #2f4b85 0%, #1e3a8a 100%);
-        color: white;
-        position: relative;
-        overflow: hidden;
-      }
-      
-      .tk-view-header::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 1px;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
-      }
-      
-      .tk-view-title {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        font-size: 22px;
-        font-weight: 700;
-        letter-spacing: -0.5px;
-      }
-      
-      .tk-view-icon {
-        font-size: 28px;
-        opacity: 0.9;
-      }
-      
-      .tk-view-body {
-        padding: 32px;
-        background: #fafbfc;
-      }
-      
-      .tk-view-section {
-        margin-bottom: 36px;
-        background: white;
-        border-radius: 12px;
-        padding: 24px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-        transition: all 0.2s ease;
-      }
-      
-      .tk-view-section:hover {
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07);
-        transform: translateY(-1px);
-      }
-      
-      .tk-view-section:last-child {
-        margin-bottom: 0;
-      }
-      
-      .tk-view-section-title {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-size: 15px;
-        font-weight: 600;
-        color: #1e293b;
-        margin-bottom: 20px;
-        padding-bottom: 12px;
-        border-bottom: 2px solid #e2e8f0;
-        position: relative;
-      }
-      
-      .tk-view-section-title i {
-        color: #3b82f6;
-        font-size: 18px;
-        background: rgba(59, 130, 246, 0.1);
-        padding: 6px;
-        border-radius: 6px;
-      }
-      
-      .tk-view-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-        gap: 24px;
-      }
-      
-      .tk-view-field {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-      
-      .tk-view-field.full-width {
-        grid-column: 1 / -1;
-      }
-      
-      .tk-view-label {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 12px;
-        font-weight: 600;
-        color: #64748b;
-        text-transform: uppercase;
-        letter-spacing: 0.75px;
-      }
-      
-      .tk-view-label i {
-        font-size: 14px;
-        color: #94a3b8;
-      }
-      
-      .tk-view-value {
-        font-size: 15px;
-        color: #1e293b;
-        line-height: 1.6;
-        padding: 16px 20px;
-        background: #f8fafc;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-        min-height: 52px;
-        display: flex;
-        align-items: center;
-        font-weight: 500;
-        transition: all 0.2s ease;
-      }
-      
-      .tk-view-value:hover {
-        background: #f1f5f9;
-        border-color: #cbd5e1;
-      }
-      
-      .tk-view-footer {
-        padding: 24px 32px;
-        border-top: 1px solid #e2e8f0;
-        background: #f8fafc;
-        display: flex;
-        justify-content: flex-end;
-        gap: 12px;
-      }
-      
-      .modal-overlay.hidden .tk-view-modal {
-        animation: modalSlideOut 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-      }
-      
-      @keyframes modalSlideOut {
-        from {
-          opacity: 1;
-          transform: translateY(0) scale(1);
-        }
-        to {
-          opacity: 0;
-          transform: translateY(-30px) scale(0.96);
-        }
-      }
-      
-      .tk-status-badge-view {
-        display: inline-flex;
-        align-items: center;
-        padding: 6px 12px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-      
-      .tk-status-open-view {
-        background: rgba(34, 197, 94, 0.1);
-        color: #16a34a;
-        border: 1px solid rgba(34, 197, 94, 0.2);
-      }
-      
-      .tk-status-closed-view {
-        background: rgba(239, 68, 68, 0.1);
-        color: #dc2626;
-        border: 1px solid rgba(239, 68, 68, 0.2);
-      }
-      
-      .tk-status-hold-view {
-        background: rgba(251, 146, 60, 0.1);
-        color: #ea580c;
-        border: 1px solid rgba(251, 146, 60, 0.2);
-      }
-    `;
-    document.head.appendChild(style);
-  }
+  // Status config
+  const statusMap = {
+    'Open':    { cls: 'tkd-status-open',    icon: 'ri-radio-button-line' },
+    'Closed':  { cls: 'tkd-status-closed',  icon: 'ri-checkbox-circle-line' },
+    'On hold': { cls: 'tkd-status-hold',    icon: 'ri-pause-circle-line' },
+    'Overdue': { cls: 'tkd-status-overdue', icon: 'ri-error-warning-line' },
+  };
+  const s = statusMap[t.status] || { cls: 'tkd-status-open', icon: 'ri-radio-button-line' };
 
-  // Enhanced data display with proper formatting
-  const ticketId = document.getElementById("tkViewId");
-  const subject = document.getElementById("tkViewSubject");
-  const description = document.getElementById("tkViewDesc");
-  const airmacEsn = document.getElementById("tkViewEsn");
-  const status = document.getElementById("tkViewStatus");
-  const created = document.getElementById("tkViewCreated");
-  
-  // Format data with professional styling
-  ticketId.innerHTML = `<span style="font-size: 18px; font-weight: 700; color: #3b82f6;">#${t.id}</span>`;
-  subject.innerHTML = `<span style="font-size: 16px; font-weight: 600; color: #1e293b;">${t.subject || 'No subject'}</span>`;
-  description.innerHTML = `<div style="line-height: 1.7; color: #374151; padding: 20px; border-radius: 8px; border-left: 4px solid #2f4b85; white-space: pre-wrap;">${t.description || 'No description provided'}</div>`;
-  airmacEsn.innerHTML = `<span style="font-family: 'Courier New', monospace; color: #059669;">${t.airmac_esn || 'Not specified'}</span>`;
-  
-  // Enhanced status display
-  let statusClass = 'tk-status-open-view';
-  let statusText = t.status || 'Open';
-  if (t.status === 'Closed') { statusClass = 'tk-status-closed-view'; }
-  else if (t.status === 'On hold') { statusClass = 'tk-status-hold-view'; statusText = 'On Hold'; }
-  status.innerHTML = `<span class="tk-status-badge-view ${statusClass}">${statusText}</span>`;
-  
-  // Fix date formatting - handle different date formats properly
-  let formattedDate = 'Unknown';
+  // Ticket ID
+  document.getElementById('tkViewId').textContent = '#' + (t.id || '—');
+
+  // Status pill
+  document.getElementById('tkViewStatus').innerHTML =
+    `<i class="${s.icon}"></i><span>${t.status || 'Open'}</span>`;
+  document.getElementById('tkViewStatus').className = `tkd-meta-pill tkd-status-pill ${s.cls}`;
+
+  // Date
+  let dateStr = '—';
   if (t.created_at) {
     try {
-      const date = new Date(t.created_at);
-      if (!isNaN(date.getTime())) {
-        formattedDate = date.toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true
-        });
-      }
-    } catch (e) {
-      console.warn('Date formatting error:', e);
-    }
+      dateStr = new Date(t.created_at).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: true
+      });
+    } catch(e) {}
   }
-  created.innerHTML = `<span style="color: #6b7280; font-size: 14px;">${formattedDate}</span>`;
-  
-  document.getElementById("tkViewModal").classList.remove("hidden");
+  document.getElementById('tkViewCreated').textContent = dateStr;
+
+  // Subject
+  document.getElementById('tkViewSubject').textContent = t.subject || 'No subject provided';
+
+  // Airmac / ESN
+  document.getElementById('tkViewEsn').textContent = t.airmac_esn || '—';
+
+  // Department
+  document.getElementById('tkViewDept').textContent = t.department || '—';
+
+  // Description
+  document.getElementById('tkViewDesc').textContent = t.description || 'No description provided.';
+
+  document.getElementById('tkViewModal').classList.remove('hidden');
 }
+
 
 function renderTkList() {
   const list = document.getElementById("tkList");
@@ -3155,4 +3990,3 @@ function runCounters() {
 
 /* ================= INITIAL LOAD ================= */
 loadDashboard();
-

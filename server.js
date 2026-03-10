@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS ticket_information (
   description TEXT NOT NULL,
   airmac_esn VARCHAR(100),
   status VARCHAR(50) NOT NULL DEFAULT 'Open',
+  department VARCHAR(100) DEFAULT 'NOC Department',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 `;
@@ -501,7 +502,16 @@ app.put('/api/terminals/:region/:id', async (req, res) => {
 
 app.get("/api/problematic-sites", async (req, res) => {
   try {
-    const result = await pool.query(`SELECT * FROM problematic_sites ORDER BY id DESC`);
+    const region = req.query.region;
+    let result;
+    if (region) {
+      result = await pool.query(
+        `SELECT * FROM problematic_sites WHERE UPPER("Region") = UPPER($1) ORDER BY id DESC`,
+        [region]
+      );
+    } else {
+      result = await pool.query(`SELECT * FROM problematic_sites ORDER BY id DESC`);
+    }
     res.json(result.rows);
   } catch (err) {
     console.error("GET problematic-sites error:", err.message);
@@ -718,14 +728,14 @@ app.get("/api/tickets", async (req, res) => {
 /* ================= TICKETS — POST ================= */
 
 app.post("/api/tickets", async (req, res) => {
-  const { subject, description, airmac_esn, status } = req.body || {};
+  const { subject, description, airmac_esn, status, department } = req.body || {};
   if (!subject?.trim())      return res.status(400).json({ error: "Subject is required" });
   if (!description?.trim())  return res.status(400).json({ error: "Description is required" });
   try {
     const result = await pool.query(
-      `INSERT INTO ticket_information (subject, description, airmac_esn, status)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [subject.trim(), description.trim(), airmac_esn?.trim() || null, status || "Open"]
+      `INSERT INTO ticket_information (subject, description, airmac_esn, status, department)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [subject.trim(), description.trim(), airmac_esn?.trim() || null, status || "Open", department || "NOC Department"]
     );
     res.status(201).json({ success: true, row: result.rows[0] });
   } catch (err) {
@@ -739,17 +749,18 @@ app.post("/api/tickets", async (req, res) => {
 app.put("/api/tickets/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-  const { subject, description, airmac_esn, status } = req.body || {};
+  const { subject, description, airmac_esn, status, department } = req.body || {};
   try {
     const result = await pool.query(
       `UPDATE ticket_information
        SET subject     = COALESCE($1, subject),
            description = COALESCE($2, description),
            airmac_esn  = COALESCE($3, airmac_esn),
-           status      = COALESCE($4, status)
-       WHERE id = $5
+           status      = COALESCE($4, status),
+           department  = COALESCE($5, department)
+       WHERE id = $6
        RETURNING *`,
-      [subject || null, description || null, airmac_esn ?? null, status || null, id]
+      [subject || null, description || null, airmac_esn ?? null, status || null, department || null, id]
     );
     if (!result.rowCount) return res.status(404).json({ error: "Ticket not found" });
     res.json({ success: true, row: result.rows[0] });
@@ -1107,6 +1118,227 @@ app.get('/api/letters/files/:id/preview', async (req, res) => {
 });
 
 /* ================= START SERVER ================= */
+
+
+/* Safe migration: add department column if it does not exist */
+pool.query(`ALTER TABLE ticket_information ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT 'NOC Department'`).catch(() => {});
+
+/* ================= MAP API ================= */
+
+// GET all sites with lat/long for map plotting
+app.get('/api/terminals/all-sites', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT region_name, "SITENAME", "NO.", "PROVINCE", "REGION",
+             "LAT", "LONG", "PHASE 1 LAT", "PHASE 1 LONG"
+      FROM site_inventory
+      WHERE ("LAT" IS NOT NULL AND "LAT" != '')
+         OR ("PHASE 1 LAT" IS NOT NULL AND "PHASE 1 LAT" != '')
+      ORDER BY region_name, "SITENAME"
+    `);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ================= REPORTS API ================= */
+
+const reportEvidenceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'evidence');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext  = require('path').extname(file.originalname);
+      const name = `evidence_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+      cb(null, name);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//i.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Only image files are allowed'));
+  }
+});
+
+// ── Regional Progress Reports ────────────────────────────────────────────────
+
+// GET all reports
+app.get('/api/reports', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM regional_progress_reports ORDER BY id`);
+    res.json(result.rows.map(formatReportRow));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Helper: build a pg daterange string from start/end date strings
+// e.g. '2026-01-25', '2026-02-23' → '[2026-01-25,2026-02-23]'
+function buildDateRange(start, end) {
+  if (!start && !end) return null;
+  const s = start || '';
+  const e = end   || '';
+  return `[${s},${e}]`;
+}
+
+// Helper: parse pg daterange object/string → { start, end }
+function parseDateRange(dr) {
+  if (!dr) return { start: null, end: null };
+  // pg driver returns daterange as a string like "[2026-01-25,2026-02-23)"
+  const str = typeof dr === 'string' ? dr : String(dr);
+  const match = str.match(/[\[\(](\d{4}-\d{2}-\d{2})?,(\d{4}-\d{2}-\d{2})?[\]\)]/);
+  if (!match) return { start: null, end: null };
+  return { start: match[1] || null, end: match[2] || null };
+}
+
+// Helper: attach parsed date_duration fields to a row
+function formatReportRow(row) {
+  if (!row) return row;
+  const { start, end } = parseDateRange(row.date_duration);
+  return { ...row, date_start: start, date_end: end };
+}
+
+// POST new report row
+app.post('/api/reports', async (req, res) => {
+  const { region, date_start, date_end, remarks, ticket_no, ticket, mir, utilization, progress } = req.body;
+  if (!region) return res.status(400).json({ error: 'region is required' });
+  const dateRange = buildDateRange(date_start, date_end);
+  try {
+    const result = await pool.query(
+      `INSERT INTO regional_progress_reports
+        (region, date_duration, remarks, ticket_no, ticket, mir, utilization, progress)
+       VALUES ($1,$2::daterange,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [region, dateRange, remarks||null, ticket_no||null, ticket||null,
+       mir||null, utilization||null, progress||null]
+    );
+    res.status(201).json(formatReportRow(result.rows[0]));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update report row
+app.put('/api/reports/:id', async (req, res) => {
+  const { id } = req.params;
+  const { region, date_start, date_end, remarks, ticket_no, ticket, mir, utilization, progress } = req.body;
+  const dateRange = buildDateRange(date_start, date_end);
+  try {
+    const result = await pool.query(
+      `UPDATE regional_progress_reports
+       SET region=$1, date_duration=$2::daterange, remarks=$3, ticket_no=$4, ticket=$5,
+           mir=$6, utilization=$7, progress=$8
+       WHERE id=$9 RETURNING *`,
+      [region, dateRange, remarks||null, ticket_no||null, ticket||null,
+       mir||null, utilization||null, progress||null, id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(formatReportRow(result.rows[0]));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE report row
+app.delete('/api/reports/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM regional_progress_reports WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Reminders (other_data) ───────────────────────────────────────────────────
+
+// GET reminders for a report
+app.get('/api/reports/:reportId/reminders', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM other_data WHERE report_id=$1 ORDER BY id`,
+      [req.params.reportId]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    // Fallback: report_id column may not exist yet — return empty
+    res.json([]);
+  }
+});
+
+// GET all reminders
+app.get('/api/reminders', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM other_data ORDER BY id`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new reminder
+app.post('/api/reminders', async (req, res) => {
+  const { report_id, site_name, start_date, end_date, condition, status, remarks } = req.body;
+  if (!site_name) return res.status(400).json({ error: 'site_name is required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO other_data (report_id, site_name, start_date, end_date, condition, status, remarks)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [report_id||null, site_name, start_date||null, end_date||null,
+       condition||null, status||null, remarks||null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update reminder
+app.put('/api/reminders/:id', async (req, res) => {
+  const { site_name, start_date, end_date, condition, status, remarks } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE other_data
+       SET site_name=$1, start_date=$2, end_date=$3, condition=$4, status=$5, remarks=$6
+       WHERE id=$7 RETURNING *`,
+      [site_name, start_date||null, end_date||null, condition||null, status||null, remarks||null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE reminder
+app.delete('/api/reminders/:id', async (req, res) => {
+  try {
+    // Also delete evidence file if any
+    const row = await pool.query(`SELECT evidence FROM other_data WHERE id=$1`, [req.params.id]);
+    if (row.rows[0]?.evidence) {
+      const fp = require('path').join(__dirname, 'public', row.rows[0].evidence);
+      require('fs').unlink(fp, () => {});
+    }
+    await pool.query(`DELETE FROM other_data WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST upload evidence image
+app.post('/api/reminders/:id/evidence', reportEvidenceUpload.single('evidence'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const relPath = '/uploads/evidence/' + req.file.filename;
+  try {
+    const result = await pool.query(
+      `UPDATE other_data SET evidence=$1 WHERE id=$2 RETURNING *`,
+      [relPath, req.params.id]
+    );
+    res.json({ success: true, evidence: relPath, row: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH reminder status (quick update from dropdown)
+app.patch('/api/reminders/:id/status', async (req, res) => {
+  const { status } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE other_data SET status=$1 WHERE id=$2 RETURNING *`,
+      [status, req.params.id]
+    );
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* Also add report_id column to other_data if missing (safe migration) */
+pool.query(`
+  ALTER TABLE other_data ADD COLUMN IF NOT EXISTS report_id INTEGER REFERENCES regional_progress_reports(id) ON DELETE CASCADE
+`).catch(() => {});
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
