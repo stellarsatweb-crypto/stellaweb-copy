@@ -4321,6 +4321,10 @@ function runCounters() {
 }
 
 /* ================= INITIAL LOAD ================= */
+
+_stgApplyDisplaySettings();
+loadDashboard();
+
 /* ================= SETTINGS ================= */
 
 function loadSettings() {
@@ -4754,6 +4758,3 @@ function loadSettings() {
   const fs = localStorage.getItem('fontSize');
   if (fs) document.documentElement.style.fontSize = fs + 'px';
 }
-
-
-loadDashboard();
