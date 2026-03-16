@@ -36,13 +36,14 @@ pool.connect()
 
 const createTable = `
 CREATE TABLE IF NOT EXISTS users (
-  id SERIAL PRIMARY KEY,
-  id_no VARCHAR(50) UNIQUE NOT NULL,
-  full_name VARCHAR(150) NOT NULL,
-  email VARCHAR(150) UNIQUE NOT NULL,
+  id            SERIAL PRIMARY KEY,
+  id_no         CITEXT UNIQUE NOT NULL,
+  full_name     CITEXT NOT NULL,
+  email         CITEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  role VARCHAR(20) NOT NULL CHECK (role IN ('Executive','Finance','NOC','Admin')),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  role          CITEXT NOT NULL CHECK (LOWER(role) IN ('executive','finance','noc','admin','bidder')),
+  photo         TEXT,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 `;
 
@@ -135,7 +136,7 @@ app.post('/api/auth', async (req, res) => {
       const validPassword = await bcrypt.compare(password, user.password_hash);
       if (!validPassword) return res.status(401).json({ success: false, error: 'Invalid credentials' });
       delete user.password_hash;
-      return res.json({ success: true, user });
+      return res.json({ success: true, user }); // includes photo field
     }
 
     return res.status(400).json({ success: false, error: 'Invalid action' });
@@ -1396,6 +1397,66 @@ app.post('/api/reminders', async (req, res) => {
 
 // ── User Settings ────────────────────────────────────────────────────────────
 
+// Safe migration: add photo column to users table
+(async () => {
+  try {
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo TEXT`);
+    console.log('users.photo column ready ✅');
+  } catch(e) { console.error('photo migration:', e.message); }
+})();
+
+// Multer for profile photos
+const profilePhotoStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = require('path').join(__dirname, 'public', 'uploads', 'photos');
+    require('fs').mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = require('path').extname(file.originalname).toLowerCase();
+    cb(null, `user_${req.params.id}_${Date.now()}${ext}`);
+  }
+});
+const profilePhotoUpload = multer({
+  storage: profilePhotoStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//i.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Only image files are allowed'));
+  }
+});
+
+// POST upload profile photo
+app.post('/api/users/:id/photo', profilePhotoUpload.single('photo'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const relPath = '/uploads/photos/' + req.file.filename;
+  try {
+    // Delete old photo file if exists
+    const old = await pool.query(`SELECT photo FROM users WHERE id=$1`, [req.params.id]);
+    if (old.rows[0]?.photo) {
+      const oldPath = require('path').join(__dirname, 'public', old.rows[0].photo);
+      require('fs').unlink(oldPath, () => {});
+    }
+    const result = await pool.query(
+      `UPDATE users SET photo=$1 WHERE id=$2 RETURNING id, photo`,
+      [relPath, req.params.id]
+    );
+    res.json({ success: true, photo: relPath, user: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET user by id
+app.get('/api/users/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, id_no, full_name, email, role, created_at FROM users WHERE id=$1`,
+      [req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // PUT update profile (full_name, email)
 app.put('/api/users/:id', async (req, res) => {
   const { full_name, email } = req.body;
@@ -1420,8 +1481,7 @@ app.put('/api/users/:id/password', async (req, res) => {
   try {
     const userRes = await pool.query(`SELECT password_hash FROM users WHERE id=$1`, [req.params.id]);
     if (!userRes.rowCount) return res.status(404).json({ error: 'User not found' });
-    const bcrypt = require('bcrypt');
-    const match  = await bcrypt.compare(current_password, userRes.rows[0].password_hash);
+    const match = await bcrypt.compare(current_password, userRes.rows[0].password_hash);
     if (!match) return res.status(401).json({ error: 'Current password is incorrect' });
     const hash = await bcrypt.hash(new_password, 10);
     await pool.query(`UPDATE users SET password_hash=$1 WHERE id=$2`, [hash, req.params.id]);
@@ -1429,17 +1489,342 @@ app.put('/api/users/:id/password', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── Leave Requests ───────────────────────────────────────────────────────────
+
+(async () => {
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leave_requests (
+        id             SERIAL PRIMARY KEY,
+        employee_id    INT REFERENCES users(id) ON DELETE SET NULL,
+        department     CITEXT,
+        position       CITEXT,
+        leave_type     CITEXT NOT NULL DEFAULT 'vacation' CHECK (
+                         LOWER(leave_type) IN ('vacation','sick','emergency','maternity','paternity','others')
+                       ),
+        start_date     DATE NOT NULL,
+        end_date       DATE NOT NULL,
+        number_of_days NUMERIC(5,1),
+        reason         CITEXT,
+        attachment     TEXT,
+        status         CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                         LOWER(status) IN ('pending','approved','rejected','cancelled')
+                       ),
+        remarks        TEXT,
+        submitted_at   TIMESTAMP DEFAULT NOW(),
+        updated_at     TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leave_requests_history (
+        history_id     SERIAL PRIMARY KEY,
+        request_id     INT,
+        employee_name  CITEXT,
+        employee_id_no CITEXT,
+        department     CITEXT,
+        position       CITEXT,
+        leave_type     CITEXT,
+        start_date     DATE,
+        end_date       DATE,
+        number_of_days NUMERIC(5,1),
+        reason         CITEXT,
+        attachment     TEXT,
+        status         CITEXT,
+        remarks        TEXT,
+        submitted_at   TIMESTAMP,
+        updated_at     TIMESTAMP,
+        change_type    VARCHAR(10) CHECK (change_type IN ('INSERT','UPDATE')),
+        saved_at       TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Recreate view
+    await pool.query(`DROP VIEW IF EXISTS leave_requests_full CASCADE`);
+    await pool.query(`
+      CREATE VIEW leave_requests_full AS
+      SELECT
+        lr.id,
+        e.full_name       AS employee_name,
+        e.id_no           AS employee_id_no,
+        lr.department,
+        lr.position,
+        lr.leave_type,
+        lr.start_date,
+        lr.end_date,
+        lr.number_of_days,
+        lr.reason,
+        lr.attachment,
+        lr.status,
+        lr.remarks,
+        lr.submitted_at,
+        lr.updated_at
+      FROM leave_requests lr
+      LEFT JOIN users e ON lr.employee_id = e.id
+      ORDER BY lr.submitted_at DESC
+    `);
+
+    // Auto-calculate days + updated_at trigger
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION fn_calculate_leave_days()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        IF NEW.number_of_days IS NULL THEN
+          NEW.number_of_days := (NEW.end_date - NEW.start_date) + 1;
+        END IF;
+        NEW.updated_at := NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS trg_calculate_leave_days ON leave_requests`);
+    await pool.query(`
+      CREATE TRIGGER trg_calculate_leave_days
+      BEFORE INSERT OR UPDATE ON leave_requests
+      FOR EACH ROW EXECUTE FUNCTION fn_calculate_leave_days()
+    `);
+
+    // History trigger
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION fn_save_leave_history()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        INSERT INTO leave_requests_history (
+          request_id, employee_name, employee_id_no,
+          department, position, leave_type,
+          start_date, end_date, number_of_days,
+          reason, attachment, status,
+          remarks, submitted_at, updated_at, change_type
+        )
+        SELECT
+          v.id, v.employee_name, v.employee_id_no,
+          v.department, v.position, v.leave_type,
+          v.start_date, v.end_date, v.number_of_days,
+          v.reason, v.attachment, v.status,
+          v.remarks, v.submitted_at, v.updated_at, TG_OP
+        FROM leave_requests_full v
+        WHERE v.id = NEW.id;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS trg_leave_requests_history ON leave_requests`);
+    await pool.query(`
+      CREATE TRIGGER trg_leave_requests_history
+      AFTER INSERT OR UPDATE ON leave_requests
+      FOR EACH ROW EXECUTE FUNCTION fn_save_leave_history()
+    `);
+
+    console.log('leave_requests schema ready ✅');
+  } catch(e) { console.error('leave_requests error:', e.message); }
+})();
+
+// Multer for leave attachments
+const leaveAttachStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = require('path').join(__dirname, 'public', 'uploads', 'leaves');
+    require('fs').mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = require('path').extname(file.originalname).toLowerCase();
+    cb(null, `leave_${req.params.id}_${Date.now()}${ext}`);
+  }
+});
+const leaveUpload = multer({ storage: leaveAttachStorage, limits: { fileSize: 10 * 1024 * 1024 } });
+
+// GET all leave requests for a user (via view)
+app.get('/api/users/:id/leaves', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM leave_requests_full WHERE employee_id_no =
+        (SELECT id_no FROM users WHERE id = $1)
+       ORDER BY submitted_at DESC`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET all leave requests (admin view)
+app.get('/api/leaves', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const where = status ? `WHERE LOWER(status) = '${status.toLowerCase()}'` : '';
+    const result = await pool.query(`SELECT * FROM leave_requests_full ${where}`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new leave request
+app.post('/api/users/:id/leaves', leaveUpload.single('attachment'), async (req, res) => {
+  const { department, position, leave_type, start_date, end_date, number_of_days, reason } = req.body;
+  if (!start_date || !end_date) return res.status(400).json({ error: 'Start and end date are required' });
+  if (!leave_type)              return res.status(400).json({ error: 'Leave type is required' });
+  const attachPath = req.file ? '/uploads/leaves/' + req.file.filename : null;
+  try {
+    const result = await pool.query(
+      `INSERT INTO leave_requests
+         (employee_id, department, position, leave_type, start_date, end_date, number_of_days, reason, attachment)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.params.id, department||null, position||null,
+       leave_type.toLowerCase(), start_date, end_date,
+       number_of_days||null, reason||null, attachPath]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update leave status (admin)
+app.put('/api/leaves/:id/status', async (req, res) => {
+  const { status, remarks } = req.body;
+  const allowed = ['pending','approved','rejected','cancelled'];
+  if (!allowed.includes(status?.toLowerCase()))
+    return res.status(400).json({ error: 'Invalid status' });
+  try {
+    const result = await pool.query(
+      `UPDATE leave_requests SET status=$1, remarks=$2 WHERE id=$3 RETURNING *`,
+      [status, remarks||null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE / cancel a leave request
+app.delete('/api/leaves/:id', async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE leave_requests SET status='cancelled' WHERE id=$1`,
+      [req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ── Dashboard Stats ─────────────────────────────────────────────────────────
+
+app.get('/api/dashboard/stats', async (req, res) => {
+  try {
+    const [sites, active, prob, tickets, openTickets, recentTickets, probByStatus, sitesByRegion] = await Promise.all([
+      // Total terminals (sum across all region tables)
+      pool.query(`
+        SELECT COALESCE(SUM(row_count),0) AS total FROM (
+          SELECT COUNT(*) AS row_count FROM terminals
+        ) t
+      `).catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Active sites (is_active = true in terminals)
+      pool.query(`SELECT COUNT(*) AS total FROM terminals WHERE is_active = true`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Problematic sites count
+      pool.query(`SELECT COUNT(*) AS total FROM problematic_sites`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Total tickets
+      pool.query(`SELECT COUNT(*) AS total FROM ticket_information`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Open tickets
+      pool.query(`SELECT COUNT(*) AS total FROM ticket_information WHERE LOWER(status) = 'open'`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Recent 5 tickets
+      pool.query(`
+        SELECT id, subject, status, department, created_at
+        FROM ticket_information
+        ORDER BY created_at DESC LIMIT 5
+      `).catch(() => ({ rows: [] })),
+
+      // Problematic sites by status
+      pool.query(`
+        SELECT "Status" AS status, COUNT(*) AS count
+        FROM problematic_sites
+        GROUP BY "Status"
+        ORDER BY count DESC
+      `).catch(() => ({ rows: [] })),
+
+      // Sites per region (from regions table)
+      pool.query(`
+        SELECT region_name, COUNT(*) AS count
+        FROM regions
+        GROUP BY region_name
+        ORDER BY region_name
+      `).catch(() => ({ rows: [] })),
+    ]);
+
+    res.json({
+      totalSites:       parseInt(sites.rows[0]?.total) || 0,
+      activeSites:      parseInt(active.rows[0]?.total) || 0,
+      problematicSites: parseInt(prob.rows[0]?.total) || 0,
+      totalTickets:     parseInt(tickets.rows[0]?.total) || 0,
+      openTickets:      parseInt(openTickets.rows[0]?.total) || 0,
+      recentTickets:    recentTickets.rows,
+      probByStatus:     probByStatus.rows,
+      sitesByRegion:    sitesByRegion.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Map / Network Sites ─────────────────────────────────────────────────────
 
-// GET all network_sites with coords
+// Ensure is_active column exists on network_sites
+(async () => {
+  try {
+    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS project_name TEXT DEFAULT 'DICT438'`);
+    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS modem TEXT`);
+    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS transceiver TEXT`);
+    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS dish TEXT`);
+    console.log('network_sites columns ready ✅');
+  } catch(e) { console.error('network_sites migration:', e.message); }
+})();
+
+// GET all network_sites with full details + joined devices
 app.get('/api/map/sites', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT id, site_name, municipality, province, lat, long, ip, mac, contacts, email
-      FROM network_sites
-      ORDER BY province, site_name
+      SELECT
+        ns.id, ns.site_name, ns.municipality, ns.province,
+        ns.lat, ns.long, ns.ip, ns.mac, ns.contacts, ns.email,
+        ns.is_active, ns.project_name,
+        ns.modem, ns.transceiver, ns.dish,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'device_name', nd.device_name,
+              'model',       nd.model,
+              'serial',      nd.serial_number,
+              'mac',         nd.mac_address,
+              'license_due', nd.license_due
+            )
+          ) FILTER (WHERE nd.id IS NOT NULL), '[]'
+        ) AS devices
+      FROM network_sites ns
+      LEFT JOIN network_devices nd ON nd.site_id = ns.id
+      GROUP BY ns.id
+      ORDER BY ns.province, ns.site_name
     `);
     res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT activate/deactivate a site
+app.put('/api/map/sites/:siteName/status', async (req, res) => {
+  const { is_active } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_sites SET is_active=$1 WHERE site_name=$2 RETURNING *`,
+      [is_active, req.params.siteName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1451,6 +1836,20 @@ app.put('/api/map/sites/:siteName/coords', async (req, res) => {
     const result = await pool.query(
       `UPDATE network_sites SET lat=$1, long=$2 WHERE site_name=$3 RETURNING *`,
       [parseFloat(lat), parseFloat(long), req.params.siteName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT edit site details
+app.put('/api/map/sites/:siteName/edit', async (req, res) => {
+  const { ip, mac, lat, long: lng, contacts, email } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_sites SET ip=$1, mac=$2, lat=$3, long=$4, contacts=$5, email=$6
+       WHERE site_name=$7 RETURNING *`,
+      [ip||null, mac||null, lat||null, lng||null, contacts||null, email||null, req.params.siteName]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
     res.json(result.rows[0]);

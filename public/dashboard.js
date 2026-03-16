@@ -8,6 +8,19 @@ if (!user) {
 
 /* ================= GLOBAL ================= */
 
+/* ── Dashboard event bus ─────────────────────────────────
+   Call dashboardDataChanged() from any page that mutates data
+   (add/edit/delete terminals, tickets, problematic sites).
+   If the dashboard is currently visible it will silently
+   re-fetch stats; otherwise the next visit picks up fresh data.
+──────────────────────────────────────────────────────────── */
+function dashboardDataChanged() {
+  if (document.getElementById('dashCards')) {
+    fetchDashboardStats(false);
+  }
+}
+
+
 const mainContent = document.getElementById("mainContent");
 
 let currentPage = 1;
@@ -496,69 +509,60 @@ function openReminderModal(regionId, region) {
 
 function loadMap() {
   mainContent.innerHTML = `
-    <div class="map-page">
+    <div class="map-page-wrap">
 
-      <div class="map-topbar">
-        <h2 class="map-title"><i class="ri-map-2-line"></i> Site Map</h2>
-        <div class="map-topbar-right">
-          <div class="map-search-box">
-            <i class="ri-search-line"></i>
-            <input type="text" id="mapSearch" placeholder="Search site or municipality…">
-          </div>
-          <select id="mapProvinceFilter" class="map-filter-select">
-            <option value="">All Provinces</option>
-          </select>
-          <div class="map-legend">
-            <span class="map-legend-item"><span class="map-dot" style="background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,0.2)"></span> Has Coords</span>
-            <span class="map-legend-item"><span class="map-dot" style="background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,0.2)"></span> Selected</span>
-          </div>
+      <!-- TOP ROW: filters -->
+      <div class="map-filters-bar">
+        <div class="map-search-box">
+          <i class="ri-search-line"></i>
+          <input type="text" id="mapSearch" placeholder="Search site, municipality…">
+        </div>
+        <select id="mapProjectFilter"  class="map-filter-select"><option value="">All Projects</option></select>
+        <select id="mapProvinceFilter" class="map-filter-select"><option value="">All Provinces</option></select>
+        <select id="mapStatusFilter"   class="map-filter-select">
+          <option value="">All Statuses</option>
+          <option value="active">Active Only</option>
+          <option value="inactive">Inactive Only</option>
+        </select>
+        <div class="map-stats-chips">
+          <span class="map-stat-chip" id="mapStatTotal"><i class="ri-map-pin-2-line"></i> — Total</span>
+          <span class="map-stat-chip active-chip" id="mapStatActive"><i class="ri-radio-button-fill"></i> — Active</span>
+          <span class="map-stat-chip inactive-chip" id="mapStatInactive"><i class="ri-radio-button-line"></i> — Inactive</span>
         </div>
       </div>
 
-      <div class="map-stats-row">
-        <div class="map-stat-chip"><i class="ri-map-pin-2-line"></i> <span id="mapStatTotal">—</span> Total Sites</div>
-        <div class="map-stat-chip map-stat-online"><i class="ri-checkbox-circle-line"></i> <span id="mapStatMapped">—</span> Mapped</div>
-        <div class="map-stat-chip map-stat-offline"><i class="ri-map-pin-add-line"></i> <span id="mapStatUnmapped">—</span> No Coords</div>
-        <div class="map-coord-hint" id="mapCoordHint">
-          <i class="ri-mouse-line"></i> Click on the map to place or move a marker
+      <!-- BOTTOM ROW: sidebar | map | details -->
+      <div class="map-main-row">
+
+        <!-- LEFT: site list -->
+        <div class="map-sidebar" id="mapSidebar">
+          <div class="map-sidebar-title"><i class="ri-list-check-3"></i> Sites</div>
+          <div class="map-sidebar-list" id="mapSiteList">
+            <div class="map-list-loading"><i class="ri-loader-4-line spin"></i> Loading sites…</div>
+          </div>
         </div>
-      </div>
 
-      <div class="map-layout">
-
-        <!-- Map -->
-        <div class="map-card" style="flex:1;min-width:0;">
+        <!-- CENTER: map card with overlay panel -->
+        <div class="map-card-wrap">
           <div id="mapContainer" class="map-container"></div>
-        </div>
 
-        <!-- Side panel: site selector + coord form -->
-        <div class="map-side-panel" id="mapSidePanel">
-          <div class="map-side-title"><i class="ri-list-check-3"></i> Sites</div>
-          <div class="map-site-list" id="mapSiteList">
-            <div class="tkd-replies-empty"><i class="ri-loader-4-line spin"></i> Loading…</div>
-          </div>
-
-          <!-- Coordinate editor — shown when a site is selected -->
-          <div class="map-coord-editor hidden" id="mapCoordEditor">
-            <div class="map-coord-editor-title">
-              <i class="ri-edit-box-line"></i>
-              <span id="mapEditorSiteName">—</span>
-            </div>
-            <div class="map-coord-fields">
-              <div class="map-coord-field">
-                <label>Latitude</label>
-                <input type="number" id="mapLatInput" step="0.0000001" placeholder="e.g. 16.5714">
+          <!-- Overlay details panel -->
+          <div class="map-details-panel hidden" id="mapDetailsPanel">
+            <div class="map-details-header" id="mapDetailsHeader">
+              <div class="map-details-title-wrap">
+                <div class="map-details-name" id="mapDetailsName">—</div>
+                <div class="map-details-sub"  id="mapDetailsSub">—</div>
               </div>
-              <div class="map-coord-field">
-                <label>Longitude</label>
-                <input type="number" id="mapLngInput" step="0.0000001" placeholder="e.g. 120.6818">
+              <div class="map-details-header-actions">
+                <button class="map-details-edit-btn" id="mapDetailsEditBtn">
+                  <i class="ri-edit-line"></i> Edit
+                </button>
+                <button class="map-details-close-btn" id="mapDetailsPanelClose">
+                  <i class="ri-close-line"></i>
+                </button>
               </div>
             </div>
-            <p class="map-coord-tip"><i class="ri-information-line"></i> You can also click the map to set coordinates.</p>
-            <div class="map-coord-actions">
-              <button class="map-coord-cancel-btn" id="mapCancelBtn"><i class="ri-close-line"></i> Cancel</button>
-              <button class="map-coord-save-btn"   id="mapSaveBtn"><i class="ri-save-line"></i> Save Coordinates</button>
-            </div>
+            <div class="map-details-body" id="mapDetailsBody"></div>
           </div>
         </div>
 
@@ -566,17 +570,18 @@ function loadMap() {
     </div>
   `;
 
+  // Load Leaflet
   if (!document.getElementById('leafletCss')) {
-    const link = document.createElement('link');
-    link.id = 'leafletCss'; link.rel = 'stylesheet';
-    link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    document.head.appendChild(link);
+    const l = document.createElement('link');
+    l.id = 'leafletCss'; l.rel = 'stylesheet';
+    l.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+    document.head.appendChild(l);
   }
   if (typeof L === 'undefined') {
-    const script = document.createElement('script');
-    script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    script.onload = () => initMap();
-    document.head.appendChild(script);
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    s.onload = () => initMap();
+    document.head.appendChild(s);
   } else {
     initMap();
   }
@@ -589,61 +594,35 @@ function initMap() {
   const map = L.map('mapContainer', { zoomControl: false }).setView([16.5, 121.0], 7);
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
+    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
     maxZoom: 19
   }).addTo(map);
 
-  function makeIcon(color, size = 30) {
+  // ── Icons ─────────────────────────────────────────────────────────────────
+  function makeIcon(color, size = 32) {
     return L.divIcon({
       className: '',
-      html: `<div class="map-marker" style="background:${color};box-shadow:0 3px 10px ${color}99;">
+      html: `<div class="map-pin" style="--pin-color:${color};">
                <i class="ri-map-pin-2-fill"></i>
              </div>`,
       iconSize: [size, size], iconAnchor: [size/2, size], popupAnchor: [0, -(size+4)]
     });
   }
+  const iconActive   = makeIcon('#c0392b');      // red  — active
+  const iconInactive = makeIcon('#c0392b', 28);  // same red, slightly smaller
+  const iconSelected = makeIcon('#f59e0b', 36);  // amber — selected
 
-  const defaultIcon  = makeIcon('#22c55e');
-  const selectedIcon = makeIcon('#f59e0b', 34);
+  // ── State ─────────────────────────────────────────────────────────────────
+  let allSites     = [];
+  let allMarkers   = {};     // site_name → L.marker
+  let selectedSite = null;
 
-  let allSites      = [];
-  let allMarkers    = {};   // site_name → L.marker
-  let selectedSite  = null;
-  let clickMarker   = null; // temporary marker for new click position
-
-  // ── Load all sites from network_sites ────────────────────────────────────
-  async function loadSites() {
-    try {
-      const res   = await fetch('/api/map/sites');
-      const sites = await res.json();
-      allSites = sites;
-
-      // Populate province filter
-      const provinces = [...new Set(sites.map(s => s.province).filter(Boolean))].sort();
-      const pSel = document.getElementById('mapProvinceFilter');
-      provinces.forEach(p => {
-        const o = document.createElement('option');
-        o.value = o.textContent = p;
-        pSel.appendChild(o);
-      });
-
-      renderSiteList(sites);
-      plotMarkers(sites);
-      updateStats(sites);
-    } catch(e) {
-      showToast('Could not load sites from database.', 'error');
-    }
+  function isActive(site) {
+    return site.is_active === true || site.is_active === 't' || site.is_active === 'true' || site.is_active === 1;
   }
 
-  function updateStats(sites) {
-    const mapped   = sites.filter(s => s.lat && s.long).length;
-    document.getElementById('mapStatTotal').textContent    = sites.length;
-    document.getElementById('mapStatMapped').textContent   = mapped;
-    document.getElementById('mapStatUnmapped').textContent = sites.length - mapped;
-  }
-
+  // ── Plot markers ──────────────────────────────────────────────────────────
   function plotMarkers(sites) {
-    // Clear old markers
     Object.values(allMarkers).forEach(m => map.removeLayer(m));
     allMarkers = {};
 
@@ -652,223 +631,376 @@ function initMap() {
       const lng = parseFloat(site.long);
       if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
 
-      const marker = L.marker([lat, lng], { icon: defaultIcon })
-        .addTo(map)
-        .bindPopup(buildPopup(site), { maxWidth: 240 });
+      const active = isActive(site);
+      const marker = L.marker([lat, lng], { icon: active ? iconActive : iconInactive }).addTo(map);
 
       marker.on('click', () => selectSite(site, marker));
       allMarkers[site.site_name] = marker;
     });
   }
 
-  function buildPopup(site) {
-    return `
-      <div class="map-popup">
-        <div class="map-popup-name">${site.site_name || '—'}</div>
-        <div class="map-popup-divider"></div>
-        <div class="map-popup-row"><i class="ri-map-pin-line"></i><span>${site.municipality || '—'}, ${site.province || '—'}</span></div>
-        <div class="map-popup-row"><i class="ri-router-line"></i><span>IP: ${site.ip || '—'}</span></div>
-        <div class="map-popup-row"><i class="ri-focus-3-line"></i><span>${parseFloat(site.lat||0).toFixed(6)}, ${parseFloat(site.long||0).toFixed(6)}</span></div>
-        <button class="map-popup-edit-btn" onclick="window._mapSelectSite('${site.site_name}')">
-          <i class="ri-crosshair-line"></i> Set Coordinates
-        </button>
-      </div>`;
-  }
-
-  // Global hook for popup button
-  window._mapSelectSite = (siteName) => {
-    const site   = allSites.find(s => s.site_name === siteName);
-    const marker = allMarkers[siteName];
-    if (site) selectSite(site, marker || null);
-  };
-
+  // ── Sidebar list ──────────────────────────────────────────────────────────
   function renderSiteList(sites) {
-    const listEl = document.getElementById('mapSiteList');
-    if (!listEl) return;
-    if (!sites.length) {
-      listEl.innerHTML = '<div class="map-site-empty">No sites found.</div>';
-      return;
-    }
-    listEl.innerHTML = sites.map(s => {
-      const hasCords = s.lat && s.long;
+    const el = document.getElementById('mapSiteList');
+    if (!el) return;
+    if (!sites.length) { el.innerHTML = '<div class="map-list-empty">No sites match filters.</div>'; return; }
+
+    el.innerHTML = sites.map(s => {
+      const active = isActive(s);
+      const hasPt  = s.lat && s.long;
       return `
-        <div class="map-site-item ${hasCords ? 'has-coords' : 'no-coords'}" data-name="${s.site_name}">
-          <div class="map-site-item-left">
-            <span class="map-site-dot" style="background:${hasCords ? '#22c55e' : '#e2e8f0'}"></span>
-            <div>
-              <div class="map-site-name">${s.site_name}</div>
-              <div class="map-site-meta">${s.municipality || ''} · ${s.province || ''}</div>
-            </div>
+        <div class="map-list-item ${selectedSite?.site_name === s.site_name ? 'selected' : ''}"
+             data-name="${escHtml(s.site_name)}">
+          <div class="map-list-dot" style="background:${active ? '#c0392b' : '#94a3b8'};
+            ${active ? 'box-shadow:0 0 0 3px rgba(192,57,43,0.2)' : ''}"></div>
+          <div class="map-list-text">
+            <div class="map-list-name">${escHtml(s.site_name.replace(/^VSTG2-/, ''))}</div>
+            <div class="map-list-meta">${escHtml(s.project_name || 'DICT438')} | ${escHtml(s.municipality || '—')}</div>
           </div>
-          <i class="ri-arrow-right-s-line map-site-arrow"></i>
+          ${!hasPt ? '<span class="map-list-nocoord" title="No coordinates"><i class="ri-map-pin-off-line"></i></span>' : ''}
         </div>`;
     }).join('');
 
-    listEl.querySelectorAll('.map-site-item').forEach(item => {
+    el.querySelectorAll('.map-list-item').forEach(item => {
       item.addEventListener('click', () => {
         const site   = allSites.find(s => s.site_name === item.dataset.name);
-        const marker = allMarkers[item.dataset.name] || null;
+        const marker = allMarkers[item.dataset.name];
         if (site) selectSite(site, marker);
       });
     });
   }
 
+  // ── Select site ───────────────────────────────────────────────────────────
   function selectSite(site, marker) {
-    // Deselect previous
-    if (selectedSite && allMarkers[selectedSite.site_name]) {
-      allMarkers[selectedSite.site_name].setIcon(defaultIcon);
+    // Reset previous selected icon
+    if (selectedSite) {
+      const prev = allMarkers[selectedSite.site_name];
+      if (prev) prev.setIcon(isActive(selectedSite) ? iconActive : iconInactive);
     }
-    if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
 
     selectedSite = site;
 
     // Highlight marker
     if (marker) {
-      marker.setIcon(selectedIcon);
-      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 12), { duration: 0.8 });
-    } else if (site.lat && site.long) {
-      map.flyTo([parseFloat(site.lat), parseFloat(site.long)], 12, { duration: 0.8 });
+      marker.setIcon(iconSelected);
+      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
     }
 
-    // Highlight in list
-    document.querySelectorAll('.map-site-item').forEach(el => {
+    // Sync sidebar
+    document.querySelectorAll('.map-list-item').forEach(el => {
       el.classList.toggle('selected', el.dataset.name === site.site_name);
     });
+    const listEl = document.querySelector(`.map-list-item[data-name="${site.site_name}"]`);
+    listEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    // Show coord editor
-    const editor = document.getElementById('mapCoordEditor');
-    editor.classList.remove('hidden');
-    document.getElementById('mapEditorSiteName').textContent = site.site_name;
-    document.getElementById('mapLatInput').value = site.lat ? parseFloat(site.lat).toFixed(7) : '';
-    document.getElementById('mapLngInput').value = site.long ? parseFloat(site.long).toFixed(7) : '';
-
-    // Scroll list item into view
-    const el = document.querySelector(`.map-site-item[data-name="${site.site_name}"]`);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-
-    // Update hint
-    document.getElementById('mapCoordHint').innerHTML =
-      `<i class="ri-crosshair-line"></i> Click map to move marker for <strong>${site.site_name}</strong>`;
+    // Show details panel
+    showDetailsPanel(site);
   }
 
-  // ── Map click → place / move marker ──────────────────────────────────────
-  map.on('click', (e) => {
-    if (!selectedSite) {
-      showToast('Select a site from the list first.', 'error');
-      return;
-    }
-    const { lat, lng } = e.latlng;
+  // ── Details panel ─────────────────────────────────────────────────────────
+  function showDetailsPanel(site) {
+    const panel = document.getElementById('mapDetailsPanel');
+    panel.classList.remove('hidden');
 
-    // Update inputs
-    document.getElementById('mapLatInput').value = lat.toFixed(7);
-    document.getElementById('mapLngInput').value = lng.toFixed(7);
+    const active = isActive(site);
 
-    // Remove old click marker
-    if (clickMarker) map.removeLayer(clickMarker);
+    document.getElementById('mapDetailsName').textContent =
+      site.site_name.replace(/^VSTG2-/, '') || '—';
+    document.getElementById('mapDetailsSub').textContent =
+      `${site.project_name || 'DICT438'} | ${site.province || '—'}`;
 
-    // If site already has a permanent marker, move it
-    if (allMarkers[selectedSite.site_name]) {
-      allMarkers[selectedSite.site_name].setLatLng([lat, lng]);
-    } else {
-      // Create new temporary marker
-      clickMarker = L.marker([lat, lng], { icon: selectedIcon }).addTo(map);
-    }
-  });
+    // Devices list (for expanded view)
+    const devices = Array.isArray(site.devices) ? site.devices : [];
+    const devHtml = devices.length
+      ? devices.map(d => {
+          // Extract device type suffix: AP1, AP2, ER
+          const nameRaw = d.device_name || '—';
+          const typeMatch = nameRaw.match(/\b(AP\s*1|AP\s*2|ER)\b/i);
+          const typeLabel = typeMatch ? typeMatch[0].replace(/\s+/,'').toUpperCase() : nameRaw.split('-').pop();
+          return `
+          <div class="map-dev-row">
+            <span class="map-dev-tag">${escHtml(typeLabel)}</span>
+            <div class="map-dev-info">
+              <span class="map-dev-model">${escHtml(d.model || '—')}</span>
+              <span class="map-dev-sn">${escHtml(d.serial || '—')}</span>
+            </div>
+          </div>`;
+        }).join('')
+      : '<div class="map-dev-empty">No devices linked.</div>';
 
-  // ── Save coordinates ──────────────────────────────────────────────────────
-  document.getElementById('mapSaveBtn').addEventListener('click', async () => {
-    if (!selectedSite) return;
-    const lat = parseFloat(document.getElementById('mapLatInput').value);
-    const lng = parseFloat(document.getElementById('mapLngInput').value);
-    if (isNaN(lat) || isNaN(lng)) { showToast('Please enter valid coordinates.', 'error'); return; }
-    if (lat < -90 || lat > 90)    { showToast('Latitude must be between -90 and 90.', 'error'); return; }
-    if (lng < -180 || lng > 180)  { showToast('Longitude must be between -180 and 180.', 'error'); return; }
+    document.getElementById('mapDetailsBody').innerHTML = `
+      <!-- Status + Activate -->
+      <div class="map-details-status-row">
+        <span class="map-details-status-badge ${active ? 'active' : 'inactive'}">
+          <i class="ri-radio-button-${active ? 'fill' : 'line'}"></i>
+          ${active ? 'Active' : 'Inactive'}
+        </span>
+        <button class="map-activate-btn ${active ? 'deactivate' : 'activate'}" id="mapActivateBtn">
+          <i class="ri-${active ? 'close' : 'check'}-circle-line"></i>
+          ${active ? 'Deactivate' : 'Activate'}
+        </button>
+      </div>
 
-    const btn = document.getElementById('mapSaveBtn');
-    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+      <!-- Overview: quick-glance info -->
+      <div class="map-details-section">
+        <div class="map-details-row"><span class="map-details-label">IP:</span><span>${escHtml(site.ip || '—')}</span></div>
+        <div class="map-details-row"><span class="map-details-label">MAC:</span><span>${escHtml(site.mac || '—')}</span></div>
+        <div class="map-details-row"><span class="map-details-label">Municipality:</span><span>${escHtml(site.municipality || '—')}</span></div>
+        <div class="map-details-row"><span class="map-details-label">Coords:</span>
+          <span>${site.lat ? parseFloat(site.lat).toFixed(5) : '—'}, ${site.long ? parseFloat(site.long).toFixed(5) : '—'}</span>
+        </div>
+      </div>
 
+      <!-- See More expandable -->
+      <button class="map-see-more-btn" id="mapSeeMoreBtn">
+        <i class="ri-arrow-down-s-line"></i> See More
+      </button>
+
+      <!-- Expanded details (hidden by default) -->
+      <div class="map-expanded-details hidden" id="mapExpandedDetails">
+        <div class="map-details-section">
+          <div class="map-details-section-title">EQUIPMENT SPECIFICATIONS</div>
+          <div class="map-details-row"><span class="map-details-label">Modem:</span><span>${escHtml(site.modem || 'MDM2010')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Trans:</span><span>${escHtml(site.transceiver || 'ILB3210 Single Coax')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Dish:</span><span>${escHtml(site.dish || '1.2m Jonsa Satellite Dish')}</span></div>
+        </div>
+        <div class="map-details-section">
+          <div class="map-details-section-title">CONTACTS</div>
+          <div class="map-details-row"><span class="map-details-label">Personnel:</span><span>${escHtml(site.contacts || '—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Email:</span><span>${escHtml(site.email || '—')}</span></div>
+        </div>
+        <div class="map-details-section">
+          <div class="map-details-section-title">NETWORK DEVICES</div>
+          <div class="map-devices-list">${devHtml}</div>
+        </div>
+      </div>
+    `;
+
+    // Wire See More toggle
+    document.getElementById('mapSeeMoreBtn').addEventListener('click', function() {
+      const expanded = document.getElementById('mapExpandedDetails');
+      const isOpen   = !expanded.classList.contains('hidden');
+      expanded.classList.toggle('hidden', isOpen);
+      this.innerHTML = isOpen
+        ? '<i class="ri-arrow-down-s-line"></i> See More'
+        : '<i class="ri-arrow-up-s-line"></i> See Less';
+    });
+
+    // Wire activate/deactivate
+    document.getElementById('mapActivateBtn').addEventListener('click', () => {
+      const newStatus = !active;
+      if (!confirm(`${newStatus ? 'Activate' : 'Deactivate'} site "${site.site_name}"?`)) return;
+      activateSite(site, newStatus);
+    });
+
+    // Wire close button
+    document.getElementById('mapDetailsPanelClose').onclick = () => {
+      document.getElementById('mapDetailsPanel').classList.add('hidden');
+      if (selectedSite) {
+        const m = allMarkers[selectedSite.site_name];
+        if (m) m.setIcon(isActive(selectedSite) ? iconActive : iconInactive);
+      }
+      document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
+      selectedSite = null;
+    };
+
+    // Wire edit button
+    document.getElementById('mapDetailsEditBtn').onclick = () => openMapEditModal(site);
+  }
+
+  // ── Activate / Deactivate ─────────────────────────────────────────────────
+  async function activateSite(site, newStatus) {
     try {
-      const res = await fetch(`/api/map/sites/${encodeURIComponent(selectedSite.site_name)}/coords`, {
+      const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/status`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lat, long: lng })
+        body: JSON.stringify({ is_active: newStatus })
       });
       if (!res.ok) throw new Error((await res.json()).error);
 
       // Update local data
-      const idx = allSites.findIndex(s => s.site_name === selectedSite.site_name);
-      if (idx !== -1) { allSites[idx].lat = lat; allSites[idx].long = lng; }
-      selectedSite.lat = lat; selectedSite.long = lng;
+      const idx = allSites.findIndex(s => s.site_name === site.site_name);
+      if (idx !== -1) allSites[idx].is_active = newStatus;
+      site.is_active = newStatus;
 
-      // Place permanent marker
-      if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
-      if (allMarkers[selectedSite.site_name]) {
-        allMarkers[selectedSite.site_name].setLatLng([lat, lng]);
-        allMarkers[selectedSite.site_name].setIcon(selectedIcon);
-      } else {
-        const m = L.marker([lat, lng], { icon: selectedIcon }).addTo(map);
-        m.on('click', () => selectSite(selectedSite, m));
-        allMarkers[selectedSite.site_name] = m;
-      }
+      // Update marker icon
+      const marker = allMarkers[site.site_name];
+      if (marker) marker.setIcon(iconSelected); // keep selected highlight
 
-      // Refresh list + stats
-      const q  = (document.getElementById('mapSearch')?.value || '').toLowerCase();
-      const pr = document.getElementById('mapProvinceFilter')?.value || '';
-      const filtered = applyFilters(allSites, q, pr);
+      // Refresh sidebar dot + details panel
+      const filtered = getFiltered();
       renderSiteList(filtered);
-      updateStats(allSites);
+      showDetailsPanel(site);
 
-      showToast('Coordinates saved successfully.', 'success');
-    } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
-    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save Coordinates'; }
-  });
-
-  // ── Cancel ────────────────────────────────────────────────────────────────
-  document.getElementById('mapCancelBtn').addEventListener('click', () => {
-    if (selectedSite && allMarkers[selectedSite.site_name]) {
-      allMarkers[selectedSite.site_name].setIcon(defaultIcon);
+      showToast(`Site ${newStatus ? 'activated' : 'deactivated'} successfully.`, 'success');
+    } catch(e) {
+      showToast('Status update failed: ' + e.message, 'error');
     }
-    if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
-    document.querySelectorAll('.map-site-item').forEach(el => el.classList.remove('selected'));
-    document.getElementById('mapCoordEditor').classList.add('hidden');
-    document.getElementById('mapCoordHint').innerHTML = '<i class="ri-mouse-line"></i> Click on the map to place or move a marker';
-    selectedSite = null;
-  });
+  }
 
-  // ── Search + Filter ───────────────────────────────────────────────────────
-  function applyFilters(sites, q, province) {
-    return sites.filter(s => {
-      const mQ = !q ||
+  // ── Edit modal ────────────────────────────────────────────────────────────
+  function openMapEditModal(site) {
+    const m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'mapEditModal';
+    m.innerHTML = `
+      <div class="modal-box add-modal-box" style="max-width:500px;">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-map-pin-2-line"></i></div>
+          <div class="add-modal-title"><h3>Edit Site</h3><p>${escHtml(site.site_name)}</p></div>
+          <button class="modal-close-btn" id="mapEditClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid" style="grid-template-columns:1fr 1fr;">
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-router-line"></i> IP Address</label>
+              <input type="text" id="mapEditIp" class="add-field-input" value="${escHtml(site.ip || '')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-mac-line"></i> MAC Address</label>
+              <input type="text" id="mapEditMac" class="add-field-input" value="${escHtml(site.mac || '')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-focus-3-line"></i> Latitude</label>
+              <input type="number" id="mapEditLat" class="add-field-input" step="0.0000001" value="${site.lat || ''}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-focus-3-line"></i> Longitude</label>
+              <input type="number" id="mapEditLng" class="add-field-input" step="0.0000001" value="${site.long || ''}">
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-phone-line"></i> Contacts</label>
+              <textarea id="mapEditContacts" class="add-field-input" style="resize:vertical;min-height:60px;">${escHtml(site.contacts || '')}</textarea>
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-mail-line"></i> Email / Social</label>
+              <input type="text" id="mapEditEmail" class="add-field-input" value="${escHtml(site.email || '')}">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"></span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="mapEditCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="mapEditSave"><i class="ri-save-line"></i> Save</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+
+    const close = () => m.remove();
+    document.getElementById('mapEditClose').onclick  = close;
+    document.getElementById('mapEditCancel').onclick = close;
+    m.onclick = e => { if (e.target === m) close(); };
+
+    document.getElementById('mapEditSave').onclick = async () => {
+      const payload = {
+        ip:       document.getElementById('mapEditIp').value.trim(),
+        mac:      document.getElementById('mapEditMac').value.trim(),
+        lat:      parseFloat(document.getElementById('mapEditLat').value) || null,
+        long:     parseFloat(document.getElementById('mapEditLng').value) || null,
+        contacts: document.getElementById('mapEditContacts').value.trim(),
+        email:    document.getElementById('mapEditEmail').value.trim(),
+      };
+      const btn = document.getElementById('mapEditSave');
+      btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+      try {
+        const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/edit`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error((await res.json()).error);
+        // Update local
+        Object.assign(site, payload);
+        const idx = allSites.findIndex(s => s.site_name === site.site_name);
+        if (idx !== -1) Object.assign(allSites[idx], payload);
+        // Update marker coords if changed
+        if (payload.lat && payload.long) {
+          const marker = allMarkers[site.site_name];
+          if (marker) marker.setLatLng([payload.lat, payload.long]);
+        }
+        close();
+        showDetailsPanel(site);
+        showToast('Site updated.', 'success');
+      } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
+      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save'; }
+    };
+  }
+
+  // ── Filters ───────────────────────────────────────────────────────────────
+  function getFiltered() {
+    const q      = (document.getElementById('mapSearch')?.value || '').toLowerCase();
+    const proj   = document.getElementById('mapProjectFilter')?.value  || '';
+    const prov   = document.getElementById('mapProvinceFilter')?.value || '';
+    const status = document.getElementById('mapStatusFilter')?.value   || '';
+    return allSites.filter(s => {
+      if (q && !(
         (s.site_name    || '').toLowerCase().includes(q) ||
         (s.municipality || '').toLowerCase().includes(q) ||
-        (s.province     || '').toLowerCase().includes(q);
-      const mP = !province || s.province === province;
-      return mQ && mP;
+        (s.province     || '').toLowerCase().includes(q)
+      )) return false;
+      if (proj   && s.project_name !== proj)   return false;
+      if (prov   && s.province     !== prov)   return false;
+      if (status === 'active'   && !isActive(s))  return false;
+      if (status === 'inactive' && isActive(s))   return false;
+      return true;
     });
   }
 
-  function onFilter() {
-    const q  = (document.getElementById('mapSearch')?.value || '').toLowerCase();
-    const pr = document.getElementById('mapProvinceFilter')?.value || '';
-    renderSiteList(applyFilters(allSites, q, pr));
+  function applyFilters() {
+    const filtered = getFiltered();
+    renderSiteList(filtered);
+    updateMapStats(filtered);
+
+    // Show/hide markers based on filters
+    Object.entries(allMarkers).forEach(([name, marker]) => {
+      const inFilter = filtered.some(s => s.site_name === name);
+      if (inFilter) {
+        if (!map.hasLayer(marker)) marker.addTo(map);
+      } else {
+        if (map.hasLayer(marker)) map.removeLayer(marker);
+      }
+    });
   }
 
-  document.getElementById('mapSearch')?.addEventListener('input', onFilter);
-  document.getElementById('mapProvinceFilter')?.addEventListener('change', onFilter);
+  ['mapSearch','mapProjectFilter','mapProvinceFilter','mapStatusFilter'].forEach(id => {
+    document.getElementById(id)?.addEventListener(id === 'mapSearch' ? 'input' : 'change', applyFilters);
+  });
 
-  // ── Lat/Lng manual input → move marker live ───────────────────────────────
-  function onCoordInput() {
-    if (!selectedSite) return;
-    const lat = parseFloat(document.getElementById('mapLatInput').value);
-    const lng = parseFloat(document.getElementById('mapLngInput').value);
-    if (isNaN(lat) || isNaN(lng)) return;
-    const pos = [lat, lng];
-    if (clickMarker) { clickMarker.setLatLng(pos); }
-    else if (allMarkers[selectedSite.site_name]) { allMarkers[selectedSite.site_name].setLatLng(pos); }
-    else { clickMarker = L.marker(pos, { icon: selectedIcon }).addTo(map); }
+  // ── Load sites ────────────────────────────────────────────────────────────
+  function updateMapStats(sites) {
+    const active   = sites.filter(s => isActive(s)).length;
+    const inactive = sites.length - active;
+    const tot = document.getElementById('mapStatTotal');
+    const act = document.getElementById('mapStatActive');
+    const ina = document.getElementById('mapStatInactive');
+    if (tot) tot.innerHTML = `<i class="ri-map-pin-2-line"></i> ${sites.length} Total`;
+    if (act) act.innerHTML = `<i class="ri-radio-button-fill"></i> ${active} Active`;
+    if (ina) ina.innerHTML = `<i class="ri-radio-button-line"></i> ${inactive} Inactive`;
   }
-  document.getElementById('mapLatInput').addEventListener('input', onCoordInput);
-  document.getElementById('mapLngInput').addEventListener('input', onCoordInput);
+
+  async function loadSites() {
+    try {
+      const res   = await fetch('/api/map/sites');
+      allSites    = await res.json();
+
+      // Populate dropdowns
+      const projects  = [...new Set(allSites.map(s => s.project_name).filter(Boolean))].sort();
+      const provinces = [...new Set(allSites.map(s => s.province).filter(Boolean))].sort();
+      const pjSel = document.getElementById('mapProjectFilter');
+      const pvSel = document.getElementById('mapProvinceFilter');
+      projects.forEach(p  => { const o = document.createElement('option'); o.value = o.textContent = p;  pjSel.appendChild(o); });
+      provinces.forEach(p => { const o = document.createElement('option'); o.value = o.textContent = p;  pvSel.appendChild(o); });
+
+      renderSiteList(allSites);
+      plotMarkers(allSites);
+      updateMapStats(allSites);
+      showToast(`${allSites.length} sites loaded.`, 'success');
+    } catch(e) {
+      document.getElementById('mapSiteList').innerHTML =
+        '<div class="map-list-empty"><i class="ri-error-warning-line"></i> Failed to load sites.</div>';
+    }
+  }
 
   loadSites();
 }
@@ -1066,9 +1198,17 @@ async function loadTerminals() {
         </div>
 
         <div id="bulkActions" class="bulk-actions hidden">
-          <span id="selectedCount">0 rows selected</span>
+          <label class="bulk-select-all-wrap" title="Select all rows">
+            <input type="checkbox" id="bulkSelectAllChk">
+            <span class="bulk-select-all-label"><i class="ri-check-double-line"></i> Select All</span>
+          </label>
+          <span class="bulk-divider"></span>
+          <span class="bulk-count-badge" id="selectedCount"><i class="ri-checkbox-multiple-line"></i> 0 selected</span>
+          <div class="bulk-spacer"></div>
+          <button class="tool-btn" id="exportSelectedCsv"><i class="ri-download-2-line"></i> Export</button>
+          <span class="bulk-divider"></span>
           <button class="tool-btn danger-btn" id="deleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
-          <button class="tool-btn" id="exportSelected"><i class="ri-download-line"></i> Export CSV</button>
+          <button class="tool-btn" id="btnCancelSelect" title="Exit selection mode"><i class="ri-close-line"></i> Done</button>
         </div>
 
         <div class="table-wrapper terminals-table-wrapper">
@@ -1115,18 +1255,33 @@ async function loadTerminals() {
 
     <!-- Add Choice Modal -->
     <div id="addChoiceModal" class="modal-overlay hidden">
-      <div class="modal-box" style="max-width:420px;padding:36px 32px;position:relative;">
-        <button class="modal-close-btn" id="choiceModalClose" style="position:absolute;top:14px;right:14px;background:#f1f5f9;border:none;color:#64748b;"><i class="ri-close-line"></i></button>
-        <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Terminal</h3>
-        <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <button class="tool-btn apply-btn" id="chooseManualBtn" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;">
-            <i class="ri-edit-2-line" style="font-size:20px;"></i>
-            <div style="text-align:left;"><div style="font-weight:700;">Manual Entry</div><div style="font-size:12px;opacity:0.85;font-weight:400;">Fill in a form to add one record</div></div>
+      <div class="add-choice-box">
+        <div class="add-choice-header">
+          <div class="add-choice-title">
+            <i class="ri-add-circle-line"></i>
+            <div>
+              <div class="add-choice-heading">Add Terminal</div>
+              <div class="add-choice-sub">How would you like to add records?</div>
+            </div>
+          </div>
+          <button class="modal-close-btn" id="choiceModalClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-choice-options">
+          <button class="add-choice-btn add-choice-primary" id="chooseManualBtn">
+            <div class="add-choice-btn-icon"><i class="ri-edit-2-line"></i></div>
+            <div class="add-choice-btn-text">
+              <div class="add-choice-btn-label">Manual Entry</div>
+              <div class="add-choice-btn-desc">Fill in a form to add one record</div>
+            </div>
+            <i class="ri-arrow-right-s-line add-choice-arrow"></i>
           </button>
-          <button class="tool-btn" id="chooseImportBtn" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;border-color:#2f4b85;color:#2f4b85;">
-            <i class="ri-upload-cloud-2-line" style="font-size:20px;"></i>
-            <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
+          <button class="add-choice-btn add-choice-secondary" id="chooseImportBtn">
+            <div class="add-choice-btn-icon"><i class="ri-upload-cloud-2-line"></i></div>
+            <div class="add-choice-btn-text">
+              <div class="add-choice-btn-label">Import File</div>
+              <div class="add-choice-btn-desc">Upload CSV or XLSX to bulk import</div>
+            </div>
+            <i class="ri-arrow-right-s-line add-choice-arrow"></i>
           </button>
         </div>
       </div>
@@ -1252,6 +1407,28 @@ async function loadTerminals() {
     renderTerminalTable();
   });
 
+  // Bulk Select All checkbox — selects ALL filtered rows across all pages
+  document.addEventListener('change', function(e) {
+    if (e.target.id !== 'bulkSelectAllChk') return;
+    if (e.target.checked) {
+      terminalFiltered.forEach((_, i) => terminalSelectedRows.add(i));
+    } else {
+      terminalSelectedRows.clear();
+    }
+    updateSelectedCount();
+    renderTerminalTable();
+  });
+
+  // Done / Cancel select mode
+  document.getElementById('btnCancelSelect').addEventListener('click', () => {
+    terminalSelectMode = false;
+    terminalSelectedRows.clear();
+    document.getElementById('btnSelect').classList.remove('active-tool');
+    document.getElementById('bulkActions').classList.add('hidden');
+    renderTerminalTable();
+    updateSelectedCount();
+  });
+
   document.getElementById('deleteSelected').addEventListener('click', async () => {
     if (!terminalSelectedRows.size) { showToast('No rows selected.', 'error'); return; }
     const toDelete = Array.from(terminalSelectedRows).map(i => terminalFiltered[i]);
@@ -1273,12 +1450,14 @@ async function loadTerminals() {
         if (terminalPage > maxPage) terminalPage = maxPage;
         renderTerminalTable(); renderTerminalPagination();
         showToast(`${result.deleted} record(s) deleted.`, 'success');
+        dashboardDataChanged();
       } catch { showToast('Network error.', 'error'); }
       finally { btn.disabled = false; btn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete Selected'; }
     });
   });
 
-  document.getElementById('exportSelected').addEventListener('click', () => {
+  // Export CSV
+  document.getElementById('exportSelectedCsv').addEventListener('click', () => {
     if (!terminalSelectedRows.size) { showToast('No rows selected.', 'error'); return; }
     const rows = Array.from(terminalSelectedRows).sort((a,b)=>a-b).map(i => terminalFiltered[i]);
     const cols = Object.keys(rows[0]);
@@ -1287,6 +1466,7 @@ async function loadTerminals() {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     a.download = `terminals_${terminalCurrentRegion}_${Date.now()}.csv`; a.click();
+    showToast(`${rows.length} rows exported to CSV.`, 'success');
   });
 
   // Add button → choice modal
@@ -1666,7 +1846,30 @@ function openAddModal() {
   };
 }
 
-function updateSelectedCount() { document.getElementById("selectedCount").innerText = `${terminalSelectedRows.size} rows selected`; }
+function updateProbSelectedCount() {
+  const n     = probSelectedRows.size;
+  const total = probFiltered.length;
+  const el    = document.getElementById("probSelectedCount");
+  if (el) el.innerHTML = `<i class="ri-checkbox-multiple-line"></i> ${n} of ${total} selected`;
+  const chk = document.getElementById("probBulkSelectAllChk");
+  if (chk) {
+    chk.checked       = total > 0 && n === total;
+    chk.indeterminate = n > 0 && n < total;
+  }
+}
+
+function updateSelectedCount() {
+  const n   = terminalSelectedRows.size;
+  const total = terminalFiltered.length;
+  const el  = document.getElementById("selectedCount");
+  if (el) el.innerHTML = `<i class="ri-checkbox-multiple-line"></i> ${n} of ${total} selected`;
+  // Sync Select All checkbox state against ALL filtered rows
+  const chk = document.getElementById("bulkSelectAllChk");
+  if (chk) {
+    chk.checked       = total > 0 && n === total;
+    chk.indeterminate = n > 0 && n < total;
+  }
+}
 
 function renderTerminalPagination() {
   const container = document.getElementById("terminalPagination");
@@ -1723,6 +1926,11 @@ function showToast(message, type = "success") {
 
 /* ================= DASHBOARD ================= */
 
+// Dashboard state — declared before loadDashboard so they exist on first call
+let _dashPrev        = {};
+let _chartProbStatus = null;
+let _chartTickets    = null;
+
 function loadDashboard() {
   mainContent.innerHTML = `
     <div class="topbar">
@@ -1733,58 +1941,491 @@ function loadDashboard() {
           <input type="text" placeholder="Search here">
         </div>
         <button id="darkToggle" class="icon-btn" title="Toggle Dark Mode"><i class="ri-moon-line"></i></button>
+        <button id="dashRefreshBtn" class="icon-btn" title="Refresh dashboard"><i class="ri-refresh-line"></i></button>
       </div>
     </div>
-    <h3 class="section-title">Overview</h3>
-    <div class="cards">
-      <div class="card">
+
+    <div class="dash-header-row">
+      <h3 class="section-title">Overview</h3>
+      <span class="dash-last-updated" id="dashLastUpdated">—</span>
+    </div>
+
+    <!-- Stat cards -->
+    <div class="cards" id="dashCards">
+      <div class="card" id="dashCardSites">
         <div class="card-top">
           <div class="icon-box blue"><i class="ri-map-pin-2-line"></i></div>
-          <div class="stat"><h1 class="counter" data-target="438">0</h1><span class="trend up">↑ +3%</span></div>
+          <div class="stat"><h1 class="counter" id="statTotalSites">—</h1><span class="trend" id="trendSites"></span></div>
         </div>
         <p>Total Sites</p>
       </div>
-      <div class="card">
+      <div class="card" id="dashCardActive">
         <div class="card-top">
           <div class="icon-box green"><i class="ri-shield-check-line"></i></div>
-          <div class="stat"><h1 class="counter" data-target="420">0</h1><span class="trend up">↑ +5%</span></div>
+          <div class="stat"><h1 class="counter" id="statActiveSites">—</h1><span class="trend" id="trendActive"></span></div>
         </div>
         <p>Active Sites</p>
       </div>
-      <div class="card alert-card">
+      <div class="card alert-card" id="dashCardProb">
         <div class="card-top">
           <div class="icon-box orange pulse"><i class="ri-error-warning-line"></i></div>
-          <div class="stat"><h1 class="counter" data-target="18">0</h1><span class="trend down">↓ -2%</span></div>
+          <div class="stat"><h1 class="counter" id="statProbSites">—</h1><span class="trend" id="trendProb"></span></div>
         </div>
         <p>Problematic Sites</p>
       </div>
-      <div class="card">
+      <div class="card" id="dashCardTickets">
         <div class="card-top">
-          <div class="icon-box red"><i class="ri-alarm-warning-line"></i></div>
-          <div class="stat"><h1 class="counter" data-target="6">0</h1><span class="trend down">↓ -1%</span></div>
+          <div class="icon-box red"><i class="ri-ticket-2-line"></i></div>
+          <div class="stat"><h1 class="counter" id="statOpenTickets">—</h1><span class="trend" id="trendTickets"></span></div>
         </div>
-        <p>Open Incidents</p>
+        <p>Open Tickets</p>
       </div>
     </div>
+
+    <div class="dash-section-divider"></div>
+
+    <!-- Charts row -->
+    <div class="dash-charts-row">
+
+      <!-- Donut: Problematic Sites by Status -->
+      <div class="dash-chart-card">
+        <div class="dash-chart-header">
+          <div class="dash-chart-header-left">
+            <div class="dash-chart-icon"><i class="ri-pie-chart-2-line"></i></div>
+            <div>
+              <div class="dash-chart-title">Sites by Status</div>
+              <div class="dash-chart-sub">Problematic sites breakdown</div>
+            </div>
+          </div>
+          <div class="dash-chart-badge" id="chartProbTotal">—</div>
+        </div>
+        <div class="dash-chart-wrap">
+          <canvas id="chartProbStatus"></canvas>
+        </div>
+      </div>
+
+      <!-- Bar: Ticket Summary -->
+      <div class="dash-chart-card">
+        <div class="dash-chart-header">
+          <div class="dash-chart-header-left">
+            <div class="dash-chart-icon dash-chart-icon-red"><i class="ri-ticket-2-line"></i></div>
+            <div>
+              <div class="dash-chart-title">Ticket Summary</div>
+              <div class="dash-chart-sub">Open vs closed tickets</div>
+            </div>
+          </div>
+          <div class="dash-chart-badge dash-chart-badge-red" id="chartTicketTotal">—</div>
+        </div>
+        <div class="dash-chart-wrap">
+          <canvas id="chartTickets"></canvas>
+        </div>
+        <div class="dash-chart-legend" id="chartTicketLegend"></div>
+      </div>
+
+    </div>
+
+    <!-- Recent tickets table -->
     <div class="table-container">
-      <div class="table-title"><i class="ri-file-list-3-line"></i> Recent Incident Reports</div>
-      <table>
-        <thead><tr><th>Ticket ID</th><th>Province</th><th>Issue</th><th>Priority</th><th>Status</th></tr></thead>
-        <tbody>
-          <tr><td>INC-1023</td><td>Province 1</td><td>No Signal</td><td><span class="badge high">High</span></td><td><span class="badge completed">Completed</span></td></tr>
-          <tr><td>INC-1024</td><td>Province 2</td><td>Power Failure</td><td><span class="badge medium">Medium</span></td><td><span class="badge progress">In Progress</span></td></tr>
-          <tr><td>INC-1025</td><td>Province 3</td><td>Battery Low</td><td><span class="badge low">Low</span></td><td><span class="badge pending">Pending</span></td></tr>
+      <div class="table-title">
+        <i class="ri-file-list-3-line"></i> Recent Tickets
+        <span class="dash-view-all" id="dashViewAllTickets">View all →</span>
+      </div>
+      <table id="dashRecentTable">
+        <thead>
+          <tr><th>ID</th><th>Subject</th><th>Department</th><th>Status</th><th>Date</th></tr>
+        </thead>
+        <tbody id="dashRecentBody">
+          <tr><td colspan="5" style="text-align:center;padding:20px;color:#94a3b8;">
+            <i class="ri-loader-4-line spin"></i> Loading…
+          </td></tr>
         </tbody>
       </table>
     </div>
   `;
-  document.getElementById("darkToggle").addEventListener("click", () => {
-    document.body.classList.toggle("dark");
-    const icon = document.querySelector("#darkToggle i");
-    icon.className = document.body.classList.contains("dark") ? "ri-sun-line" : "ri-moon-line";
+
+  // Dark toggle
+  document.getElementById('darkToggle').addEventListener('click', () => {
+    document.body.classList.toggle('dark');
+    const icon = document.querySelector('#darkToggle i');
+    icon.className = document.body.classList.contains('dark') ? 'ri-sun-line' : 'ri-moon-line';
   });
-  runCounters();
+
+  // Manual refresh button
+  document.getElementById('dashRefreshBtn').addEventListener('click', () => {
+    document.getElementById('dashRefreshBtn').querySelector('i').style.animation = 'spin 0.5s linear';
+    fetchDashboardStats(true);
+    setTimeout(() => {
+      const icon = document.getElementById('dashRefreshBtn')?.querySelector('i');
+      if (icon) icon.style.animation = '';
+    }, 600);
+  });
+
+  // Navigate to tickets on "View all"
+  document.getElementById('dashViewAllTickets').addEventListener('click', () => {
+    document.querySelectorAll('.menu li').forEach(li => li.classList.remove('active'));
+    document.querySelector('.menu li:nth-child(4)')?.classList.add('active');
+    loadTickets();
+  });
+
+  // Reset chart instances so they are recreated on each visit
+  if (_chartProbStatus) { try { _chartProbStatus.destroy(); } catch(e) {} _chartProbStatus = null; }
+  if (_chartTickets)    { try { _chartTickets.destroy();    } catch(e) {} _chartTickets    = null; }
+  _dashPrev = {};
+
+  // Fetch after a short paint delay
+  if (window._dashInterval) clearInterval(window._dashInterval);
+  setTimeout(() => {
+    fetchDashboardStats(true);
+    window._dashInterval = setInterval(() => {
+      if (document.getElementById('dashCards')) fetchDashboardStats(false);
+      else clearInterval(window._dashInterval);
+    }, 30000);
+  }, 50);
 }
+
+async function fetchDashboardStats(animate = false) {
+  const fallback = {
+    totalSites: 0, activeSites: 0, problematicSites: 0,
+    totalTickets: 0, openTickets: 0,
+    recentTickets: [], probByStatus: [], sitesByRegion: []
+  };
+
+  // Always render immediately with cached or fallback data so the page isn't blank
+  if (animate) {
+    updateDashCards(fallback, true);
+    updateDashTable([]);
+  }
+
+  try {
+    const res  = await fetch('/api/dashboard/stats');
+    const data = res.ok ? await res.json() : fallback;
+
+    updateDashCards(data, animate);
+    updateDashCharts(data);
+    updateDashTable(data.recentTickets || []);
+
+    const el = document.getElementById('dashLastUpdated');
+    if (el) el.textContent = 'Last updated: ' + new Date().toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+
+    _dashPrev = data;
+  } catch (e) {
+    console.warn('Dashboard fetch error:', e);
+    // Still render with zeros so the page shows something
+    updateDashCards(fallback, animate);
+    updateDashTable([]);
+    const el = document.getElementById('dashLastUpdated');
+    if (el) el.textContent = 'Could not reach server';
+  }
+}
+
+function animateCounter(el, from, to, duration = 600) {
+  if (!el) return;
+  if (from === to) { el.textContent = to.toLocaleString(); return; }
+  const start = performance.now();
+  const update = (now) => {
+    const progress = Math.min((now - start) / duration, 1);
+    // Ease out cubic
+    const ease = 1 - Math.pow(1 - progress, 3);
+    el.textContent = Math.round(from + (to - from) * ease).toLocaleString();
+    if (progress < 1) requestAnimationFrame(update);
+    else el.textContent = to.toLocaleString();
+  };
+  requestAnimationFrame(update);
+}
+
+function flashCard(cardId) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  card.classList.remove('dash-card-flash');
+  void card.offsetWidth; // reflow
+  card.classList.add('dash-card-flash');
+}
+
+function updateDashCards(data, animate) {
+  const cards = [
+    { id: 'statTotalSites',  val: data.totalSites,       prev: _dashPrev.totalSites,       card: 'dashCardSites',   trend: 'trendSites' },
+    { id: 'statActiveSites', val: data.activeSites,      prev: _dashPrev.activeSites,      card: 'dashCardActive',  trend: 'trendActive' },
+    { id: 'statProbSites',   val: data.problematicSites, prev: _dashPrev.problematicSites, card: 'dashCardProb',    trend: 'trendProb' },
+    { id: 'statOpenTickets', val: data.openTickets,      prev: _dashPrev.openTickets,      card: 'dashCardTickets', trend: 'trendTickets' },
+  ];
+
+  cards.forEach(({ id, val, prev, card, trend }) => {
+    const el    = document.getElementById(id);
+    const tEl   = document.getElementById(trend);
+    const from  = typeof prev === 'number' ? prev : val;
+    const changed = typeof prev === 'number' && prev !== val;
+
+    if (animate || changed) {
+      animateCounter(el, animate ? 0 : from, val);
+      if (changed) flashCard(card);
+    } else if (el) {
+      el.textContent = val.toLocaleString();
+    }
+
+    // Trend badge
+    if (tEl && typeof prev === 'number' && prev !== val) {
+      const diff = val - prev;
+      const pct  = prev > 0 ? Math.abs(Math.round((diff / prev) * 100)) : 0;
+      const up   = diff > 0;
+      tEl.className = `trend ${up ? 'up' : 'down'}`;
+      tEl.textContent = `${up ? '↑' : '↓'} ${pct > 0 ? pct + '%' : (up ? '+' + diff : diff)}`;
+    }
+  });
+}
+
+function updateDashCharts(data) {
+  // Load Chart.js lazily
+  if (typeof Chart === 'undefined') {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
+    s.onload = () => renderDashCharts(data);
+    document.head.appendChild(s);
+  } else {
+    renderDashCharts(data);
+  }
+}
+
+function renderDashCharts(data) {
+  const isDark = document.body.classList.contains('dark');
+  const gridColor  = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)';
+  const tickColor  = isDark ? '#64748b' : '#94a3b8';
+  const fontFamily = "'Inter','Segoe UI',sans-serif";
+
+  // Shared tooltip style
+  const tooltipBase = {
+    backgroundColor: isDark ? '#1e293b' : '#fff',
+    titleColor:      isDark ? '#f1f5f9' : '#1e293b',
+    bodyColor:       isDark ? '#94a3b8' : '#475569',
+    borderColor:     isDark ? '#334155' : '#e2e8f0',
+    borderWidth:     1,
+    padding:         12,
+    cornerRadius:    10,
+    titleFont:       { family: fontFamily, weight: '700', size: 13 },
+    bodyFont:        { family: fontFamily, size: 12 },
+    boxPadding:      6,
+    displayColors:   true,
+  };
+
+  // ── Donut: Problematic Sites by Status ──────────────────────────────────
+  const probCanvas = document.getElementById('chartProbStatus');
+  if (probCanvas) {
+    const probRows   = data.probByStatus || [];
+    const labels     = probRows.length ? probRows.map(r => r.status || 'Unknown') : ['No Data'];
+    const counts     = probRows.length ? probRows.map(r => parseInt(r.count) || 0) : [1];
+    const total      = counts.reduce((a,b) => a+b, 0);
+
+    // Muted professional palette
+    const statusColors = {
+      'offline':       '#64748b',
+      'in progress':   '#94a3b8',
+      'for monitoring':'#2f4b85',
+      'online':        '#475569',
+      'unknown':       '#cbd5e1',
+      'low signal':    '#334155',
+      'intermittent':  '#1e3a6e',
+    };
+    const fallback = ['#2f4b85','#475569','#64748b','#94a3b8','#cbd5e1','#1e3a6e'];
+    const colors = labels.map((l, i) =>
+      statusColors[l.toLowerCase()] || fallback[i % fallback.length]
+    );
+
+    // Update badge
+    const badge = document.getElementById('chartProbTotal');
+    if (badge) badge.textContent = total + ' sites';
+
+    const probCfg = {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data: counts,
+          backgroundColor: colors,
+          borderColor:     isDark ? '#1e293b' : '#ffffff',
+          borderWidth:     3,
+          hoverBorderWidth: 0,
+          hoverOffset:     10,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        cutout: '68%',
+        plugins: {
+          legend: {
+            position: 'right',
+            labels: {
+              font: { family: fontFamily, size: 12, weight: '600' },
+              color: tickColor,
+              padding: 16,
+              usePointStyle: true,
+              pointStyle: 'circle',
+              generateLabels: (chart) => {
+                const ds = chart.data.datasets[0];
+                return chart.data.labels.map((label, i) => ({
+                  text: `${label}  ${ds.data[i]}`,
+                  fillStyle: ds.backgroundColor[i],
+                  hidden: false, index: i,
+                  pointStyle: 'circle',
+                }));
+              }
+            }
+          },
+          tooltip: {
+            ...tooltipBase,
+            callbacks: {
+              title: ctx => ctx[0].label,
+              label: ctx => {
+                const pct = total > 0 ? Math.round((ctx.parsed / total) * 100) : 0;
+                return `  ${ctx.parsed} sites  (${pct}%)`;
+              }
+            }
+          }
+        },
+        animation: { animateRotate: true, animateScale: true, duration: 700, easing: 'easeOutQuart' }
+      },
+      plugins: [{
+        // Centre text plugin
+        id: 'centreText',
+        afterDraw(chart) {
+          const { ctx, chartArea: { top, bottom, left, right } } = chart;
+          const cx = (left + right) / 2;
+          const cy = (top + bottom) / 2;
+          ctx.save();
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          ctx.font = `700 24px ${fontFamily}`;
+          ctx.fillStyle = isDark ? '#f1f5f9' : '#1e293b';
+          ctx.fillText(total, cx, cy - 8);
+          ctx.font = `500 11px ${fontFamily}`;
+          ctx.fillStyle = tickColor;
+          ctx.fillText('total', cx, cy + 12);
+          ctx.restore();
+        }
+      }]
+    };
+
+    if (_chartProbStatus) {
+      _chartProbStatus.data.labels = labels;
+      _chartProbStatus.data.datasets[0].data = counts;
+      _chartProbStatus.data.datasets[0].backgroundColor = colors;
+      _chartProbStatus.update('active');
+      const badge2 = document.getElementById('chartProbTotal');
+      if (badge2) badge2.textContent = total + ' sites';
+    } else {
+      _chartProbStatus = new Chart(probCanvas, probCfg);
+    }
+  }
+
+  // ── Bar: Ticket Summary ──────────────────────────────────────────────────
+  const tkCanvas = document.getElementById('chartTickets');
+  if (tkCanvas) {
+    const total  = data.totalTickets || 0;
+    const open   = data.openTickets  || 0;
+    const closed = total - open;
+
+    // Update badge + legend
+    const badge = document.getElementById('chartTicketTotal');
+    if (badge) badge.textContent = total + ' total';
+    const legend = document.getElementById('chartTicketLegend');
+    if (legend) legend.innerHTML = `
+      <span class="dcl-item"><span class="dcl-dot" style="background:#2f4b85"></span>Total</span>
+      <span class="dcl-item"><span class="dcl-dot" style="background:#64748b"></span>Open <strong>${open}</strong></span>
+      <span class="dcl-item"><span class="dcl-dot" style="background:#475569"></span>Closed <strong>${closed}</strong></span>
+    `;
+
+    // Gradient fills
+    const mkGrad = (canvas, top, bottom) => {
+      const ctx = canvas.getContext('2d');
+      const g   = ctx.createLinearGradient(0, 0, 0, canvas.height || 200);
+      g.addColorStop(0, top); g.addColorStop(1, bottom);
+      return g;
+    };
+
+    const tkCfg = {
+      type: 'bar',
+      data: {
+        labels: ['Total', 'Open', 'Closed'],
+        datasets: [{
+          data: [total, open, closed],
+          backgroundColor: [
+            mkGrad(tkCanvas, '#2f4b85', 'rgba(47,75,133,0.4)'),
+            mkGrad(tkCanvas, '#64748b', 'rgba(100,116,139,0.35)'),
+            mkGrad(tkCanvas, '#475569', 'rgba(71,85,105,0.35)'),
+          ],
+          borderColor: ['#2f4b85','#64748b','#475569'],
+          borderWidth: 0,
+          borderRadius: 10,
+          borderSkipped: false,
+          barPercentage: 0.55,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: true,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            ...tooltipBase,
+            callbacks: {
+              label: ctx => `  ${ctx.parsed.y} ticket${ctx.parsed.y !== 1 ? 's' : ''}`
+            }
+          }
+        },
+        scales: {
+          x: {
+            grid: { display: false },
+            border: { display: false },
+            ticks: { font: { family: fontFamily, size: 12, weight: '600' }, color: tickColor }
+          },
+          y: {
+            beginAtZero: true,
+            border: { display: false, dash: [4,4] },
+            grid: { color: gridColor },
+            ticks: {
+              font: { family: fontFamily, size: 11 },
+              color: tickColor,
+              stepSize: Math.max(1, Math.ceil(total / 5)),
+              callback: v => Number.isInteger(v) ? v : ''
+            }
+          }
+        },
+        animation: { duration: 700, easing: 'easeOutQuart' }
+      }
+    };
+
+    if (_chartTickets) {
+      _chartTickets.data.datasets[0].data = [total, open, closed];
+      _chartTickets.update('active');
+    } else {
+      _chartTickets = new Chart(tkCanvas, tkCfg);
+    }
+  }
+}
+
+function updateDashTable(tickets) {
+  const tbody = document.getElementById('dashRecentBody');
+  if (!tbody) return;
+  if (!tickets.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:20px;color:#94a3b8;">No recent tickets.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = tickets.map(t => {
+    const statusClass = t.status?.toLowerCase() === 'open'   ? 'badge open-badge'
+                      : t.status?.toLowerCase() === 'closed' ? 'badge completed'
+                      : 'badge pending';
+    const date = t.created_at ? new Date(t.created_at).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '—';
+    return `
+      <tr>
+        <td>#${t.id}</td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(t.subject || '—')}</td>
+        <td>${escHtml(t.department || '—')}</td>
+        <td><span class="${statusClass}">${escHtml(t.status || '—')}</span></td>
+        <td>${date}</td>
+      </tr>`;
+  }).join('');
+}
+
 
 /* ================= PROBLEMATIC SITES ================= */
 
@@ -1872,7 +2513,7 @@ async function loadProblematicSites() {
             <button class="tool-btn" id="probBtnAdd"><i class="ri-add-line"></i> Add</button>
             <button class="tool-btn" id="probBtnSortFilter"><i class="ri-sliders-h-line"></i> Filter & Sort</button>
             <button class="tool-btn" id="probBtnSelect"><i class="ri-checkbox-multiple-line"></i> Select</button>
-            <button class="tool-btn apply-btn" id="probExportExcel"><i class="ri-file-excel-line"></i> Export Excel</button>
+            <button class="tool-btn apply-btn" id="probExportExcel" title="Export Excel" style="padding:0 12px;"><i class="ri-download-2-line" style="font-size:17px;"></i></button>
           </div>
         </div>
 
@@ -1909,8 +2550,14 @@ async function loadProblematicSites() {
         </div>
 
         <div id="probBulkActions" class="bulk-actions hidden">
-          <span id="probSelectedCount">0 rows selected</span>
-          <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
+          <label class="bulk-select-all-wrap">
+            <input type="checkbox" id="probBulkSelectAllChk">
+            <span class="bulk-select-all-label">Select All</span>
+          </label>
+          <span class="bulk-divider"></span>
+          <span class="bulk-count-badge" id="probSelectedCount"><i class="ri-checkbox-multiple-line"></i> 0 selected</span>
+          <div class="bulk-spacer"></div>
+          <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete</button>
         </div>
 
         <div class="table-wrapper terminals-table-wrapper">
@@ -1940,18 +2587,33 @@ async function loadProblematicSites() {
 
     <!-- Add Choice Modal -->
     <div id="probAddChoiceModal" class="modal-overlay hidden">
-      <div class="modal-box" style="max-width:420px;padding:36px 32px;position:relative;">
-        <button class="modal-close-btn" id="probChoiceClose" style="position:absolute;top:14px;right:14px;background:#f1f5f9;border:none;color:#64748b;"><i class="ri-close-line"></i></button>
-        <h3 style="margin:0 0 8px;font-size:20px;color:#1e293b;"><i class="ri-add-circle-line" style="color:#2f4b85"></i> Add Problematic Site</h3>
-        <p style="color:#64748b;font-size:14px;margin:0 0 24px;">How would you like to add records?</p>
-        <div style="display:flex;flex-direction:column;gap:12px;">
-          <button class="tool-btn apply-btn" id="probChooseManual" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;">
-            <i class="ri-edit-2-line" style="font-size:20px;"></i>
-            <div style="text-align:left;"><div style="font-weight:700;">Manual Entry</div><div style="font-size:12px;opacity:0.85;font-weight:400;">Fill in a form to add one record</div></div>
+      <div class="add-choice-box">
+        <div class="add-choice-header">
+          <div class="add-choice-title">
+            <i class="ri-add-circle-line"></i>
+            <div>
+              <div class="add-choice-heading">Add Problematic Site</div>
+              <div class="add-choice-sub">How would you like to add records?</div>
+            </div>
+          </div>
+          <button class="modal-close-btn" id="probChoiceClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-choice-options">
+          <button class="add-choice-btn add-choice-primary" id="probChooseManual">
+            <div class="add-choice-btn-icon"><i class="ri-edit-2-line"></i></div>
+            <div class="add-choice-btn-text">
+              <div class="add-choice-btn-label">Manual Entry</div>
+              <div class="add-choice-btn-desc">Fill in a form to add one record</div>
+            </div>
+            <i class="ri-arrow-right-s-line add-choice-arrow"></i>
           </button>
-          <button class="tool-btn" id="probChooseImport" style="justify-content:flex-start;gap:12px;padding:14px 18px;font-size:14px;border-color:#2f4b85;color:#2f4b85;">
-            <i class="ri-upload-cloud-2-line" style="font-size:20px;"></i>
-            <div style="text-align:left;"><div style="font-weight:700;">Import File</div><div style="font-size:12px;opacity:0.7;font-weight:400;">Upload CSV or XLSX to bulk import</div></div>
+          <button class="add-choice-btn add-choice-secondary" id="probChooseImport">
+            <div class="add-choice-btn-icon"><i class="ri-upload-cloud-2-line"></i></div>
+            <div class="add-choice-btn-text">
+              <div class="add-choice-btn-label">Import File</div>
+              <div class="add-choice-btn-desc">Upload CSV or XLSX to bulk import</div>
+            </div>
+            <i class="ri-arrow-right-s-line add-choice-arrow"></i>
           </button>
         </div>
       </div>
@@ -2151,7 +2813,7 @@ async function loadProblematicSites() {
         probFiltered = probFiltered.filter(r => !toDeleteSet.has(r));
         probData = probData.filter(r => !toDeleteSet.has(r));
         probSelectedRows.clear();
-        document.getElementById("probSelectedCount").innerText = "0 rows selected";
+        updateProbSelectedCount();
         const maxPage = Math.max(1, Math.ceil(probFiltered.length / probRowsPerPage));
         if (probPage > maxPage) probPage = maxPage;
         renderProbTable(); renderProbPagination();
@@ -2161,8 +2823,22 @@ async function loadProblematicSites() {
     });
   });
 
-  // Export Excel
-  document.getElementById("probExportExcel").addEventListener("click", async () => {
+  // Prob Select All checkbox
+  document.addEventListener('change', function(e) {
+    if (e.target.id !== 'probBulkSelectAllChk') return;
+    if (e.target.checked) {
+      probFiltered.forEach((_, i) => probSelectedRows.add(i));
+    } else {
+      probSelectedRows.clear();
+    }
+    updateProbSelectedCount();
+    renderProbTable();
+  });
+
+  // Prob Export Excel (selected rows)
+
+
+  document.getElementById("probExportExcel") && document.getElementById("probExportExcel").addEventListener("click", async () => {
     const btn = document.getElementById("probExportExcel");
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Generating…';
     try {
@@ -2279,6 +2955,7 @@ function renderProbTable() {
       cb.addEventListener("change", function () {
         const idx = start + i;
         if (this.checked) probSelectedRows.add(idx); else probSelectedRows.delete(idx);
+        updateProbSelectedCount();
         document.getElementById("probSelectedCount").innerText = `${probSelectedRows.size} rows selected`;
         this.closest("tr").classList.toggle("selected-row", this.checked);
       });
@@ -4322,7 +4999,18 @@ function runCounters() {
 
 /* ================= INITIAL LOAD ================= */
 
-_stgApplyDisplaySettings();
+// Apply saved display settings on startup
+(function() {
+  const brightness = localStorage.getItem('brightness');
+  const fontSize   = localStorage.getItem('fontSize');
+  const theme      = localStorage.getItem('theme');
+  const nightLight = localStorage.getItem('nightLight') === 'true';
+  if (brightness) document.body.style.opacity = (parseInt(brightness) / 100).toFixed(2);
+  if (fontSize)   document.documentElement.style.fontSize = fontSize + 'px';
+  if (theme === 'dark') document.body.classList.add('dark');
+  if (nightLight) document.body.style.filter = 'sepia(0.3) brightness(0.96)';
+})();
+
 loadDashboard();
 
 /* ================= SETTINGS ================= */
@@ -4354,14 +5042,20 @@ function loadSettings() {
 
           <!-- Profile header -->
           <div class="stg-profile-header">
+            <!-- Avatar with upload button -->
             <div class="stg-avatar-wrap">
-              <div class="stg-avatar" id="stgAvatar">
-                ${user.full_name ? user.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : 'U'}
-              </div>
+              ${user.photo
+                ? `<img src="${user.photo}" class="stg-avatar-img" id="stgAvatarImg" alt="Profile">`
+                : `<div class="stg-avatar" id="stgAvatar">${user.full_name ? user.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : 'U'}</div>`
+              }
+              <label class="stg-avatar-upload-btn" for="stgPhotoInput" title="Change photo">
+                <i class="ri-camera-line"></i>
+              </label>
+              <input type="file" id="stgPhotoInput" accept="image/*" style="display:none;">
             </div>
             <div class="stg-profile-info">
-              <div class="stg-profile-name" id="stgProfileName">${user.full_name || '—'}</div>
-              <span class="stg-role-badge" id="stgRoleBadge">${user.role || '—'}</span>
+              <div class="stg-profile-name">${escHtml(user.full_name || '—')}</div>
+              <span class="stg-role-badge">${escHtml(user.role || '—')}</span>
             </div>
             <button class="stg-edit-btn" id="stgEditBtn">
               <i class="ri-edit-line"></i> Edit
@@ -4620,6 +5314,40 @@ function loadSettings() {
     });
   });
 
+  // ── Photo Upload ─────────────────────────────────────────────────────────────
+  document.getElementById('stgPhotoInput')?.addEventListener('change', async function() {
+    const file = this.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showToast('Please select an image file.', 'error'); return; }
+    if (file.size > 5 * 1024 * 1024)    { showToast('Image must be under 5MB.', 'error'); return; }
+
+    // Preview immediately
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const src = e.target.result;
+      const img = document.getElementById('stgAvatarImg');
+      const div = document.getElementById('stgAvatar');
+      if (img) { img.src = src; }
+      else if (div) {
+        div.insertAdjacentHTML('afterend', `<img src="${src}" class="stg-avatar-img" id="stgAvatarImg" alt="Profile">`);
+        div.remove();
+      }
+    };
+    reader.readAsDataURL(file);
+
+    // Upload to server
+    const formData = new FormData();
+    formData.append('photo', file);
+    try {
+      const res    = await fetch(`/api/users/${user.id}/photo`, { method: 'POST', body: formData });
+      const result = await res.json();
+      if (!res.ok) { showToast(result.error || 'Upload failed.', 'error'); return; }
+      const updated = { ...user, photo: result.photo };
+      localStorage.setItem('user', JSON.stringify(updated));
+      showToast('Profile photo updated.', 'success');
+    } catch { showToast('Upload failed — network error.', 'error'); }
+  });
+
   // ── Edit Profile ───────────────────────────────────────────────────────────
   document.getElementById('stgEditBtn').onclick = () =>
     document.getElementById('stgEditModal').classList.remove('hidden');
@@ -4747,8 +5475,236 @@ function loadSettings() {
   };
 
   // ── Request Leave ──────────────────────────────────────────────────────────
-  document.getElementById('stgLeaveBtn').onclick = () =>
-    showToast('Leave request submitted. Awaiting admin approval.', 'success');
+  document.getElementById('stgLeaveBtn').onclick = () => openLeaveModal(user);
+
+}
+
+function openLeaveModal(user) {
+  if (document.getElementById('leaveRequestModal')) return;
+
+  const deptDefault = {
+    noc: 'NOC Department', finance: 'Finance Department',
+    executive: 'Executive', admin: 'Admin', bidder: 'Bidder'
+  }[user.role?.toLowerCase()] || '';
+
+  const leaveTypes = [
+    { val: 'vacation',  label: 'Vacation Leave',  icon: 'ri-sun-line' },
+    { val: 'sick',      label: 'Sick Leave',       icon: 'ri-heart-pulse-line' },
+    { val: 'emergency', label: 'Emergency Leave',  icon: 'ri-alarm-warning-line' },
+    { val: 'maternity', label: 'Maternity Leave',  icon: 'ri-mother-line' },
+    { val: 'paternity', label: 'Paternity Leave',  icon: 'ri-parent-line' },
+    { val: 'others',    label: 'Others',           icon: 'ri-more-line' },
+  ];
+
+  const m = document.createElement('div');
+  m.id = 'leaveRequestModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell">
+
+      <!-- Header -->
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-calendar-todo-line"></i></div>
+          <div>
+            <div class="lv-header-title">Leave Request Form</div>
+            <div class="lv-header-sub">Complete all required fields to submit your request</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="leaveModalClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <!-- Body -->
+      <div class="lv-body">
+
+        <!-- Employee Info Banner -->
+        <div class="lv-emp-banner">
+          <div class="lv-emp-avatar">${user.full_name ? user.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : 'U'}</div>
+          <div class="lv-emp-info">
+            <div class="lv-emp-name">${escHtml(user.full_name || '—')}</div>
+            <div class="lv-emp-meta">
+              <span><i class="ri-id-card-line"></i> ${escHtml(user.id_no || '—')}</span>
+              <span><i class="ri-building-4-line"></i> ${escHtml(deptDefault || user.role || '—')}</span>
+            </div>
+          </div>
+          <div class="lv-status-pill"><i class="ri-time-line"></i> Pending</div>
+        </div>
+
+        <!-- Section: Leave Type pills -->
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-file-list-3-line"></i> Leave Type <span class="lv-req">*</span></div>
+          <div class="lv-type-pills" id="lvTypePills">
+            ${leaveTypes.map(t => `
+              <button type="button" class="lv-type-pill" data-val="${t.val}">
+                <i class="${t.icon}"></i>
+                <span>${t.label}</span>
+              </button>`).join('')}
+          </div>
+          <input type="hidden" id="lvType">
+        </div>
+
+        <!-- Section: Date Range -->
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-calendar-range-line"></i> Leave Duration <span class="lv-req">*</span></div>
+          <div class="lv-date-row">
+            <div class="lv-date-box">
+              <label class="lv-date-label">Start Date</label>
+              <div class="lv-input-wrap">
+                <i class="ri-calendar-line lv-input-icon"></i>
+                <input type="date" id="lvStart" class="lv-input lv-input-icon-pad">
+              </div>
+            </div>
+            <div class="lv-date-arrow"><i class="ri-arrow-right-line"></i></div>
+            <div class="lv-date-box">
+              <label class="lv-date-label">End Date</label>
+              <div class="lv-input-wrap">
+                <i class="ri-calendar-check-line lv-input-icon"></i>
+                <input type="date" id="lvEnd" class="lv-input lv-input-icon-pad">
+              </div>
+            </div>
+            <div class="lv-days-box" id="lvDaysBox">
+              <div class="lv-days-num" id="lvDaysNum">—</div>
+              <div class="lv-days-lbl">days</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Department + Reason -->
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-building-4-line"></i> Department / Position</div>
+            <div class="lv-select-wrap">
+              <select id="lvDept" class="lv-input lv-select">
+                <option value="">Select department…</option>
+                <option value="NOC Department"      ${deptDefault==='NOC Department'?'selected':''}>NOC Department</option>
+                <option value="Finance Department"  ${deptDefault==='Finance Department'?'selected':''}>Finance Department</option>
+                <option value="Executive"           ${deptDefault==='Executive'?'selected':''}>Executive</option>
+                <option value="Admin"               ${deptDefault==='Admin'?'selected':''}>Admin</option>
+                <option value="Bidder"              ${deptDefault==='Bidder'?'selected':''}>Bidder</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Reason for Leave</div>
+            <div class="lv-input-wrap">
+              <i class="ri-edit-line lv-input-icon"></i>
+              <input type="text" id="lvReason" class="lv-input lv-input-icon-pad" placeholder="Brief reason for your leave…">
+            </div>
+          </div>
+        </div>
+
+        <!-- Section: Attachment -->
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-attachment-line"></i> Supporting Document <span class="lv-optional">(optional)</span></div>
+          <label class="lv-upload-zone" for="lvAttachment" id="lvUploadZone">
+            <div class="lv-upload-content" id="lvUploadContent">
+              <div class="lv-upload-icon"><i class="ri-upload-cloud-2-line"></i></div>
+              <div class="lv-upload-text">
+                <span class="lv-upload-cta">Click to upload</span> or drag and drop
+              </div>
+              <div class="lv-upload-hint">PDF, DOC, JPG, PNG — max 10MB</div>
+            </div>
+            <input type="file" id="lvAttachment" style="display:none;"
+              accept=".pdf,.doc,.docx,.jpg,.jpeg,.png">
+          </label>
+        </div>
+
+      </div>
+
+      <!-- Footer -->
+      <div class="lv-footer">
+        <div class="lv-footer-note">
+          <i class="ri-information-line"></i>
+          Your request will be reviewed by the admin and you will be notified of the decision.
+        </div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="leaveCancelBtn">
+            <i class="ri-close-line"></i> Cancel
+          </button>
+          <button class="lv-submit-btn" id="leaveSubmitBtn">
+            <i class="ri-send-plane-fill"></i> Submit Request
+          </button>
+        </div>
+      </div>
+
+    </div>
+  `;
+
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('leaveModalClose').onclick = close;
+  document.getElementById('leaveCancelBtn').onclick  = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  // Leave type pill selection
+  document.getElementById('lvTypePills').addEventListener('click', function(e) {
+    const pill = e.target.closest('.lv-type-pill');
+    if (!pill) return;
+    document.querySelectorAll('.lv-type-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    document.getElementById('lvType').value = pill.dataset.val;
+  });
+
+  // Auto-calculate days
+  function calcDays() {
+    const s = document.getElementById('lvStart').value;
+    const e = document.getElementById('lvEnd').value;
+    const box = document.getElementById('lvDaysNum');
+    if (!s || !e) { box.textContent = '—'; return; }
+    const diff = Math.ceil((new Date(e) - new Date(s)) / (1000*60*60*24)) + 1;
+    box.textContent = diff > 0 ? diff : '—';
+    document.getElementById('lvDaysBox').style.background = diff > 0 ? '#eff6ff' : '#f1f5f9';
+  }
+  document.getElementById('lvStart').addEventListener('change', calcDays);
+  document.getElementById('lvEnd').addEventListener('change', calcDays);
+
+  // Attachment preview
+  document.getElementById('lvAttachment').addEventListener('change', function() {
+    const content = document.getElementById('lvUploadContent');
+    if (this.files[0]) {
+      content.innerHTML = `
+        <div class="lv-upload-icon" style="color:#22c55e;"><i class="ri-checkbox-circle-line"></i></div>
+        <div class="lv-upload-text"><span class="lv-upload-cta" style="color:#16a34a;">${escHtml(this.files[0].name)}</span></div>
+        <div class="lv-upload-hint">${(this.files[0].size/1024).toFixed(1)} KB — click to change</div>`;
+      document.getElementById('lvUploadZone').style.borderColor = '#22c55e';
+      document.getElementById('lvUploadZone').style.background  = '#f0fdf4';
+    }
+  });
+
+  // Submit
+  document.getElementById('leaveSubmitBtn').addEventListener('click', async () => {
+    const start_date = document.getElementById('lvStart').value;
+    const end_date   = document.getElementById('lvEnd').value;
+    const leave_type = document.getElementById('lvType').value;
+    if (!leave_type)  { showToast('Please select a leave type.', 'error'); return; }
+    if (!start_date || !end_date) { showToast('Please select start and end dates.', 'error'); return; }
+    if (end_date < start_date)    { showToast('End date must be after start date.', 'error'); return; }
+
+    const btn = document.getElementById('leaveSubmitBtn');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const daysVal = document.getElementById('lvDaysNum').textContent;
+      const formData = new FormData();
+      formData.append('department',     document.getElementById('lvDept').value);
+      formData.append('position',       document.getElementById('lvDept').value);
+      formData.append('leave_type',     leave_type);
+      formData.append('start_date',     start_date);
+      formData.append('end_date',       end_date);
+      formData.append('number_of_days', daysVal === '—' ? '' : daysVal);
+      formData.append('reason',         document.getElementById('lvReason').value.trim());
+      const file = document.getElementById('lvAttachment').files[0];
+      if (file) formData.append('attachment', file);
+
+      const res = await fetch(`/api/users/${user.id}/leaves`, { method: 'POST', body: formData });
+      if (!res.ok) { const r = await res.json(); showToast(r.error || 'Submission failed.', 'error'); return; }
+      close();
+      showToast('Leave request submitted successfully.', 'success');
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request'; }
+  });
 
   // ── Account Deletion Request ───────────────────────────────────────────────
   document.getElementById('stgDeleteAccBtn').onclick = () =>
@@ -4757,4 +5713,15 @@ function loadSettings() {
   // Apply saved display settings on load
   const fs = localStorage.getItem('fontSize');
   if (fs) document.documentElement.style.fontSize = fs + 'px';
+}
+
+function _stgApplyDisplaySettings() {
+  const brightness = localStorage.getItem('brightness');
+  const fontSize   = localStorage.getItem('fontSize');
+  const theme      = localStorage.getItem('theme');
+  const nightLight = localStorage.getItem('nightLight') === 'true';
+  if (brightness) document.body.style.opacity = (parseInt(brightness) / 100).toFixed(2);
+  if (fontSize)   document.documentElement.style.fontSize = fontSize + 'px';
+  if (theme === 'dark') document.body.classList.add('dark');
+  if (nightLight) document.body.style.filter = 'sepia(0.3) brightness(0.96)';
 }
