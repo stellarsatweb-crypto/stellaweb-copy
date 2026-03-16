@@ -28,6 +28,7 @@ document.querySelectorAll(".menu li").forEach(item => {
     if (text === "Letters") loadLetters();
     if (text === "Reports") loadReports();
     if (text === "Map") loadMap();
+    if (text === "Settings") loadSettings();
   });
 });
 
@@ -47,21 +48,20 @@ function loadReports() {
         <div class="rpt-topbar-right">
           <div class="rpt-search-box">
             <i class="ri-search-line"></i>
-            <input type="text" id="rptSearch" placeholder="Search region, ticket…">
+            <input type="text" id="rptSearch" placeholder="Search region…">
           </div>
-          <button class="tool-btn apply-btn" id="rptAddBtn">
-            <i class="ri-add-line"></i> Add Report
+          <button class="rpt-center-btn">
+            <i class="ri-file-chart-line"></i> Regional Progress Report
+          </button>
+          <button class="rpt-add-btn" id="rptAddBtn">
+            <i class="ri-add-line"></i> Add Region
           </button>
         </div>
       </div>
 
-      <div class="rpt-btn-row">
-        <button class="rpt-main-btn"><i class="ri-file-chart-line"></i> Regional Progress Report</button>
-      </div>
-
       <div class="rpt-date-bar">
-        <i class="ri-calendar-line"></i>
-        January 25 &ndash; February 23, 2026
+        <i class="ri-calendar-2-line"></i>
+        <span>January 25 &ndash; February 23, 2026</span>
       </div>
 
       <div class="rpt-card">
@@ -69,17 +69,15 @@ function loadReports() {
           <thead>
             <tr class="rpt-thead-row">
               <th>Region</th>
-              <th>Date / Duration</th>
-              <th>Remarks</th>
-              <th>Ticket No.</th>
-              <th>Ticket</th>
               <th>MIR</th>
-              <th>Utilization</th>
+              <th>Deadline</th>
+              <th>Ticket</th>
+              <th>SLA</th>
               <th>Progress</th>
             </tr>
           </thead>
           <tbody id="rptTbody">
-            <tr><td colspan="8" class="rpt-empty-cell">
+            <tr><td colspan="6" class="rpt-empty-cell">
               <i class="ri-loader-4-line spin"></i> Loading…
             </td></tr>
           </tbody>
@@ -92,13 +90,9 @@ function loadReports() {
 
   document.getElementById('rptSearch').addEventListener('input', function () {
     const q = this.value.toLowerCase();
-    const filtered = allReportData.filter(r =>
-      (r.region||'').toLowerCase().includes(q) ||
-      (r.ticket_no||'').toLowerCase().includes(q) ||
-      (r.ticket||'').toLowerCase().includes(q) ||
-      (r.remarks||'').toLowerCase().includes(q)
-    );
-    renderReportRows(filtered);
+    renderReportRows(allReportData.filter(r =>
+      (r.region||'').toLowerCase().includes(q)
+    ));
   });
 
   document.getElementById('rptAddBtn').addEventListener('click', () => openReportModal());
@@ -110,10 +104,41 @@ async function fetchReports() {
     const data = await res.json();
     allReportData = data;
     renderReportRows(data);
-  } catch (err) {
-    document.getElementById('rptTbody').innerHTML =
-      `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load reports</td></tr>`;
+  } catch {
+    const tb = document.getElementById('rptTbody');
+    if (tb) tb.innerHTML = `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load reports</td></tr>`;
   }
+}
+
+function rptBar(pct) {
+  const v = parseFloat(pct) || 0;
+  const c = v >= 80 ? '#22c55e' : v >= 50 ? '#f59e0b' : '#ef4444';
+  return `
+    <div class="rpt-bar-wrap">
+      <div class="rpt-bar-track">
+        <div class="rpt-bar-fill" style="width:${v}%;background:${c};"></div>
+      </div>
+      <span class="rpt-bar-pct" style="color:${c};">${v}%</span>
+    </div>`;
+}
+
+function rptCircle(pct) {
+  const v    = Math.min(100, parseFloat(pct) || 0);
+  const c    = v >= 80 ? '#22c55e' : v >= 50 ? '#f59e0b' : '#ef4444';
+  const R    = 22;
+  const circ = 2 * Math.PI * R;
+  // At 100% use full circumference with 0 gap so circle is solid
+  const dash = v >= 100 ? circ : (v / 100) * circ;
+  const gap  = v >= 100 ? 0    : circ - dash;
+  return `
+    <svg width="56" height="56" viewBox="0 0 56 56">
+      <circle cx="28" cy="28" r="${R}" fill="none" stroke="#e5e7eb" stroke-width="5"/>
+      <circle cx="28" cy="28" r="${R}" fill="none" stroke="${c}" stroke-width="5"
+        stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}"
+        stroke-dashoffset="${(circ * 0.25).toFixed(2)}"
+        stroke-linecap="butt"/>
+      <text x="28" y="33" text-anchor="middle" font-size="10.5" font-weight="700" fill="${c}">${v}%</text>
+    </svg>`;
 }
 
 function renderReportRows(data) {
@@ -121,303 +146,234 @@ function renderReportRows(data) {
   if (!tbody) return;
 
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No reports found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No reports found</td></tr>`;
     return;
   }
 
   tbody.innerHTML = '';
 
   data.forEach(row => {
-    const util     = parseFloat(row.utilization) || 0;
-    const progress = parseFloat(row.progress)    || 0;
-    const isExpanded    = expandedReportId === row.id;
-    const progressColor = progress >= 80 ? '#22c55e' : progress >= 50 ? '#f59e0b' : '#ef4444';
-    const utilColor     = util     >= 80 ? '#22c55e' : util     >= 50 ? '#f59e0b' : '#ef4444';
-    const circumference = 2 * Math.PI * 20;
-    const dash          = (progress / 100) * circumference;
-    const remarksCls    = (row.remarks||'').replace(/\s+/g,'-').toLowerCase();
+    // Schema: mir, ticket, sla come from latest linked other_data via JOIN
+    const mirPct    = parseFloat(row.mir      ?? 0);
+    const ticketPct = parseFloat(row.ticket   ?? 0);
+    const slaPct    = parseFloat(row.sla      ?? 0);
+    const progress = parseFloat(row.progress ?? ((parseFloat(row.mir||0) + parseFloat(row.ticket||0) + parseFloat(row.sla||0)) / 3));
+    const isExpanded = expandedReportId === row.id;
 
-    // ── Main row ──────────────────────────────────────────────────────────────
     const tr = document.createElement('tr');
-    tr.className = 'rpt-row';
+    tr.className = 'rpt-row' + (isExpanded ? ' rpt-row-open' : '');
     tr.dataset.id = row.id;
     tr.innerHTML = `
-      <td><span class="rpt-region-badge">${row.region||'—'}</span></td>
-      <td class="rpt-cell-muted">${row.date_start ? row.date_start + ' – ' + (row.date_end||'?') : '—'}</td>
-      <td><span class="rpt-remarks-tag rpt-remarks-${remarksCls}">${row.remarks||'—'}</span></td>
-      <td class="rpt-cell-ticket">${row.ticket_no||'—'}</td>
-      <td class="rpt-cell-muted">${row.ticket||'—'}</td>
-      <td class="rpt-cell-center"><span class="rpt-mir-val">${row.mir||'—'}</span></td>
-      <td class="rpt-cell-util">
-        <div class="rpt-util-bar-wrap">
-          <div class="rpt-util-bar-bg">
-            <div class="rpt-util-bar-fill" style="width:${util}%;background:${utilColor};"></div>
-          </div>
-          <span class="rpt-util-pct" style="color:${utilColor};">${util}%</span>
-        </div>
-      </td>
-      <td class="rpt-cell-progress">
-        <div class="rpt-progress-wrap">
-          <div class="rpt-circle-wrap">
-            <svg width="52" height="52" viewBox="0 0 52 52">
-              <circle cx="26" cy="26" r="20" fill="none" stroke="#e5e7eb" stroke-width="4"/>
-              <circle cx="26" cy="26" r="20" fill="none" stroke="${progressColor}" stroke-width="4"
-                stroke-dasharray="${dash.toFixed(2)} ${circumference.toFixed(2)}"
-                stroke-dashoffset="${(circumference*0.25).toFixed(2)}"
-                stroke-linecap="round"/>
-              <text x="26" y="30" text-anchor="middle" font-size="10" font-weight="700" fill="${progressColor}">${progress}%</text>
-            </svg>
-          </div>
-          <button class="rpt-expand-btn ${isExpanded?'expanded':''}" data-id="${row.id}" title="Toggle reminders">
+      <td><span class="rpt-region-badge">${row.region || '—'}</span></td>
+      <td>${rptBar(mirPct)}</td>
+      <td>${(() => {
+        if (!row.date_start && !row.date_end) return '<span class="rpt-no-val">—</span>';
+        const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '?';
+        const dEnd  = row.date_end ? new Date(row.date_end) : null;
+        const today = new Date(); today.setHours(0,0,0,0);
+        if (dEnd) dEnd.setHours(0,0,0,0);
+        const range = fmt(row.date_start) + ' – ' + fmt(row.date_end);
+        if (dEnd && dEnd < today)
+          return '<span class="rpt-deadline-overdue"><i class="ri-error-warning-line"></i> ' + range + '</span>';
+        if (dEnd && dEnd.getTime() === today.getTime())
+          return '<span class="rpt-deadline-today"><i class="ri-alarm-line"></i> ' + range + '</span>';
+        return '<span class="rpt-deadline-ok"><i class="ri-calendar-check-line"></i> ' + range + '</span>';
+      })()}</td>
+      <td>${rptBar(ticketPct)}</td>
+      <td>${rptBar(slaPct)}</td>
+      <td>
+        <div class="rpt-progress-cell">
+          ${rptCircle(progress)}
+          <button class="rpt-expand-btn ${isExpanded ? 'expanded' : ''}" data-id="${row.id}">
             <i class="ri-arrow-down-s-line"></i>
           </button>
         </div>
       </td>
-
     `;
     tbody.appendChild(tr);
 
-    // ── Expand row ────────────────────────────────────────────────────────────
+    // Expand row
     const expandTr = document.createElement('tr');
     expandTr.className = 'rpt-expand-row' + (isExpanded ? ' open' : '');
     expandTr.dataset.id = row.id;
     expandTr.innerHTML = `
-      <td colspan="8" class="rpt-expand-cell">
-        <div class="rpt-reminder-wrap ${isExpanded?'open':''}" id="rpt-reminder-wrap-${row.id}">
-          <div class="rpt-reminder-panel">
-            <div class="rpt-rem-header">
-              <span><i class="ri-alarm-warning-line"></i> Reminder — ${row.region||''}</span>
-              <div class="rpt-rem-actions">
-                <button class="tool-btn apply-btn rpt-add-rem-btn" data-report-id="${row.id}" data-region="${row.region||''}">
-                  <i class="ri-add-line"></i> Add
-                </button>
-                <button class="tool-btn rpt-filter-rem-btn"><i class="ri-filter-3-line"></i> Filter</button>
-              </div>
+      <td colspan="6" class="rpt-expand-cell">
+        <div class="rpt-panel ${isExpanded ? 'open' : ''}" id="rpt-panel-${row.id}">
+          <div class="rpt-panel-header">
+            <div class="rpt-panel-title">
+              <i class="ri-history-line"></i>
+              Reminder &mdash; <strong>${row.region || ''}</strong>
             </div>
-            <div class="rpt-rem-table-wrap">
-              <table class="rpt-rem-table">
-                <thead>
-                  <tr>
-                    <th>Site Name</th><th>Start Date</th><th>End Date</th>
-                    <th>Condition</th><th>Evidence</th><th>Status</th><th>Remarks</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="rpt-rem-tbody-${row.id}">
-                  <tr><td colspan="8" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr>
-                </tbody>
-              </table>
+            <div class="rpt-panel-actions">
+              <button class="rpt-panel-add-btn" data-report-id="${row.id}" data-region="${row.region || ''}">
+                <i class="ri-add-line"></i> Add Update
+              </button>
+              <button class="rpt-edit-report-btn" data-id="${row.id}" title="Edit region">
+                <i class="ri-edit-line"></i>
+              </button>
+              <button class="rpt-del-report-btn" data-id="${row.id}" title="Delete region">
+                <i class="ri-delete-bin-line"></i>
+              </button>
             </div>
+          </div>
+          <div class="rpt-rem-table-wrap">
+            <table class="rpt-rem-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>MIR</th>
+                  <th>Ticket</th>
+                  <th>SLA</th>
+                  <th>By</th>
+                </tr>
+              </thead>
+              <tbody id="rpt-rem-tbody-${row.id}">
+                <tr><td colspan="5" class="rpt-empty-cell">
+                  <i class="ri-loader-4-line spin"></i> Loading…
+                </td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
       </td>
     `;
     tbody.appendChild(expandTr);
 
-    // Load reminders if expanded
     if (isExpanded) fetchReminders(row.id);
   });
 
-  // ── Bind events ──────────────────────────────────────────────────────────────
-
-  // Expand/collapse
-  document.querySelectorAll('.rpt-expand-btn').forEach(btn => {
+  // Expand / collapse
+  tbody.querySelectorAll('.rpt-expand-btn').forEach(btn => {
     btn.addEventListener('click', function () {
       const id = parseInt(this.dataset.id);
       expandedReportId = (expandedReportId === id) ? null : id;
-      renderReportRows(allReportData.filter(r => {
-        const q = document.getElementById('rptSearch')?.value.toLowerCase() || '';
-        return !q ||
-          (r.region||'').toLowerCase().includes(q) ||
-          (r.ticket_no||'').toLowerCase().includes(q) ||
-          (r.ticket||'').toLowerCase().includes(q) ||
-          (r.remarks||'').toLowerCase().includes(q);
-      }));
+      const q = document.getElementById('rptSearch')?.value.toLowerCase() || '';
+      renderReportRows(allReportData.filter(r =>
+        !q || (r.region||'').toLowerCase().includes(q)
+      ));
       if (expandedReportId) {
         setTimeout(() => {
-          document.querySelector('.rpt-expand-row.open')?.scrollIntoView({ behavior:'smooth', block:'nearest' });
-        }, 350);
+          document.querySelector('.rpt-expand-row.open')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 80);
       }
     });
   });
 
+  // Edit region
+  tbody.querySelectorAll('.rpt-edit-report-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = allReportData.find(r => r.id === parseInt(btn.dataset.id));
+      if (row) openReportModal(row);
+    });
+  });
 
+  // Delete region
+  tbody.querySelectorAll('.rpt-del-report-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      showConfirmDeleteModal(1, async () => {
+        await fetch(`/api/reports/${btn.dataset.id}`, { method: 'DELETE' });
+        expandedReportId = null;
+        await fetchReports();
+        showToast('Region deleted.', 'success');
+      });
+    });
+  });
 
-  // Add reminder
-  document.querySelectorAll('.rpt-add-rem-btn').forEach(btn => {
+  // Add update
+  tbody.querySelectorAll('.rpt-panel-add-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       openReminderModal(parseInt(btn.dataset.reportId), btn.dataset.region);
     });
   });
 }
 
-// ── Fetch & render reminders ─────────────────────────────────────────────────
-async function fetchReminders(reportId) {
-  const tbody = document.getElementById(`rpt-rem-tbody-${reportId}`);
+async function fetchReminders(regionId) {
+  const tbody = document.getElementById(`rpt-rem-tbody-${regionId}`);
   if (!tbody) return;
   try {
-    const res  = await fetch(`/api/reports/${reportId}/reminders`);
+    const res  = await fetch(`/api/reports/${regionId}/history`);
     const data = await res.json();
-    renderReminderRows(reportId, data);
+    renderReminderRows(regionId, data);
   } catch {
-    tbody.innerHTML = `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load</td></tr>`;
   }
 }
 
-function renderReminderRows(reportId, data) {
-  const tbody = document.getElementById(`rpt-rem-tbody-${reportId}`);
+function renderReminderRows(regionId, data) {
+  const tbody = document.getElementById(`rpt-rem-tbody-${regionId}`);
   if (!tbody) return;
+
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="8" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No reminders yet</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No updates yet — click <strong>Add Update</strong> to log progress.</td></tr>`;
     return;
   }
-  tbody.innerHTML = data.map(r => {
-    const condCls = (r.condition||'').toLowerCase();
-    const statusCls = (r.status||'').replace(/\s+/g,'-').toLowerCase();
-    const evidenceCell = r.evidence
-      ? `<a href="${r.evidence}" target="_blank" class="rpt-evidence-btn" title="View evidence"><i class="ri-image-2-line"></i></a>`
-      : `<label class="rpt-evidence-btn rpt-evidence-upload" data-id="${r.id}" title="Upload evidence" style="cursor:pointer;">
-           <i class="ri-upload-2-line"></i>
-           <input type="file" accept="image/*" class="hidden rpt-evidence-file" data-id="${r.id}">
-         </label>`;
+
+  // Already sorted newest first from server (ORDER BY o.date DESC)
+  tbody.innerHTML = data.map((r, idx) => {
+    const isLatest  = idx === 0;
+    const mirVal    = r.mir    != null ? parseFloat(r.mir).toFixed(1)    + '%' : '—';
+    const ticketVal = r.ticket != null ? parseFloat(r.ticket).toFixed(1) + '%' : '—';
+    const slaVal    = r.sla    != null ? parseFloat(r.sla).toFixed(1)    + '%' : '—';
+    const dateStr   = r.date
+      ? new Date(r.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+      : '—';
+    const byName = r.created_by_name || r.created_by || '<span class="rpt-no-val">—</span>';
     return `
-      <tr class="rpt-rem-row" data-id="${r.id}">
-        <td>${r.site_name||'—'}</td>
-        <td class="rpt-cell-muted">${r.start_date ? r.start_date.slice(0,10) : '—'}</td>
-        <td class="rpt-cell-muted">${r.end_date   ? r.end_date.slice(0,10)   : '—'}</td>
-        <td><span class="rpt-condition rpt-condition-${condCls}">${r.condition||'—'}</span></td>
-        <td class="rpt-cell-center">${evidenceCell}</td>
-        <td>
-          <select class="rpt-status-select rpt-status-${statusCls}" data-id="${r.id}">
-            <option ${r.status==='Pending'     ?'selected':''}>Pending</option>
-            <option ${r.status==='In Progress' ?'selected':''}>In Progress</option>
-            <option ${r.status==='Resolved'    ?'selected':''}>Resolved</option>
-            <option ${r.status==='Closed'      ?'selected':''}>Closed</option>
-          </select>
+      <tr class="rpt-rem-row ${isLatest ? 'rpt-rem-latest' : ''}">
+        <td class="rpt-rem-date">
+          ${isLatest ? '<span class="rpt-latest-badge">Latest</span>' : ''}
+          ${dateStr}
         </td>
-        <td class="rpt-cell-muted">${r.remarks||'—'}</td>
-        <td class="rpt-actions-td">
-          <button class="row-action-btn edit-btn rpt-rem-edit-btn" data-id="${r.id}" data-report-id="${reportId}" title="Edit"><i class="ri-edit-line"></i></button>
-          <button class="row-action-btn delete-single-btn rpt-rem-del-btn" data-id="${r.id}" data-report-id="${reportId}" title="Delete"><i class="ri-delete-bin-line"></i></button>
-        </td>
+        <td><span class="rpt-rem-val">${mirVal}</span></td>
+        <td><span class="rpt-rem-val">${ticketVal}</span></td>
+        <td><span class="rpt-rem-val">${slaVal}</span></td>
+        <td class="rpt-rem-by">${byName}</td>
       </tr>
     `;
   }).join('');
-
-  // Status dropdown live update
-  tbody.querySelectorAll('.rpt-status-select').forEach(sel => {
-    sel.addEventListener('change', async function () {
-      try {
-        await fetch(`/api/reminders/${this.dataset.id}/status`, {
-          method:'PATCH', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ status: this.value })
-        });
-        showToast('Status updated.', 'success');
-      } catch { showToast('Update failed.', 'error'); }
-    });
-  });
-
-  // Evidence upload
-  tbody.querySelectorAll('.rpt-evidence-file').forEach(input => {
-    input.addEventListener('change', async function () {
-      if (!this.files[0]) return;
-      const fd = new FormData();
-      fd.append('evidence', this.files[0]);
-      try {
-        const res = await fetch(`/api/reminders/${this.dataset.id}/evidence`, { method:'POST', body:fd });
-        const result = await res.json();
-        if (result.success) { fetchReminders(reportId); showToast('Evidence uploaded.', 'success'); }
-      } catch { showToast('Upload failed.', 'error'); }
-    });
-  });
-
-  // Edit reminder
-  tbody.querySelectorAll('.rpt-rem-edit-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const res  = await fetch(`/api/reminders`);
-      const all  = await res.json();
-      const item = all.find(r => r.id === parseInt(btn.dataset.id));
-      if (item) openReminderModal(parseInt(btn.dataset.reportId), null, item);
-    });
-  });
-
-  // Delete reminder
-  tbody.querySelectorAll('.rpt-rem-del-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const remId    = parseInt(btn.dataset.id);
-      const reportId = parseInt(btn.dataset.reportId);
-      showConfirmDeleteModal(1, async () => {
-        try {
-          await fetch(`/api/reminders/${remId}`, { method:'DELETE' });
-          fetchReminders(reportId);
-          showToast('Reminder deleted.', 'success');
-        } catch { showToast('Delete failed.', 'error'); }
-      });
-    });
-  });
 }
 
-// ── Report Add/Edit Modal ─────────────────────────────────────────────────────
+// ── Add/Edit Region Modal ──────────────────────────────────────────────────────
 function openReportModal(existing = null) {
   const isEdit = !!existing;
   const m = document.createElement('div');
   m.id = 'rptReportModal';
   m.className = 'modal-overlay';
   m.innerHTML = `
-    <div class="modal-box add-modal-box">
+    <div class="modal-box add-modal-box" style="max-width:440px;">
       <div class="add-modal-header">
         <div class="add-modal-icon"><i class="ri-bar-chart-2-line"></i></div>
         <div class="add-modal-title">
-          <h3>${isEdit ? 'Edit Report' : 'Add Report'}</h3>
-          <p>${isEdit ? 'Update the regional progress record.' : 'Create a new regional progress entry.'}</p>
+          <h3>${isEdit ? 'Edit Region' : 'Add Region'}</h3>
+          <p>${isEdit ? 'Update the regional entry.' : 'Create a new regional progress entry.'}</p>
         </div>
         <button class="modal-close-btn" id="rptModalClose"><i class="ri-close-line"></i></button>
       </div>
       <div class="add-modal-body">
-        <div class="add-fields-grid">
+        <div class="add-fields-grid" style="grid-template-columns:1fr;">
           <div class="add-field-item">
             <label class="add-field-label"><i class="ri-map-pin-line"></i> Region *</label>
-            <input type="text" id="rpt-f-region" class="add-field-input" placeholder="e.g. BENGUET" value="${existing?.region||''}">
+            <input type="text" id="rpt-f-region" class="add-field-input" placeholder="e.g. BENGUET" value="${existing?.region || ''}">
           </div>
           <div class="add-field-item">
             <label class="add-field-label"><i class="ri-calendar-line"></i> Start Date</label>
-            <input type="date" id="rpt-f-date-start" class="add-field-input" value="${existing?.date_start||''}">
+            <input type="date" id="rpt-f-date-start" class="add-field-input" value="${existing?.date_start ? existing.date_start.split('T')[0] : ''}">
           </div>
           <div class="add-field-item">
             <label class="add-field-label"><i class="ri-calendar-check-line"></i> End Date</label>
-            <input type="date" id="rpt-f-date-end" class="add-field-input" value="${existing?.date_end||''}">
+            <input type="date" id="rpt-f-date-end" class="add-field-input" value="${existing?.date_end ? existing.date_end.split('T')[0] : ''}">
           </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-chat-1-line"></i> Remarks</label>
-            <input type="text" id="rpt-f-remarks" class="add-field-input" placeholder="e.g. On track" value="${existing?.remarks||''}">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-ticket-2-line"></i> Ticket No.</label>
-            <input type="text" id="rpt-f-ticketno" class="add-field-input" placeholder="e.g. TK-1021" value="${existing?.ticket_no||''}">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-file-list-line"></i> Ticket Label</label>
-            <input type="text" id="rpt-f-ticket" class="add-field-input" placeholder="e.g. Network Upgrade" value="${existing?.ticket||''}">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-signal-wifi-line"></i> MIR</label>
-            <input type="text" id="rpt-f-mir" class="add-field-input" placeholder="e.g. 80%" value="${existing?.mir||''}">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-percent-line"></i> Utilization (%)</label>
-            <input type="number" id="rpt-f-util" class="add-field-input" placeholder="0–100" min="0" max="100" value="${existing?.utilization||''}">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-donut-chart-line"></i> Progress (%)</label>
-            <input type="number" id="rpt-f-progress" class="add-field-input" placeholder="0–100" min="0" max="100" value="${existing?.progress||''}">
-          </div>
+
         </div>
       </div>
       <div class="add-modal-footer">
         <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
         <div class="modal-actions">
           <button class="tool-btn" id="rptModalCancel">Cancel</button>
-          <button class="tool-btn apply-btn" id="rptModalSave"><i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Report'}</button>
+          <button class="tool-btn apply-btn" id="rptModalSave">
+            <i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Region'}
+          </button>
         </div>
       </div>
     </div>
@@ -436,99 +392,71 @@ function openReportModal(existing = null) {
       region,
       date_start: document.getElementById('rpt-f-date-start').value || null,
       date_end:   document.getElementById('rpt-f-date-end').value   || null,
-      remarks:    document.getElementById('rpt-f-remarks').value.trim()  || null,
-      ticket_no:     document.getElementById('rpt-f-ticketno').value.trim() || null,
-      ticket:        document.getElementById('rpt-f-ticket').value.trim()   || null,
-      mir:           document.getElementById('rpt-f-mir').value.trim()      || null,
-      utilization:   document.getElementById('rpt-f-util').value            || null,
-      progress:      document.getElementById('rpt-f-progress').value        || null,
     };
     const btn = document.getElementById('rptModalSave');
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
     try {
       const url    = isEdit ? `/api/reports/${existing.id}` : '/api/reports';
       const method = isEdit ? 'PUT' : 'POST';
-      const res    = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const res    = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await res.json();
-      if (!res.ok) { showToast('Save failed: ' + (result.error||'Unknown'), 'error'); return; }
+      if (!res.ok) { showToast('Save failed: ' + (result.error || 'Unknown'), 'error'); return; }
       close();
       await fetchReports();
-      showToast(isEdit ? 'Report updated.' : 'Report added.', 'success');
+      showToast(isEdit ? 'Region updated.' : 'Region added.', 'success');
     } catch { showToast('Network error.', 'error'); }
-    finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Report'}`; }
+    finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Region'}`; }
   };
 }
 
-// ── Reminder Add/Edit Modal ───────────────────────────────────────────────────
-function openReminderModal(reportId, region, existing = null) {
-  const isEdit = !!existing;
+// ── Add Update Modal ───────────────────────────────────────────────────────────
+function openReminderModal(regionId, region) {
+  // Get logged-in user id and name from session
+  const loggedUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  const fullName   = loggedUser.full_name || loggedUser.name || loggedUser.username || 'Unknown';
+  const userId     = loggedUser.id || null;
+
   const m = document.createElement('div');
   m.id = 'rptReminderModal';
   m.className = 'modal-overlay';
   m.innerHTML = `
-    <div class="modal-box add-modal-box">
+    <div class="modal-box add-modal-box" style="max-width:440px;">
       <div class="add-modal-header">
-        <div class="add-modal-icon" style="background:rgba(255,255,255,0.15)"><i class="ri-alarm-warning-line"></i></div>
+        <div class="add-modal-icon" style="background:rgba(255,255,255,0.15)"><i class="ri-history-line"></i></div>
         <div class="add-modal-title">
-          <h3>${isEdit ? 'Edit Reminder' : 'Add Reminder'}</h3>
-          <p>${region ? 'Region: ' + region : ''}</p>
+          <h3>Add Update</h3>
+          <p>Region: <strong>${region || ''}</strong></p>
         </div>
         <button class="modal-close-btn" id="remModalClose"><i class="ri-close-line"></i></button>
       </div>
       <div class="add-modal-body">
-        <div class="add-fields-grid">
+        <div class="add-fields-grid" style="grid-template-columns:1fr;">
           <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-map-pin-line"></i> Site Name *</label>
-            <input type="text" id="rem-f-site" class="add-field-input" placeholder="e.g. BENGUET-SITE-01" value="${existing?.site_name||''}">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-calendar-line"></i> Start Date</label>
-            <input type="date" id="rem-f-start" class="add-field-input" value="${existing?.start_date?existing.start_date.slice(0,10):''}">
+            <label class="add-field-label"><i class="ri-signal-wifi-line"></i> MIR (%)</label>
+            <input type="number" id="rem-f-mir" class="add-field-input" placeholder="0–100" min="0" max="100" step="0.01">
           </div>
           <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-calendar-check-line"></i> End Date</label>
-            <input type="date" id="rem-f-end" class="add-field-input" value="${existing?.end_date?existing.end_date.slice(0,10):''}">
+            <label class="add-field-label"><i class="ri-ticket-2-line"></i> Ticket (%)</label>
+            <input type="number" id="rem-f-ticket" class="add-field-input" placeholder="0–100" min="0" max="100" step="0.01">
           </div>
           <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-wifi-line"></i> Condition</label>
-            <select id="rem-f-condition" class="add-field-input">
-              <option ${(existing?.condition||'')===''        ?'selected':''} value="">— Select —</option>
-              <option ${(existing?.condition||'')==='Online'  ?'selected':''}>Online</option>
-              <option ${(existing?.condition||'')==='Offline' ?'selected':''}>Offline</option>
-            </select>
+            <label class="add-field-label"><i class="ri-shield-check-line"></i> SLA (%)</label>
+            <input type="number" id="rem-f-sla" class="add-field-input" placeholder="0–100" min="0" max="100" step="0.01">
           </div>
           <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-checkbox-circle-line"></i> Status</label>
-            <select id="rem-f-status" class="add-field-input">
-              <option ${(existing?.status||'')==='Pending'     ?'selected':''}>Pending</option>
-              <option ${(existing?.status||'')==='In Progress' ?'selected':''}>In Progress</option>
-              <option ${(existing?.status||'')==='Resolved'    ?'selected':''}>Resolved</option>
-              <option ${(existing?.status||'')==='Closed'      ?'selected':''}>Closed</option>
-            </select>
-          </div>
-          <div class="add-field-item" style="grid-column:1/-1;">
-            <label class="add-field-label"><i class="ri-sticky-note-line"></i> Remarks</label>
-            <input type="text" id="rem-f-remarks" class="add-field-input" placeholder="Optional notes…" value="${existing?.remarks||''}">
-          </div>
-          <div class="add-field-item" style="grid-column:1/-1;">
-            <label class="add-field-label"><i class="ri-image-2-line"></i> Evidence Image
-              ${existing?.evidence ? '<span style="font-size:11px;color:#22c55e;margin-left:6px;"><i class="ri-checkbox-circle-fill"></i> File already uploaded</span>' : ''}
-            </label>
-            <div class="rem-evidence-drop" id="rem-evidence-drop">
-              <i class="ri-upload-cloud-2-line" style="font-size:28px;color:#2f4b85;"></i>
-              <span class="rem-evidence-drop-text">Drop image here or <u>click to browse</u></span>
-              <span class="rem-evidence-filename" id="rem-evidence-filename"></span>
-              <input type="file" id="rem-f-evidence" accept="image/*" class="hidden">
-            </div>
-            ${existing?.evidence ? `<a href="${existing.evidence}" target="_blank" class="rem-evidence-preview-link"><i class="ri-external-link-line"></i> View current evidence</a>` : ''}
+            <label class="add-field-label"><i class="ri-user-line"></i> Updated By</label>
+            <input type="text" class="add-field-input" value="${fullName}" readonly
+              style="background:#f8faff;color:#64748b;cursor:default;">
           </div>
         </div>
       </div>
       <div class="add-modal-footer">
-        <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
+        <span class="add-modal-hint"><i class="ri-information-line"></i> Each save creates a new history record</span>
         <div class="modal-actions">
           <button class="tool-btn" id="remModalCancel">Cancel</button>
-          <button class="tool-btn apply-btn" id="remModalSave"><i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Reminder'}</button>
+          <button class="tool-btn apply-btn" id="remModalSave">
+            <i class="ri-save-line"></i> Save Update
+          </button>
         </div>
       </div>
     </div>
@@ -540,100 +468,110 @@ function openReminderModal(reportId, region, existing = null) {
   document.getElementById('remModalCancel').onclick = close;
   m.onclick = e => { if (e.target === m) close(); };
 
-  // Evidence drop zone
-  const evidenceDrop  = document.getElementById('rem-evidence-drop');
-  const evidenceInput = document.getElementById('rem-f-evidence');
-  const evidenceName  = document.getElementById('rem-evidence-filename');
-  evidenceDrop.addEventListener('click', () => evidenceInput.click());
-  evidenceInput.addEventListener('click', e => e.stopPropagation());
-  evidenceInput.addEventListener('change', function () {
-    if (this.files[0]) { evidenceName.textContent = this.files[0].name; evidenceDrop.classList.add('rem-evidence-has-file'); }
-  });
-  evidenceDrop.addEventListener('dragover', e => { e.preventDefault(); evidenceDrop.classList.add('rem-evidence-drag'); });
-  evidenceDrop.addEventListener('dragleave', () => evidenceDrop.classList.remove('rem-evidence-drag'));
-  evidenceDrop.addEventListener('drop', e => {
-    e.preventDefault(); evidenceDrop.classList.remove('rem-evidence-drag');
-    const f = e.dataTransfer.files[0];
-    if (f && f.type.startsWith('image/')) {
-      const dt = new DataTransfer(); dt.items.add(f);
-      evidenceInput.files = dt.files;
-      evidenceName.textContent = f.name;
-      evidenceDrop.classList.add('rem-evidence-has-file');
-    }
-  });
-
   document.getElementById('remModalSave').onclick = async () => {
-    const site = document.getElementById('rem-f-site').value.trim();
-    if (!site) { showToast('Site name is required.', 'error'); return; }
     const payload = {
-      report_id:  reportId,
-      site_name:  site,
-      start_date: document.getElementById('rem-f-start').value     || null,
-      end_date:   document.getElementById('rem-f-end').value       || null,
-      condition:  document.getElementById('rem-f-condition').value || null,
-      status:     document.getElementById('rem-f-status').value    || null,
-      remarks:    document.getElementById('rem-f-remarks').value.trim() || null,
+      report_id:  regionId,
+      mir:        document.getElementById('rem-f-mir').value    || null,
+      ticket:     document.getElementById('rem-f-ticket').value || null,
+      sla:        document.getElementById('rem-f-sla').value    || null,
+      created_by: userId,
     };
     const btn = document.getElementById('remModalSave');
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
     try {
-      const url    = isEdit ? `/api/reminders/${existing.id}` : '/api/reminders';
-      const method = isEdit ? 'PUT' : 'POST';
-      const res    = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const res    = await fetch('/api/reminders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await res.json();
-      if (!res.ok) { showToast('Save failed: ' + (result.error||'Unknown'), 'error'); return; }
-      const savedId = result.id;
-      // Upload evidence if a file was selected
-      const evidenceFile = document.getElementById('rem-f-evidence')?.files[0];
-      if (evidenceFile && savedId) {
-        const fd = new FormData();
-        fd.append('evidence', evidenceFile);
-        try {
-          await fetch(`/api/reminders/${savedId}/evidence`, { method: 'POST', body: fd });
-        } catch { /* non-fatal — reminder saved, evidence upload failed */ }
-      }
+      if (!res.ok) { showToast('Save failed: ' + (result.error || 'Unknown'), 'error'); return; }
       close();
-      fetchReminders(reportId);
-      showToast(isEdit ? 'Reminder updated.' : 'Reminder added.', 'success');
+      fetchReminders(regionId);
+      await fetchReports();
+      showToast('Update saved — main table refreshed.', 'success');
     } catch { showToast('Network error.', 'error'); }
-    finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Reminder'}`; }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save Update'; }
   };
 }
+
 
 /* ================= MAP ================= */
 
 function loadMap() {
   mainContent.innerHTML = `
     <div class="map-page">
+
       <div class="map-topbar">
         <h2 class="map-title"><i class="ri-map-2-line"></i> Site Map</h2>
         <div class="map-topbar-right">
           <div class="map-search-box">
             <i class="ri-search-line"></i>
-            <input type="text" id="mapSearch" placeholder="Search site or region…">
+            <input type="text" id="mapSearch" placeholder="Search site or municipality…">
           </div>
+          <select id="mapProvinceFilter" class="map-filter-select">
+            <option value="">All Provinces</option>
+          </select>
           <div class="map-legend">
-            <span class="map-legend-item"><span class="map-dot map-dot-online"></span> Online</span>
-            <span class="map-legend-item"><span class="map-dot map-dot-offline"></span> Offline</span>
+            <span class="map-legend-item"><span class="map-dot" style="background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,0.2)"></span> Has Coords</span>
+            <span class="map-legend-item"><span class="map-dot" style="background:#f59e0b;box-shadow:0 0 0 3px rgba(245,158,11,0.2)"></span> Selected</span>
           </div>
         </div>
       </div>
-      <div class="map-card">
-        <div id="mapContainer" class="map-container"></div>
+
+      <div class="map-stats-row">
+        <div class="map-stat-chip"><i class="ri-map-pin-2-line"></i> <span id="mapStatTotal">—</span> Total Sites</div>
+        <div class="map-stat-chip map-stat-online"><i class="ri-checkbox-circle-line"></i> <span id="mapStatMapped">—</span> Mapped</div>
+        <div class="map-stat-chip map-stat-offline"><i class="ri-map-pin-add-line"></i> <span id="mapStatUnmapped">—</span> No Coords</div>
+        <div class="map-coord-hint" id="mapCoordHint">
+          <i class="ri-mouse-line"></i> Click on the map to place or move a marker
+        </div>
+      </div>
+
+      <div class="map-layout">
+
+        <!-- Map -->
+        <div class="map-card" style="flex:1;min-width:0;">
+          <div id="mapContainer" class="map-container"></div>
+        </div>
+
+        <!-- Side panel: site selector + coord form -->
+        <div class="map-side-panel" id="mapSidePanel">
+          <div class="map-side-title"><i class="ri-list-check-3"></i> Sites</div>
+          <div class="map-site-list" id="mapSiteList">
+            <div class="tkd-replies-empty"><i class="ri-loader-4-line spin"></i> Loading…</div>
+          </div>
+
+          <!-- Coordinate editor — shown when a site is selected -->
+          <div class="map-coord-editor hidden" id="mapCoordEditor">
+            <div class="map-coord-editor-title">
+              <i class="ri-edit-box-line"></i>
+              <span id="mapEditorSiteName">—</span>
+            </div>
+            <div class="map-coord-fields">
+              <div class="map-coord-field">
+                <label>Latitude</label>
+                <input type="number" id="mapLatInput" step="0.0000001" placeholder="e.g. 16.5714">
+              </div>
+              <div class="map-coord-field">
+                <label>Longitude</label>
+                <input type="number" id="mapLngInput" step="0.0000001" placeholder="e.g. 120.6818">
+              </div>
+            </div>
+            <p class="map-coord-tip"><i class="ri-information-line"></i> You can also click the map to set coordinates.</p>
+            <div class="map-coord-actions">
+              <button class="map-coord-cancel-btn" id="mapCancelBtn"><i class="ri-close-line"></i> Cancel</button>
+              <button class="map-coord-save-btn"   id="mapSaveBtn"><i class="ri-save-line"></i> Save Coordinates</button>
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   `;
 
-  // Load Leaflet CSS
   if (!document.getElementById('leafletCss')) {
     const link = document.createElement('link');
-    link.id   = 'leafletCss';
-    link.rel  = 'stylesheet';
+    link.id = 'leafletCss'; link.rel = 'stylesheet';
     link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
     document.head.appendChild(link);
   }
-
-  // Load Leaflet JS then init map
   if (typeof L === 'undefined') {
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
@@ -648,92 +586,293 @@ function initMap() {
   const container = document.getElementById('mapContainer');
   if (!container) return;
 
-  // Center on the Philippines
   const map = L.map('mapContainer', { zoomControl: false }).setView([16.5, 121.0], 7);
-
-  // Custom zoom control position
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-
-  // Tile layer — clean light style
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
-    subdomains: 'abcd',
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors',
     maxZoom: 19
   }).addTo(map);
 
-  // Custom marker icons
-  function makeIcon(color) {
+  function makeIcon(color, size = 30) {
     return L.divIcon({
       className: '',
-      html: `<div class="map-marker" style="background:${color};box-shadow:0 2px 8px ${color}88;">
+      html: `<div class="map-marker" style="background:${color};box-shadow:0 3px 10px ${color}99;">
                <i class="ri-map-pin-2-fill"></i>
              </div>`,
-      iconSize: [32, 32],
-      iconAnchor: [16, 32],
-      popupAnchor: [0, -34],
+      iconSize: [size, size], iconAnchor: [size/2, size], popupAnchor: [0, -(size+4)]
     });
   }
 
-  const onlineIcon  = makeIcon('#22c55e');
-  const offlineIcon = makeIcon('#ef4444');
+  const defaultIcon  = makeIcon('#22c55e');
+  const selectedIcon = makeIcon('#f59e0b', 34);
 
-  // Load sites from site_inventory and plot them
-  fetch('/api/terminals/all-sites')
-    .then(r => r.json())
-    .then(sites => {
-      let plotted = 0;
-      sites.forEach(site => {
-        const lat = parseFloat(site['LAT'] || site['PHASE 1 LAT'] || '');
-        const lng = parseFloat(site['LONG'] || site['PHASE 1 LONG'] || '');
-        if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
+  let allSites      = [];
+  let allMarkers    = {};   // site_name → L.marker
+  let selectedSite  = null;
+  let clickMarker   = null; // temporary marker for new click position
 
-        const isOnline = true; // placeholder — extend with real status later
-        const icon = isOnline ? onlineIcon : offlineIcon;
-        const name = site['SITENAME'] || site['NO.'] || 'Unknown Site';
-        const region = site['region_name'] || site['REGION'] || '—';
-        const province = site['PROVINCE'] || '—';
+  // ── Load all sites from network_sites ────────────────────────────────────
+  async function loadSites() {
+    try {
+      const res   = await fetch('/api/map/sites');
+      const sites = await res.json();
+      allSites = sites;
 
-        L.marker([lat, lng], { icon })
-          .addTo(map)
-          .bindPopup(`
-            <div class="map-popup">
-              <div class="map-popup-name">${name}</div>
-              <div class="map-popup-row"><i class="ri-map-pin-line"></i> ${province}</div>
-              <div class="map-popup-row"><i class="ri-earth-line"></i> ${region}</div>
-              <span class="map-popup-badge ${isOnline ? 'online' : 'offline'}">${isOnline ? 'Online' : 'Offline'}</span>
-            </div>
-          `, { maxWidth: 220 });
-        plotted++;
+      // Populate province filter
+      const provinces = [...new Set(sites.map(s => s.province).filter(Boolean))].sort();
+      const pSel = document.getElementById('mapProvinceFilter');
+      provinces.forEach(p => {
+        const o = document.createElement('option');
+        o.value = o.textContent = p;
+        pSel.appendChild(o);
       });
 
-      if (plotted === 0) {
-        showToast('No sites with coordinates found.', 'error');
-      } else {
-        showToast(`${plotted} site${plotted !== 1 ? 's' : ''} plotted on map.`, 'success');
-      }
-    })
-    .catch(() => {
-      showToast('Could not load site data.', 'error');
+      renderSiteList(sites);
+      plotMarkers(sites);
+      updateStats(sites);
+    } catch(e) {
+      showToast('Could not load sites from database.', 'error');
+    }
+  }
+
+  function updateStats(sites) {
+    const mapped   = sites.filter(s => s.lat && s.long).length;
+    document.getElementById('mapStatTotal').textContent    = sites.length;
+    document.getElementById('mapStatMapped').textContent   = mapped;
+    document.getElementById('mapStatUnmapped').textContent = sites.length - mapped;
+  }
+
+  function plotMarkers(sites) {
+    // Clear old markers
+    Object.values(allMarkers).forEach(m => map.removeLayer(m));
+    allMarkers = {};
+
+    sites.forEach(site => {
+      const lat = parseFloat(site.lat);
+      const lng = parseFloat(site.long);
+      if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
+
+      const marker = L.marker([lat, lng], { icon: defaultIcon })
+        .addTo(map)
+        .bindPopup(buildPopup(site), { maxWidth: 240 });
+
+      marker.on('click', () => selectSite(site, marker));
+      allMarkers[site.site_name] = marker;
+    });
+  }
+
+  function buildPopup(site) {
+    return `
+      <div class="map-popup">
+        <div class="map-popup-name">${site.site_name || '—'}</div>
+        <div class="map-popup-divider"></div>
+        <div class="map-popup-row"><i class="ri-map-pin-line"></i><span>${site.municipality || '—'}, ${site.province || '—'}</span></div>
+        <div class="map-popup-row"><i class="ri-router-line"></i><span>IP: ${site.ip || '—'}</span></div>
+        <div class="map-popup-row"><i class="ri-focus-3-line"></i><span>${parseFloat(site.lat||0).toFixed(6)}, ${parseFloat(site.long||0).toFixed(6)}</span></div>
+        <button class="map-popup-edit-btn" onclick="window._mapSelectSite('${site.site_name}')">
+          <i class="ri-crosshair-line"></i> Set Coordinates
+        </button>
+      </div>`;
+  }
+
+  // Global hook for popup button
+  window._mapSelectSite = (siteName) => {
+    const site   = allSites.find(s => s.site_name === siteName);
+    const marker = allMarkers[siteName];
+    if (site) selectSite(site, marker || null);
+  };
+
+  function renderSiteList(sites) {
+    const listEl = document.getElementById('mapSiteList');
+    if (!listEl) return;
+    if (!sites.length) {
+      listEl.innerHTML = '<div class="map-site-empty">No sites found.</div>';
+      return;
+    }
+    listEl.innerHTML = sites.map(s => {
+      const hasCords = s.lat && s.long;
+      return `
+        <div class="map-site-item ${hasCords ? 'has-coords' : 'no-coords'}" data-name="${s.site_name}">
+          <div class="map-site-item-left">
+            <span class="map-site-dot" style="background:${hasCords ? '#22c55e' : '#e2e8f0'}"></span>
+            <div>
+              <div class="map-site-name">${s.site_name}</div>
+              <div class="map-site-meta">${s.municipality || ''} · ${s.province || ''}</div>
+            </div>
+          </div>
+          <i class="ri-arrow-right-s-line map-site-arrow"></i>
+        </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.map-site-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const site   = allSites.find(s => s.site_name === item.dataset.name);
+        const marker = allMarkers[item.dataset.name] || null;
+        if (site) selectSite(site, marker);
+      });
+    });
+  }
+
+  function selectSite(site, marker) {
+    // Deselect previous
+    if (selectedSite && allMarkers[selectedSite.site_name]) {
+      allMarkers[selectedSite.site_name].setIcon(defaultIcon);
+    }
+    if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
+
+    selectedSite = site;
+
+    // Highlight marker
+    if (marker) {
+      marker.setIcon(selectedIcon);
+      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 12), { duration: 0.8 });
+    } else if (site.lat && site.long) {
+      map.flyTo([parseFloat(site.lat), parseFloat(site.long)], 12, { duration: 0.8 });
+    }
+
+    // Highlight in list
+    document.querySelectorAll('.map-site-item').forEach(el => {
+      el.classList.toggle('selected', el.dataset.name === site.site_name);
     });
 
-  // Search filter
-  document.getElementById('mapSearch')?.addEventListener('input', function () {
-    // Visual search hint — full filtering would require re-rendering markers
-    const q = this.value.toLowerCase();
-    document.querySelectorAll('.leaflet-marker-icon').forEach(el => {
-      el.style.opacity = q ? '0.3' : '1';
-    });
-    if (!q) return;
-    map.eachLayer(layer => {
-      if (layer.getPopup) {
-        const html = layer.getPopup?.()?.getContent?.() || '';
-        if (typeof html === 'string' && html.toLowerCase().includes(q)) {
-          layer._icon && (layer._icon.style.opacity = '1');
-        }
-      }
-    });
+    // Show coord editor
+    const editor = document.getElementById('mapCoordEditor');
+    editor.classList.remove('hidden');
+    document.getElementById('mapEditorSiteName').textContent = site.site_name;
+    document.getElementById('mapLatInput').value = site.lat ? parseFloat(site.lat).toFixed(7) : '';
+    document.getElementById('mapLngInput').value = site.long ? parseFloat(site.long).toFixed(7) : '';
+
+    // Scroll list item into view
+    const el = document.querySelector(`.map-site-item[data-name="${site.site_name}"]`);
+    el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    // Update hint
+    document.getElementById('mapCoordHint').innerHTML =
+      `<i class="ri-crosshair-line"></i> Click map to move marker for <strong>${site.site_name}</strong>`;
+  }
+
+  // ── Map click → place / move marker ──────────────────────────────────────
+  map.on('click', (e) => {
+    if (!selectedSite) {
+      showToast('Select a site from the list first.', 'error');
+      return;
+    }
+    const { lat, lng } = e.latlng;
+
+    // Update inputs
+    document.getElementById('mapLatInput').value = lat.toFixed(7);
+    document.getElementById('mapLngInput').value = lng.toFixed(7);
+
+    // Remove old click marker
+    if (clickMarker) map.removeLayer(clickMarker);
+
+    // If site already has a permanent marker, move it
+    if (allMarkers[selectedSite.site_name]) {
+      allMarkers[selectedSite.site_name].setLatLng([lat, lng]);
+    } else {
+      // Create new temporary marker
+      clickMarker = L.marker([lat, lng], { icon: selectedIcon }).addTo(map);
+    }
   });
+
+  // ── Save coordinates ──────────────────────────────────────────────────────
+  document.getElementById('mapSaveBtn').addEventListener('click', async () => {
+    if (!selectedSite) return;
+    const lat = parseFloat(document.getElementById('mapLatInput').value);
+    const lng = parseFloat(document.getElementById('mapLngInput').value);
+    if (isNaN(lat) || isNaN(lng)) { showToast('Please enter valid coordinates.', 'error'); return; }
+    if (lat < -90 || lat > 90)    { showToast('Latitude must be between -90 and 90.', 'error'); return; }
+    if (lng < -180 || lng > 180)  { showToast('Longitude must be between -180 and 180.', 'error'); return; }
+
+    const btn = document.getElementById('mapSaveBtn');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+
+    try {
+      const res = await fetch(`/api/map/sites/${encodeURIComponent(selectedSite.site_name)}/coords`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lat, long: lng })
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+
+      // Update local data
+      const idx = allSites.findIndex(s => s.site_name === selectedSite.site_name);
+      if (idx !== -1) { allSites[idx].lat = lat; allSites[idx].long = lng; }
+      selectedSite.lat = lat; selectedSite.long = lng;
+
+      // Place permanent marker
+      if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
+      if (allMarkers[selectedSite.site_name]) {
+        allMarkers[selectedSite.site_name].setLatLng([lat, lng]);
+        allMarkers[selectedSite.site_name].setIcon(selectedIcon);
+      } else {
+        const m = L.marker([lat, lng], { icon: selectedIcon }).addTo(map);
+        m.on('click', () => selectSite(selectedSite, m));
+        allMarkers[selectedSite.site_name] = m;
+      }
+
+      // Refresh list + stats
+      const q  = (document.getElementById('mapSearch')?.value || '').toLowerCase();
+      const pr = document.getElementById('mapProvinceFilter')?.value || '';
+      const filtered = applyFilters(allSites, q, pr);
+      renderSiteList(filtered);
+      updateStats(allSites);
+
+      showToast('Coordinates saved successfully.', 'success');
+    } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save Coordinates'; }
+  });
+
+  // ── Cancel ────────────────────────────────────────────────────────────────
+  document.getElementById('mapCancelBtn').addEventListener('click', () => {
+    if (selectedSite && allMarkers[selectedSite.site_name]) {
+      allMarkers[selectedSite.site_name].setIcon(defaultIcon);
+    }
+    if (clickMarker) { map.removeLayer(clickMarker); clickMarker = null; }
+    document.querySelectorAll('.map-site-item').forEach(el => el.classList.remove('selected'));
+    document.getElementById('mapCoordEditor').classList.add('hidden');
+    document.getElementById('mapCoordHint').innerHTML = '<i class="ri-mouse-line"></i> Click on the map to place or move a marker';
+    selectedSite = null;
+  });
+
+  // ── Search + Filter ───────────────────────────────────────────────────────
+  function applyFilters(sites, q, province) {
+    return sites.filter(s => {
+      const mQ = !q ||
+        (s.site_name    || '').toLowerCase().includes(q) ||
+        (s.municipality || '').toLowerCase().includes(q) ||
+        (s.province     || '').toLowerCase().includes(q);
+      const mP = !province || s.province === province;
+      return mQ && mP;
+    });
+  }
+
+  function onFilter() {
+    const q  = (document.getElementById('mapSearch')?.value || '').toLowerCase();
+    const pr = document.getElementById('mapProvinceFilter')?.value || '';
+    renderSiteList(applyFilters(allSites, q, pr));
+  }
+
+  document.getElementById('mapSearch')?.addEventListener('input', onFilter);
+  document.getElementById('mapProvinceFilter')?.addEventListener('change', onFilter);
+
+  // ── Lat/Lng manual input → move marker live ───────────────────────────────
+  function onCoordInput() {
+    if (!selectedSite) return;
+    const lat = parseFloat(document.getElementById('mapLatInput').value);
+    const lng = parseFloat(document.getElementById('mapLngInput').value);
+    if (isNaN(lat) || isNaN(lng)) return;
+    const pos = [lat, lng];
+    if (clickMarker) { clickMarker.setLatLng(pos); }
+    else if (allMarkers[selectedSite.site_name]) { allMarkers[selectedSite.site_name].setLatLng(pos); }
+    else { clickMarker = L.marker(pos, { icon: selectedIcon }).addTo(map); }
+  }
+  document.getElementById('mapLatInput').addEventListener('input', onCoordInput);
+  document.getElementById('mapLngInput').addEventListener('input', onCoordInput);
+
+  loadSites();
 }
+
 
 /* ================= LOGOUT ================= */
 
@@ -2689,14 +2828,23 @@ async function loadTickets() {
             <div class="tkd-desc-body" id="tkViewDesc"></div>
           </div>
 
+          <!-- Replies -->
+          <div class="tkd-replies-section">
+            <div class="tkd-replies-label"><i class="ri-chat-3-line"></i> Replies</div>
+            <div class="tkd-replies-list" id="tkRepliesList">
+              <div class="tkd-replies-empty"><i class="ri-loader-4-line spin"></i> Loading…</div>
+            </div>
+            <div class="tkd-reply-input-wrap">
+              <textarea id="tkReplyInput" class="tkd-reply-textarea" placeholder="Write a reply…" rows="3"></textarea>
+              <button class="tkd-send-btn" id="tkSendReplyBtn">
+                <i class="ri-send-plane-fill"></i> Send Reply
+              </button>
+            </div>
+          </div>
+
         </div>
 
-        <!-- Footer -->
-        <div class="tkd-footer">
-          <button class="tkd-close-footer-btn" id="tkViewCloseBtnFooter">
-            <i class="ri-close-line"></i> Close
-          </button>
-        </div>
+
 
       </div>
     </div>
@@ -2864,9 +3012,7 @@ async function loadTickets() {
   document.getElementById("tkViewCloseBtn").addEventListener("click", () => {
     document.getElementById("tkViewModal").classList.add("hidden");
   });
-  document.getElementById("tkViewCloseBtnFooter").addEventListener("click", () => {
-    document.getElementById("tkViewModal").classList.add("hidden");
-  });
+
   document.getElementById("tkViewModal").addEventListener("click", e => {
     if (e.target === document.getElementById("tkViewModal"))
       document.getElementById("tkViewModal").classList.add("hidden");
@@ -3006,6 +3152,192 @@ function openTkViewModal(t) {
   document.getElementById('tkViewDesc').textContent = t.description || 'No description provided.';
 
   document.getElementById('tkViewModal').classList.remove('hidden');
+
+  // Load replies for this ticket
+  loadTkReplies(t.id);
+
+  // Wire Send Reply button
+  const sendBtn = document.getElementById('tkSendReplyBtn');
+  // Remove previous listener by cloning
+  const newBtn = sendBtn.cloneNode(true);
+  sendBtn.parentNode.replaceChild(newBtn, sendBtn);
+  newBtn.addEventListener('click', () => sendTkReply(t.id));
+
+  // Also send on Ctrl+Enter
+  const textarea = document.getElementById('tkReplyInput');
+  const newTa = textarea.cloneNode(true);
+  textarea.parentNode.replaceChild(newTa, textarea);
+  newTa.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendTkReply(t.id);
+  });
+}
+
+async function loadTkReplies(ticketId) {
+  const list = document.getElementById('tkRepliesList');
+  if (!list) return;
+  list.innerHTML = '<div class="tkd-replies-empty"><i class="ri-loader-4-line spin"></i> Loading…</div>';
+  try {
+    const res  = await fetch(`/api/tickets/${ticketId}/replies`);
+    const data = await res.json();
+    renderTkReplies(data);
+  } catch {
+    list.innerHTML = '<div class="tkd-replies-empty"><i class="ri-error-warning-line"></i> Could not load replies.</div>';
+  }
+}
+
+function renderTkReplies(replies) {
+  const list = document.getElementById('tkRepliesList');
+  if (!list) return;
+  if (!replies.length) {
+    list.innerHTML = '<div class="tkd-replies-empty"><i class="ri-chat-off-line"></i> No replies yet. Be the first to respond.</div>';
+    return;
+  }
+  const loggedUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  list.innerHTML = replies.map(r => {
+    const isMine = r.user_id && String(r.user_id) === String(loggedUser.id);
+    const name   = r.full_name || 'User #' + (r.user_id || '?');
+    const time   = r.created_at ? new Date(r.created_at).toLocaleString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: true
+    }) : '—';
+    const actions = isMine ? `
+      <div class="tkd-reply-actions">
+        <button class="tkd-reply-act-btn tkd-reply-edit-btn" data-id="${r.id}" title="Edit"><i class="ri-edit-line"></i></button>
+        <button class="tkd-reply-act-btn tkd-reply-del-btn"  data-id="${r.id}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+      </div>` : '';
+    return `
+      <div class="tkd-reply-bubble ${isMine ? 'mine' : 'theirs'}" data-id="${r.id}">
+        <div class="tkd-reply-header">
+          <div class="tkd-reply-meta">
+            <span class="tkd-reply-author">${escHtml(name)}</span>
+            <span class="tkd-reply-time">${time}</span>
+          </div>
+          ${actions}
+        </div>
+        <div class="tkd-reply-msg" id="tkd-reply-msg-${r.id}">${escHtml(r.message)}</div>
+        <div class="tkd-reply-edit-wrap hidden" id="tkd-reply-edit-${r.id}">
+          <textarea class="tkd-reply-edit-input">${escHtml(r.message)}</textarea>
+          <div class="tkd-reply-edit-actions">
+            <button class="tkd-reply-save-btn" data-id="${r.id}"><i class="ri-check-line"></i> Save</button>
+            <button class="tkd-reply-cancel-btn" data-id="${r.id}"><i class="ri-close-line"></i> Cancel</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  list.scrollTop = list.scrollHeight;
+
+  // Wire edit buttons
+  list.querySelectorAll('.tkd-reply-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.id;
+      document.getElementById(`tkd-reply-msg-${id}`).classList.add('hidden');
+      document.getElementById(`tkd-reply-edit-${id}`).classList.remove('hidden');
+      btn.closest('.tkd-reply-bubble').querySelector('.tkd-reply-del-btn').style.display = 'none';
+      btn.style.display = 'none';
+    });
+  });
+
+  // Wire cancel edit
+  list.querySelectorAll('.tkd-reply-cancel-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.id;
+      document.getElementById(`tkd-reply-msg-${id}`).classList.remove('hidden');
+      document.getElementById(`tkd-reply-edit-${id}`).classList.add('hidden');
+      const bubble = btn.closest('.tkd-reply-bubble');
+      bubble.querySelector('.tkd-reply-edit-btn').style.display = '';
+      bubble.querySelector('.tkd-reply-del-btn').style.display  = '';
+    });
+  });
+
+  // Wire save edit
+  list.querySelectorAll('.tkd-reply-save-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id  = btn.dataset.id;
+      const val = document.querySelector(`#tkd-reply-edit-${id} .tkd-reply-edit-input`).value.trim();
+      if (!val) { showToast('Message cannot be empty.', 'error'); return; }
+      btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i>';
+      try {
+        const res = await fetch(`/api/replies/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: val })
+        });
+        if (!res.ok) throw new Error();
+        // Update in-place
+        document.getElementById(`tkd-reply-msg-${id}`).textContent = val;
+        document.getElementById(`tkd-reply-msg-${id}`).classList.remove('hidden');
+        document.getElementById(`tkd-reply-edit-${id}`).classList.add('hidden');
+        const bubble = btn.closest('.tkd-reply-bubble');
+        bubble.querySelector('.tkd-reply-edit-btn').style.display = '';
+        bubble.querySelector('.tkd-reply-del-btn').style.display  = '';
+        showToast('Reply updated.', 'success');
+      } catch { showToast('Failed to update reply.', 'error'); }
+      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-check-line"></i> Save'; }
+    });
+  });
+
+  // Wire delete buttons
+  list.querySelectorAll('.tkd-reply-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      // Use inline confirm inside the bubble instead of the global modal
+      const bubble = btn.closest('.tkd-reply-bubble');
+      // Prevent double-click
+      if (bubble.dataset.delPending) return;
+      bubble.dataset.delPending = '1';
+      btn.innerHTML = '<i class="ri-loader-4-line spin"></i>';
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/replies/${id}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error();
+        bubble.style.transition = 'opacity 0.2s, transform 0.2s';
+        bubble.style.opacity = '0';
+        bubble.style.transform = 'scale(0.95)';
+        setTimeout(() => {
+          bubble.remove();
+          if (!list.querySelector('.tkd-reply-bubble')) {
+            list.innerHTML = '<div class="tkd-replies-empty"><i class="ri-chat-off-line"></i> No replies yet. Be the first to respond.</div>';
+          }
+        }, 200);
+        showToast('Reply deleted.', 'success');
+      } catch {
+        showToast('Failed to delete reply.', 'error');
+        delete bubble.dataset.delPending;
+        btn.innerHTML = '<i class="ri-delete-bin-line"></i>';
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+async function sendTkReply(ticketId) {
+  const input = document.getElementById('tkReplyInput');
+  if (!input) return;
+  const message = input.value.trim();
+  if (!message) { showToast('Reply cannot be empty.', 'error'); return; }
+
+  const loggedUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  const btn = document.getElementById('tkSendReplyBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Sending…';
+
+  try {
+    const res = await fetch(`/api/tickets/${ticketId}/replies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, user_id: loggedUser.id || null })
+    });
+    const result = await res.json();
+    if (!res.ok) { showToast('Failed: ' + (result.error || 'Unknown'), 'error'); return; }
+    input.value = '';
+    await loadTkReplies(ticketId);
+    showToast('Reply sent.', 'success');
+  } catch { showToast('Network error.', 'error'); }
+  finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ri-send-plane-fill"></i> Send Reply';
+  }
 }
 
 
@@ -3989,4 +4321,439 @@ function runCounters() {
 }
 
 /* ================= INITIAL LOAD ================= */
+/* ================= SETTINGS ================= */
+
+function loadSettings() {
+  const user = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+
+  mainContent.innerHTML = `
+    <div class="stg-page">
+
+      <div class="stg-topbar">
+        <h2 class="stg-title">Settings</h2>
+        <div class="stg-search-box">
+          <i class="ri-search-line"></i>
+          <input type="text" placeholder="Search here" id="stgSearch">
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="stg-tabs">
+        <button class="stg-tab active" data-tab="account">Account</button>
+        <button class="stg-tab" data-tab="display">Display</button>
+        <button class="stg-tab" data-tab="privacy">Privacy &amp; Data</button>
+      </div>
+
+      <!-- Account Tab -->
+      <div class="stg-panel active" id="stg-tab-account">
+        <div class="stg-card">
+
+          <!-- Profile header -->
+          <div class="stg-profile-header">
+            <div class="stg-avatar-wrap">
+              <div class="stg-avatar" id="stgAvatar">
+                ${user.full_name ? user.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : 'U'}
+              </div>
+            </div>
+            <div class="stg-profile-info">
+              <div class="stg-profile-name" id="stgProfileName">${user.full_name || '—'}</div>
+              <span class="stg-role-badge" id="stgRoleBadge">${user.role || '—'}</span>
+            </div>
+            <button class="stg-edit-btn" id="stgEditBtn">
+              <i class="ri-edit-line"></i> Edit
+            </button>
+          </div>
+
+          <div class="stg-divider"></div>
+
+          <!-- Profile fields -->
+          <div class="stg-section-title">Profile</div>
+          <div class="stg-fields-grid">
+            <div class="stg-field-group">
+              <label class="stg-field-label">Full Name</label>
+              <input type="text" class="stg-field-input" id="stgFullName" value="${user.full_name || ''}" readonly>
+            </div>
+            <div class="stg-field-group">
+              <label class="stg-field-label">ID Number</label>
+              <input type="text" class="stg-field-input" id="stgIdNo" value="${user.id_no || ''}" readonly>
+            </div>
+            <div class="stg-field-group">
+              <label class="stg-field-label">Email</label>
+              <input type="text" class="stg-field-input" id="stgEmail" value="${user.email || ''}" readonly>
+            </div>
+            <div class="stg-field-group">
+              <label class="stg-field-label">Role</label>
+              <input type="text" class="stg-field-input" value="${user.role || ''}" readonly>
+            </div>
+          </div>
+
+          <div class="stg-divider"></div>
+
+          <!-- Actions -->
+          <div class="stg-actions-row">
+            <button class="stg-action-btn stg-primary-btn" id="stgChangePwBtn">
+              <i class="ri-lock-password-line"></i> Change Password
+            </button>
+            <button class="stg-action-btn stg-secondary-btn" id="stgLeaveBtn">
+              <i class="ri-calendar-todo-line"></i> Request for Leave
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Display Tab -->
+      <div class="stg-panel" id="stg-tab-display">
+        <div class="stg-card">
+
+          <div class="stg-section-title">Brightness &amp; Color</div>
+          <div class="stg-setting-card">
+            <div class="stg-setting-row" style="border-bottom:1px solid #f1f5f9;">
+              <div class="stg-setting-left">
+                <div class="stg-setting-icon"><i class="ri-sun-line"></i></div>
+                <div>
+                  <div class="stg-setting-name">Brightness</div>
+                  <div class="stg-setting-desc">Change the brightness for the built-in display</div>
+                </div>
+              </div>
+              <input type="range" class="stg-slider" id="stgBrightness" min="20" max="100" value="100">
+            </div>
+            <div class="stg-setting-row">
+              <div class="stg-setting-left">
+                <div class="stg-setting-icon"><i class="ri-moon-line"></i></div>
+                <div>
+                  <div class="stg-setting-name">Night Light</div>
+                  <div class="stg-setting-desc">Use warmer colors to help to block blue light</div>
+                </div>
+              </div>
+              <label class="stg-toggle">
+                <input type="checkbox" id="stgNightLight">
+                <span class="stg-toggle-track"><span class="stg-toggle-thumb"></span></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="stg-section-title" style="margin-top:24px;">Theme</div>
+          <div class="stg-setting-card">
+            <div class="stg-setting-row">
+              <div class="stg-setting-left">
+                <div class="stg-setting-icon"><i class="ri-contrast-2-line"></i></div>
+                <div>
+                  <div class="stg-setting-name">Choose Mode</div>
+                  <div class="stg-setting-desc">Change the color that appear in your Windows and apps</div>
+                </div>
+              </div>
+              <select class="stg-mode-select" id="stgThemeMode">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="stg-section-title" style="margin-top:24px;">Font</div>
+          <div class="stg-setting-card">
+            <div class="stg-setting-row">
+              <div class="stg-setting-left">
+                <div class="stg-setting-icon" style="font-weight:700;font-size:14px;gap:2px;display:flex;">
+                  <span style="font-size:12px;">A</span><span style="font-size:18px;">A</span>
+                </div>
+                <div>
+                  <div class="stg-setting-name">Text Size</div>
+                  <div class="stg-setting-desc">Text size that appears throughout Windows and your apps</div>
+                </div>
+              </div>
+              <div class="stg-font-row">
+                <span class="stg-font-a small">A</span>
+                <input type="range" class="stg-slider" id="stgFontSize" min="12" max="20" value="14" style="width:120px;">
+                <span class="stg-font-a large">A</span>
+                <button class="stg-apply-btn" id="stgFontApply">Apply</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="stg-save-row">
+            <button class="stg-save-btn" id="stgDisplaySave">
+              <i class="ri-save-line"></i> Save Changes
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Privacy & Data Tab -->
+      <div class="stg-panel" id="stg-tab-privacy">
+        <div class="stg-card">
+
+          <div class="stg-setting-card">
+            <div class="stg-setting-name" style="padding:14px 18px 8px;font-weight:700;font-size:15px;">File Upload Privacy</div>
+            <div class="stg-setting-row stg-checkbox-row" style="border-bottom:1px solid #f1f5f9;">
+              <span class="stg-setting-desc" style="padding-left:18px;">Restrict evidence files to authorized users only</span>
+              <label class="stg-checkbox-wrap">
+                <input type="checkbox" id="stgPrivRestrict" checked>
+                <span class="stg-checkbox-box"></span>
+              </label>
+            </div>
+            <div class="stg-setting-row stg-checkbox-row">
+              <span class="stg-setting-desc" style="padding-left:18px;">Allow public access to evidence files</span>
+              <label class="stg-checkbox-wrap">
+                <input type="checkbox" id="stgPrivPublic">
+                <span class="stg-checkbox-box"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="stg-setting-card" style="margin-top:12px;">
+            <div class="stg-setting-row stg-checkbox-row">
+              <div>
+                <div class="stg-setting-name">Backup</div>
+                <div class="stg-setting-desc">Enable automatic system backup</div>
+              </div>
+              <label class="stg-checkbox-wrap">
+                <input type="checkbox" id="stgBackup" checked>
+                <span class="stg-checkbox-box"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="stg-setting-card" style="margin-top:12px;">
+            <div class="stg-setting-row">
+              <div>
+                <div class="stg-setting-name">Data Management</div>
+              </div>
+              <button class="stg-export-btn" id="stgExportBtn">
+                <i class="ri-download-2-line"></i> Export Reports
+              </button>
+            </div>
+          </div>
+
+          <div class="stg-setting-card stg-danger-card" style="margin-top:12px;">
+            <div class="stg-setting-row">
+              <div>
+                <div class="stg-setting-name">Account Deletion Request</div>
+                <div class="stg-setting-desc">If you wish to delete your account, a request will be sent to the admin for approval.</div>
+              </div>
+              <button class="stg-delete-btn" id="stgDeleteAccBtn">
+                Request Account Deletion
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Change Password Modal -->
+    <div class="modal-overlay hidden" id="stgPwModal">
+      <div class="modal-box add-modal-box" style="max-width:420px;">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-lock-password-line"></i></div>
+          <div class="add-modal-title"><h3>Change Password</h3><p>Enter your current and new password.</p></div>
+          <button class="modal-close-btn" id="stgPwClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid" style="grid-template-columns:1fr;">
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-lock-line"></i> Current Password</label>
+              <input type="password" id="stgPwCurrent" class="add-field-input" placeholder="Current password">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-lock-2-line"></i> New Password</label>
+              <input type="password" id="stgPwNew" class="add-field-input" placeholder="New password">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-lock-2-line"></i> Confirm New Password</label>
+              <input type="password" id="stgPwConfirm" class="add-field-input" placeholder="Confirm new password">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"></span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="stgPwCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="stgPwSave"><i class="ri-save-line"></i> Update Password</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Profile Modal -->
+    <div class="modal-overlay hidden" id="stgEditModal">
+      <div class="modal-box add-modal-box" style="max-width:420px;">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-user-settings-line"></i></div>
+          <div class="add-modal-title"><h3>Edit Profile</h3><p>Update your display name and email.</p></div>
+          <button class="modal-close-btn" id="stgEditClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid" style="grid-template-columns:1fr;">
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-user-line"></i> Full Name</label>
+              <input type="text" id="stgEditName" class="add-field-input" value="${user.full_name || ''}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-mail-line"></i> Email</label>
+              <input type="email" id="stgEditEmail" class="add-field-input" value="${user.email || ''}">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"></span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="stgEditCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="stgEditSave"><i class="ri-save-line"></i> Save Changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // ── Tab switching ──────────────────────────────────────────────────────────
+  document.querySelectorAll('.stg-tab').forEach(tab => {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.stg-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
+      this.classList.add('active');
+      document.getElementById(`stg-tab-${this.dataset.tab}`).classList.add('active');
+    });
+  });
+
+  // ── Edit Profile ───────────────────────────────────────────────────────────
+  document.getElementById('stgEditBtn').onclick = () =>
+    document.getElementById('stgEditModal').classList.remove('hidden');
+  document.getElementById('stgEditClose').onclick  =
+  document.getElementById('stgEditCancel').onclick = () =>
+    document.getElementById('stgEditModal').classList.add('hidden');
+
+  document.getElementById('stgEditSave').onclick = async () => {
+    const full_name = document.getElementById('stgEditName').value.trim();
+    const email     = document.getElementById('stgEditEmail').value.trim();
+    if (!full_name || !email) { showToast('Name and email are required.', 'error'); return; }
+    const btn = document.getElementById('stgEditSave');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name, email })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast(result.error || 'Update failed.', 'error'); return; }
+      // Update localStorage
+      const updated = { ...user, full_name, email };
+      localStorage.setItem('user', JSON.stringify(updated));
+      document.getElementById('stgEditModal').classList.add('hidden');
+      showToast('Profile updated.', 'success');
+      loadSettings(); // refresh
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save Changes'; }
+  };
+
+  // ── Change Password ────────────────────────────────────────────────────────
+  document.getElementById('stgChangePwBtn').onclick = () =>
+    document.getElementById('stgPwModal').classList.remove('hidden');
+  document.getElementById('stgPwClose').onclick  =
+  document.getElementById('stgPwCancel').onclick = () =>
+    document.getElementById('stgPwModal').classList.add('hidden');
+
+  document.getElementById('stgPwSave').onclick = async () => {
+    const current = document.getElementById('stgPwCurrent').value;
+    const newPw   = document.getElementById('stgPwNew').value;
+    const confirm = document.getElementById('stgPwConfirm').value;
+    if (!current || !newPw || !confirm) { showToast('All fields are required.', 'error'); return; }
+    if (newPw !== confirm) { showToast('New passwords do not match.', 'error'); return; }
+    if (newPw.length < 6)  { showToast('Password must be at least 6 characters.', 'error'); return; }
+    const btn = document.getElementById('stgPwSave');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Updating…';
+    try {
+      const res = await fetch(`/api/users/${user.id}/password`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: current, new_password: newPw })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast(result.error || 'Failed.', 'error'); return; }
+      document.getElementById('stgPwModal').classList.add('hidden');
+      showToast('Password updated successfully.', 'success');
+      ['stgPwCurrent','stgPwNew','stgPwConfirm'].forEach(id => document.getElementById(id).value = '');
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Update Password'; }
+  };
+
+  // ── Display: Theme mode ────────────────────────────────────────────────────
+  const savedTheme = localStorage.getItem('theme') || 'light';
+  document.getElementById('stgThemeMode').value = savedTheme;
+  if (savedTheme === 'dark') document.body.classList.add('dark');
+
+  document.getElementById('stgThemeMode').addEventListener('change', function() {
+    if (this.value === 'dark') document.body.classList.add('dark');
+    else document.body.classList.remove('dark');
+    localStorage.setItem('theme', this.value);
+  });
+
+  // ── Display: Night Light ───────────────────────────────────────────────────
+  const nightLight = localStorage.getItem('nightLight') === 'true';
+  document.getElementById('stgNightLight').checked = nightLight;
+  if (nightLight) document.body.style.filter = 'sepia(0.25) brightness(0.97)';
+
+  document.getElementById('stgNightLight').addEventListener('change', function() {
+    document.body.style.filter = this.checked ? 'sepia(0.25) brightness(0.97)' : '';
+    localStorage.setItem('nightLight', this.checked);
+  });
+
+  // ── Display: Brightness ────────────────────────────────────────────────────
+  const savedBright = localStorage.getItem('brightness') || '100';
+  document.getElementById('stgBrightness').value = savedBright;
+  document.body.style.opacity = (parseInt(savedBright) / 100).toFixed(2);
+
+  document.getElementById('stgBrightness').addEventListener('input', function() {
+    document.body.style.opacity = (parseInt(this.value) / 100).toFixed(2);
+  });
+
+  // ── Display: Font size ─────────────────────────────────────────────────────
+  const savedFont = localStorage.getItem('fontSize') || '14';
+  document.getElementById('stgFontSize').value = savedFont;
+
+  document.getElementById('stgFontApply').onclick = () => {
+    const size = document.getElementById('stgFontSize').value;
+    document.documentElement.style.fontSize = size + 'px';
+    localStorage.setItem('fontSize', size);
+    showToast('Font size applied.', 'success');
+  };
+
+  // ── Display: Save Changes ──────────────────────────────────────────────────
+  document.getElementById('stgDisplaySave').onclick = () => {
+    localStorage.setItem('brightness', document.getElementById('stgBrightness').value);
+    localStorage.setItem('fontSize',   document.getElementById('stgFontSize').value);
+    showToast('Display settings saved.', 'success');
+  };
+
+  // ── Export Reports ─────────────────────────────────────────────────────────
+  document.getElementById('stgExportBtn').onclick = async () => {
+    try {
+      const res  = await fetch('/api/reports');
+      const data = await res.json();
+      const csv  = ['Region,Deadline,MIR,Ticket,SLA,Progress,Last Updated',
+        ...data.map(r => [r.region, r.deadline||'', r.mir||'', r.ticket||'', r.sla||'', r.progress||'', r.last_updated||''].join(','))
+      ].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url  = URL.createObjectURL(blob);
+      const a    = Object.assign(document.createElement('a'), { href: url, download: 'reports_export.csv' });
+      a.click(); URL.revokeObjectURL(url);
+      showToast('Reports exported.', 'success');
+    } catch { showToast('Export failed.', 'error'); }
+  };
+
+  // ── Request Leave ──────────────────────────────────────────────────────────
+  document.getElementById('stgLeaveBtn').onclick = () =>
+    showToast('Leave request submitted. Awaiting admin approval.', 'success');
+
+  // ── Account Deletion Request ───────────────────────────────────────────────
+  document.getElementById('stgDeleteAccBtn').onclick = () =>
+    showToast('Account deletion request sent to admin.', 'success');
+
+  // Apply saved display settings on load
+  const fs = localStorage.getItem('fontSize');
+  if (fs) document.documentElement.style.fontSize = fs + 'px';
+}
+
+
 loadDashboard();

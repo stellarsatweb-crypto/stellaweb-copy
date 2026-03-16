@@ -1162,79 +1162,202 @@ const reportEvidenceUpload = multer({
   }
 });
 
-// ── Regional Progress Reports ────────────────────────────────────────────────
+// ── Regional Progress Reports ───────────────────────────────────────────────
+
+(async () => {
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS other_data (
+        id          SERIAL PRIMARY KEY,
+        date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        mir         NUMERIC(5,2),
+        ticket      NUMERIC(5,2),
+        sla         NUMERIC(5,2),
+        created_by  INT REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS regional_progress_reports (
+        id          SERIAL PRIMARY KEY,
+        region      CITEXT NOT NULL,
+        deadline    DATE,
+        date_start  DATE,
+        date_end    DATE,
+        report_id   INT REFERENCES other_data(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Safe migrations for existing DBs
+    const safeAlter = [
+      `ALTER TABLE other_data DROP COLUMN IF EXISTS site_name`,
+      `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS date_start DATE`,
+      `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS date_end DATE`,
+      `ALTER TABLE regional_progress_reports DROP COLUMN IF EXISTS deadline`,
+    ];
+    for (const sql of safeAlter) {
+      try { await pool.query(sql); } catch(e) {}
+    }
+
+    // Recreate view matching new schema
+    await pool.query(`DROP VIEW IF EXISTS regional_progress_view CASCADE`);
+    await pool.query(`
+      CREATE VIEW regional_progress_view AS
+      SELECT
+        r.id,
+        r.region,
+        r.date_start,
+        r.date_end,
+        o.mir,
+        o.ticket,
+        o.sla,
+        (
+          (COALESCE(o.mir, 0) +
+           COALESCE(o.ticket, 0) +
+           COALESCE(o.sla, 0))
+          / 3.0
+        )::NUMERIC(5,2) AS progress,
+        u.full_name AS created_by,
+        o.date
+      FROM regional_progress_reports r
+      LEFT JOIN other_data o ON r.report_id = o.id
+      LEFT JOIN users u ON o.created_by = u.id
+    `);
+
+    // report_history table for update log
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_history (
+        id            SERIAL PRIMARY KEY,
+        region_id     INT REFERENCES regional_progress_reports(id) ON DELETE CASCADE,
+        other_data_id INT REFERENCES other_data(id) ON DELETE CASCADE,
+        created_at    TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    console.log('Reports schema ready ✅');
+  } catch (err) {
+    console.error('Reports schema error:', err.message);
+  }
+})();
 
 // GET all reports
 app.get('/api/reports', async (req, res) => {
   try {
-    const result = await pool.query(`SELECT * FROM regional_progress_reports ORDER BY id`);
-    res.json(result.rows.map(formatReportRow));
+    const result = await pool.query(`
+      SELECT
+        r.id,
+        r.region,
+        r.date_start,
+        r.date_end,
+        r.report_id,
+        o.mir,
+        o.ticket,
+        o.sla,
+        (
+          (COALESCE(o.mir, 0) +
+           COALESCE(o.ticket, 0) +
+           COALESCE(o.sla, 0))
+          / 3.0
+        )::NUMERIC(5,2) AS progress,
+        u.full_name AS created_by,
+        o.date AS last_updated
+      FROM regional_progress_reports r
+      LEFT JOIN other_data o ON r.report_id = o.id
+      LEFT JOIN users u ON o.created_by = u.id
+      ORDER BY r.id
+    `);
+    res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Helper: build a pg daterange string from start/end date strings
-// e.g. '2026-01-25', '2026-02-23' → '[2026-01-25,2026-02-23]'
-function buildDateRange(start, end) {
-  if (!start && !end) return null;
-  const s = start || '';
-  const e = end   || '';
-  return `[${s},${e}]`;
-}
+// GET all other_data (history) for a region
+app.get('/api/reports/:regionId/reminders', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT o.*, u.full_name AS created_by_name
+      FROM other_data o
+      LEFT JOIN users u ON o.created_by = u.id
+      WHERE o.id IN (
+        SELECT unnest(ARRAY(
+          SELECT od.id FROM other_data od
+          WHERE od.id = (SELECT report_id FROM regional_progress_reports WHERE id = $1)
+          UNION
+          SELECT od2.id FROM other_data od2
+          WHERE od2.id IN (
+            SELECT h.other_data_id FROM report_history h WHERE h.region_id = $1
+          )
+        ))
+      )
+      ORDER BY o.date DESC
+    `, [req.params.regionId]);
+    res.json(result.rows);
+  } catch {
+    // Fallback: just return the single linked record
+    try {
+      const r2 = await pool.query(`
+        SELECT o.*, u.full_name AS created_by_name
+        FROM other_data o
+        LEFT JOIN users u ON o.created_by = u.id
+        WHERE o.id = (SELECT report_id FROM regional_progress_reports WHERE id = $1)
+      `, [req.params.regionId]);
+      res.json(r2.rows);
+    } catch(e2) { res.json([]); }
+  }
+});
 
-// Helper: parse pg daterange object/string → { start, end }
-function parseDateRange(dr) {
-  if (!dr) return { start: null, end: null };
-  // pg driver returns daterange as a string like "[2026-01-25,2026-02-23)"
-  const str = typeof dr === 'string' ? dr : String(dr);
-  const match = str.match(/[\[\(](\d{4}-\d{2}-\d{2})?,(\d{4}-\d{2}-\d{2})?[\]\)]/);
-  if (!match) return { start: null, end: null };
-  return { start: match[1] || null, end: match[2] || null };
-}
+// GET history for a region (all other_data records ever linked)
+app.get('/api/reports/:regionId/history', async (req, res) => {
+  try {
+    // Use report_history if it exists, otherwise fallback to single record
+    const result = await pool.query(`
+      SELECT o.*, u.full_name AS created_by_name
+      FROM other_data o
+      LEFT JOIN users u ON o.created_by = u.id
+      WHERE o.id IN (
+        SELECT other_data_id FROM report_history WHERE region_id = $1
+        UNION
+        SELECT report_id FROM regional_progress_reports WHERE id = $1
+      )
+      ORDER BY o.date DESC
+    `, [req.params.regionId]);
+    res.json(result.rows);
+  } catch {
+    res.json([]);
+  }
+});
 
-// Helper: attach parsed date_duration fields to a row
-function formatReportRow(row) {
-  if (!row) return row;
-  const { start, end } = parseDateRange(row.date_duration);
-  return { ...row, date_start: start, date_end: end };
-}
-
-// POST new report row
+// POST new region
 app.post('/api/reports', async (req, res) => {
-  const { region, date_start, date_end, remarks, ticket_no, ticket, mir, utilization, progress } = req.body;
-  if (!region) return res.status(400).json({ error: 'region is required' });
-  const dateRange = buildDateRange(date_start, date_end);
+  const { region, date_start, date_end } = req.body;
+  if (!region?.trim()) return res.status(400).json({ error: 'region is required' });
   try {
     const result = await pool.query(
-      `INSERT INTO regional_progress_reports
-        (region, date_duration, remarks, ticket_no, ticket, mir, utilization, progress)
-       VALUES ($1,$2::daterange,$3,$4,$5,$6,$7,$8) RETURNING *`,
-      [region, dateRange, remarks||null, ticket_no||null, ticket||null,
-       mir||null, utilization||null, progress||null]
+      `INSERT INTO regional_progress_reports (region, date_start, date_end)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [region.trim(), date_start || null, date_end || null]
     );
-    res.status(201).json(formatReportRow(result.rows[0]));
+    res.status(201).json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT update report row
+// PUT update region
 app.put('/api/reports/:id', async (req, res) => {
-  const { id } = req.params;
-  const { region, date_start, date_end, remarks, ticket_no, ticket, mir, utilization, progress } = req.body;
-  const dateRange = buildDateRange(date_start, date_end);
+  const { region, date_start, date_end } = req.body;
   try {
     const result = await pool.query(
       `UPDATE regional_progress_reports
-       SET region=$1, date_duration=$2::daterange, remarks=$3, ticket_no=$4, ticket=$5,
-           mir=$6, utilization=$7, progress=$8
-       WHERE id=$9 RETURNING *`,
-      [region, dateRange, remarks||null, ticket_no||null, ticket||null,
-       mir||null, utilization||null, progress||null, id]
+       SET region=$1, date_start=$2, date_end=$3
+       WHERE id=$4 RETURNING *`,
+      [region, date_start || null, date_end || null, req.params.id]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
-    res.json(formatReportRow(result.rows[0]));
+    res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE report row
+// DELETE region
 app.delete('/api/reports/:id', async (req, res) => {
   try {
     await pool.query(`DELETE FROM regional_progress_reports WHERE id=$1`, [req.params.id]);
@@ -1242,103 +1365,178 @@ app.delete('/api/reports/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Reminders (other_data) ───────────────────────────────────────────────────
-
-// GET reminders for a report
-app.get('/api/reports/:reportId/reminders', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT * FROM other_data WHERE report_id=$1 ORDER BY id`,
-      [req.params.reportId]
-    );
-    res.json(result.rows);
-  } catch (err) {
-    // Fallback: report_id column may not exist yet — return empty
-    res.json([]);
-  }
-});
-
-// GET all reminders
-app.get('/api/reminders', async (req, res) => {
-  try {
-    const result = await pool.query(`SELECT * FROM other_data ORDER BY id`);
-    res.json(result.rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// POST new reminder
+// POST new update (other_data record) and link it as the latest for the region
 app.post('/api/reminders', async (req, res) => {
-  const { report_id, site_name, start_date, end_date, condition, status, remarks } = req.body;
-  if (!site_name) return res.status(400).json({ error: 'site_name is required' });
+  const { report_id, mir, ticket, sla, created_by } = req.body;
+  if (!report_id) return res.status(400).json({ error: 'report_id is required' });
   try {
-    const result = await pool.query(
-      `INSERT INTO other_data (report_id, site_name, start_date, end_date, condition, status, remarks)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [report_id||null, site_name, start_date||null, end_date||null,
-       condition||null, status||null, remarks||null]
+    // 1. Insert into other_data (no site_name)
+    const odResult = await pool.query(
+      `INSERT INTO other_data (mir, ticket, sla, created_by, date)
+       VALUES ($1, $2, $3, $4, NOW()) RETURNING *`,
+      [mir || null, ticket || null, sla || null, created_by || null]
     );
-    res.status(201).json(result.rows[0]);
+    const newOd = odResult.rows[0];
+
+    // 2. Log to report_history
+    await pool.query(
+      `INSERT INTO report_history (region_id, other_data_id) VALUES ($1, $2)`,
+      [report_id, newOd.id]
+    ).catch(() => {});
+
+    // 3. Update region's report_id to this latest record
+    await pool.query(
+      `UPDATE regional_progress_reports SET report_id=$1 WHERE id=$2`,
+      [newOd.id, report_id]
+    );
+
+    res.status(201).json(newOd);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// PUT update reminder
-app.put('/api/reminders/:id', async (req, res) => {
-  const { site_name, start_date, end_date, condition, status, remarks } = req.body;
+// ── User Settings ────────────────────────────────────────────────────────────
+
+// PUT update profile (full_name, email)
+app.put('/api/users/:id', async (req, res) => {
+  const { full_name, email } = req.body;
+  if (!full_name?.trim() || !email?.trim())
+    return res.status(400).json({ error: 'full_name and email are required' });
   try {
     const result = await pool.query(
-      `UPDATE other_data
-       SET site_name=$1, start_date=$2, end_date=$3, condition=$4, status=$5, remarks=$6
-       WHERE id=$7 RETURNING *`,
-      [site_name, start_date||null, end_date||null, condition||null, status||null, remarks||null, req.params.id]
+      `UPDATE users SET full_name=$1, email=$2 WHERE id=$3
+       RETURNING id, id_no, full_name, email, role`,
+      [full_name.trim(), email.trim(), req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT change password
+app.put('/api/users/:id/password', async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!current_password || !new_password)
+    return res.status(400).json({ error: 'Both passwords are required' });
+  try {
+    const userRes = await pool.query(`SELECT password_hash FROM users WHERE id=$1`, [req.params.id]);
+    if (!userRes.rowCount) return res.status(404).json({ error: 'User not found' });
+    const bcrypt = require('bcrypt');
+    const match  = await bcrypt.compare(current_password, userRes.rows[0].password_hash);
+    if (!match) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hash = await bcrypt.hash(new_password, 10);
+    await pool.query(`UPDATE users SET password_hash=$1 WHERE id=$2`, [hash, req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Map / Network Sites ─────────────────────────────────────────────────────
+
+// GET all network_sites with coords
+app.get('/api/map/sites', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, site_name, municipality, province, lat, long, ip, mac, contacts, email
+      FROM network_sites
+      ORDER BY province, site_name
+    `);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update lat/long for a site
+app.put('/api/map/sites/:siteName/coords', async (req, res) => {
+  const { lat, long } = req.body;
+  if (lat == null || long == null) return res.status(400).json({ error: 'lat and long are required' });
+  try {
+    const result = await pool.query(
+      `UPDATE network_sites SET lat=$1, long=$2 WHERE site_name=$3 RETURNING *`,
+      [parseFloat(lat), parseFloat(long), req.params.siteName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Ticket Replies ──────────────────────────────────────────────────────────
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ticket_replies (
+        id         SERIAL PRIMARY KEY,
+        ticket_id  INT NOT NULL REFERENCES ticket_information(id) ON DELETE CASCADE,
+        user_id    INT REFERENCES users(id) ON DELETE SET NULL,
+        message    TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('ticket_replies table ready ✅');
+  } catch (err) {
+    console.error('ticket_replies error:', err.message);
+  }
+})();
+
+// GET replies for a ticket
+app.get('/api/tickets/:ticketId/replies', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT r.*, u.full_name
+      FROM ticket_replies r
+      LEFT JOIN users u ON r.user_id = u.id
+      WHERE r.ticket_id = $1
+      ORDER BY r.created_at ASC
+    `, [req.params.ticketId]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new reply
+app.post('/api/tickets/:ticketId/replies', async (req, res) => {
+  const { message, user_id } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Message is required' });
+  try {
+    const result = await pool.query(`
+      INSERT INTO ticket_replies (ticket_id, user_id, message)
+      VALUES ($1, $2, $3) RETURNING *
+    `, [req.params.ticketId, user_id || null, message.trim()]);
+    const row = result.rows[0];
+    if (row.user_id) {
+      const u = await pool.query('SELECT full_name FROM users WHERE id=$1', [row.user_id]);
+      if (u.rows[0]) Object.assign(row, u.rows[0]);
+    }
+    res.status(201).json(row);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT edit a reply
+app.put('/api/replies/:id', async (req, res) => {
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Message is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE ticket_replies SET message=$1 WHERE id=$2 RETURNING *`,
+      [message.trim(), req.params.id]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// DELETE reminder
-app.delete('/api/reminders/:id', async (req, res) => {
+// DELETE a reply
+app.delete('/api/replies/:id', async (req, res) => {
   try {
-    // Also delete evidence file if any
-    const row = await pool.query(`SELECT evidence FROM other_data WHERE id=$1`, [req.params.id]);
-    if (row.rows[0]?.evidence) {
-      const fp = require('path').join(__dirname, 'public', row.rows[0].evidence);
-      require('fs').unlink(fp, () => {});
-    }
-    await pool.query(`DELETE FROM other_data WHERE id=$1`, [req.params.id]);
+    await pool.query(`DELETE FROM ticket_replies WHERE id=$1`, [req.params.id]);
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST upload evidence image
-app.post('/api/reminders/:id/evidence', reportEvidenceUpload.single('evidence'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const relPath = '/uploads/evidence/' + req.file.filename;
+// DELETE other_data record
+app.delete('/api/reminders/:id', async (req, res) => {
   try {
-    const result = await pool.query(
-      `UPDATE other_data SET evidence=$1 WHERE id=$2 RETURNING *`,
-      [relPath, req.params.id]
-    );
-    res.json({ success: true, evidence: relPath, row: result.rows[0] });
+    await pool.query(`DELETE FROM other_data WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
-// PATCH reminder status (quick update from dropdown)
-app.patch('/api/reminders/:id/status', async (req, res) => {
-  const { status } = req.body;
-  try {
-    const result = await pool.query(
-      `UPDATE other_data SET status=$1 WHERE id=$2 RETURNING *`,
-      [status, req.params.id]
-    );
-    res.json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-/* Also add report_id column to other_data if missing (safe migration) */
-pool.query(`
-  ALTER TABLE other_data ADD COLUMN IF NOT EXISTS report_id INTEGER REFERENCES regional_progress_reports(id) ON DELETE CASCADE
-`).catch(() => {});
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
