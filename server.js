@@ -1774,16 +1774,46 @@ app.get('/api/dashboard/stats', async (req, res) => {
 
 // ── Map / Network Sites ─────────────────────────────────────────────────────
 
-// Ensure is_active column exists on network_sites
+// network_sites + network_devices migration
 (async () => {
   try {
-    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT FALSE`);
-    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS project_name TEXT DEFAULT 'DICT438'`);
-    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS modem TEXT`);
-    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS transceiver TEXT`);
-    await pool.query(`ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS dish TEXT`);
-    console.log('network_sites columns ready ✅');
-  } catch(e) { console.error('network_sites migration:', e.message); }
+    // network_sites columns
+    const siteAlters = [
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS is_active    BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS project_name TEXT DEFAULT 'DICT438'`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS modem        TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS transceiver  TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS dish         TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS province     CITEXT`,
+    ];
+    for (const sql of siteAlters) { try { await pool.query(sql); } catch(e) {} }
+
+    // network_devices table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS network_devices (
+        id            SERIAL PRIMARY KEY,
+        site_id       INT REFERENCES network_sites(id) ON DELETE CASCADE,
+        site_name     CITEXT,
+        device_name   CITEXT NOT NULL,
+        device_type   CITEXT,
+        serial_number CITEXT,
+        mac_address   CITEXT,
+        model         CITEXT,
+        license_due   DATE,
+        is_active     BOOLEAN DEFAULT TRUE,
+        province      CITEXT,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const devAlters = [
+      `ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS device_type CITEXT`,
+      `ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS is_active   BOOLEAN DEFAULT TRUE`,
+      `ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS license_due DATE`,
+    ];
+    for (const sql of devAlters) { try { await pool.query(sql); } catch(e) {} }
+
+    console.log('network_sites + network_devices ready ✅');
+  } catch(e) { console.error('Map migration error:', e.message); }
 })();
 
 // GET all network_sites with full details + joined devices
@@ -1798,12 +1828,17 @@ app.get('/api/map/sites', async (req, res) => {
         COALESCE(
           json_agg(
             json_build_object(
+              'id',          nd.id,
               'device_name', nd.device_name,
+              'device_type', nd.device_type,
               'model',       nd.model,
               'serial',      nd.serial_number,
-              'mac',         nd.mac_address,
-              'license_due', nd.license_due
+              'serial_number', nd.serial_number,
+              'mac_address', nd.mac_address,
+              'license_due', nd.license_due,
+              'is_active',   nd.is_active
             )
+            ORDER BY nd.device_name
           ) FILTER (WHERE nd.id IS NOT NULL), '[]'
         ) AS devices
       FROM network_sites ns
@@ -1854,6 +1889,51 @@ app.put('/api/map/sites/:siteName/edit', async (req, res) => {
     if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT bulk activate/deactivate filtered sites
+app.put('/api/map/sites/bulk-status', async (req, res) => {
+  const { site_names, is_active } = req.body;
+  if (!Array.isArray(site_names) || !site_names.length)
+    return res.status(400).json({ error: 'site_names array required' });
+  try {
+    const placeholders = site_names.map((_, i) => `$${i + 2}`).join(',');
+    const result = await pool.query(
+      `UPDATE network_sites SET is_active=$1 WHERE site_name IN (${placeholders}) RETURNING site_name, is_active`,
+      [is_active, ...site_names]
+    );
+    res.json({ updated: result.rowCount, rows: result.rows });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update device status
+app.put('/api/map/devices/:id/status', async (req, res) => {
+  const { is_active } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_devices SET is_active=$1 WHERE id=$2 RETURNING *`,
+      [is_active, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Device not found' });
+    res.json(result.rows[0]);
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT edit device details
+app.put('/api/map/devices/:id/edit', async (req, res) => {
+  const { device_name, device_type, serial_number, mac_address, model, license_due } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_devices
+       SET device_name=$1, device_type=$2, serial_number=$3,
+           mac_address=$4, model=$5, license_due=$6
+       WHERE id=$7 RETURNING *`,
+      [device_name||null, device_type||null, serial_number||null,
+       mac_address||null, model||null, license_due||null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Device not found' });
+    res.json(result.rows[0]);
+  } catch(err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── Ticket Replies ──────────────────────────────────────────────────────────

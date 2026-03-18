@@ -511,62 +511,63 @@ function loadMap() {
   mainContent.innerHTML = `
     <div class="map-page-wrap">
 
-      <!-- TOP ROW: filters -->
-      <div class="map-filters-bar">
-        <div class="map-search-box">
-          <i class="ri-search-line"></i>
-          <input type="text" id="mapSearch" placeholder="Search site, municipality…">
+      <!-- LEFT SIDEBAR -->
+      <div class="map-sidebar" id="mapSidebar">
+        <div class="map-sidebar-filters">
+          <div class="map-search-box">
+            <i class="ri-search-line"></i>
+            <input type="text" id="mapSearch" placeholder="Search site…">
+          </div>
+          <select id="mapProjectFilter"  class="map-filter-select"><option value="">All Projects</option></select>
+          <select id="mapProvinceFilter" class="map-filter-select"><option value="">All Provinces</option></select>
+          <select id="mapStatusFilter"   class="map-filter-select">
+            <option value="">All Statuses</option>
+            <option value="active">Active Only</option>
+            <option value="inactive">Inactive Only</option>
+          </select>
+          <div class="map-bulk-row">
+            <button class="map-bulk-btn map-bulk-activate"   id="mapBulkActivate"   disabled>
+              <i class="ri-checkbox-circle-line"></i> Activate Filtered
+            </button>
+            <button class="map-bulk-btn map-bulk-deactivate" id="mapBulkDeactivate" disabled>
+              <i class="ri-close-circle-line"></i> Deactivate Filtered
+            </button>
+          </div>
+          <button class="map-import-btn" id="mapImportBtn">
+            <i class="ri-upload-cloud-2-line"></i> Import Site
+          </button>
         </div>
-        <select id="mapProjectFilter"  class="map-filter-select"><option value="">All Projects</option></select>
-        <select id="mapProvinceFilter" class="map-filter-select"><option value="">All Provinces</option></select>
-        <select id="mapStatusFilter"   class="map-filter-select">
-          <option value="">All Statuses</option>
-          <option value="active">Active Only</option>
-          <option value="inactive">Inactive Only</option>
-        </select>
-        <div class="map-stats-chips">
+        <div class="map-sidebar-count" id="mapSidebarCount">Showing — sites</div>
+        <div class="map-sidebar-list" id="mapSiteList">
+          <div class="map-list-loading"><i class="ri-loader-4-line spin"></i> Loading sites…</div>
+        </div>
+      </div>
+
+      <!-- CENTER: MAP ONLY -->
+      <div class="map-card-wrap">
+        <div class="map-stats-overlay">
           <span class="map-stat-chip" id="mapStatTotal"><i class="ri-map-pin-2-line"></i> — Total</span>
-          <span class="map-stat-chip active-chip" id="mapStatActive"><i class="ri-radio-button-fill"></i> — Active</span>
+          <span class="map-stat-chip active-chip"   id="mapStatActive"><i class="ri-record-circle-line"></i> — Active</span>
           <span class="map-stat-chip inactive-chip" id="mapStatInactive"><i class="ri-radio-button-line"></i> — Inactive</span>
         </div>
+        <div id="mapContainer" class="map-container"></div>
       </div>
 
-      <!-- BOTTOM ROW: sidebar | map | details -->
-      <div class="map-main-row">
-
-        <!-- LEFT: site list -->
-        <div class="map-sidebar" id="mapSidebar">
-          <div class="map-sidebar-title"><i class="ri-list-check-3"></i> Sites</div>
-          <div class="map-sidebar-list" id="mapSiteList">
-            <div class="map-list-loading"><i class="ri-loader-4-line spin"></i> Loading sites…</div>
+      <!-- RIGHT: DETAILS PANEL (separate column) -->
+      <div class="map-details-panel hidden" id="mapDetailsPanel">
+        <div class="map-details-header">
+          <div class="map-details-title-wrap">
+            <div class="map-details-name" id="mapDetailsName">—</div>
+            <div class="map-details-sub"  id="mapDetailsSub">—</div>
+          </div>
+          <div class="map-details-header-actions">
+            <button class="map-details-edit-btn" id="mapDetailsEditBtn"><i class="ri-edit-line"></i> Edit</button>
+            <button class="map-details-close-btn" id="mapDetailsPanelClose"><i class="ri-close-line"></i></button>
           </div>
         </div>
-
-        <!-- CENTER: map card with overlay panel -->
-        <div class="map-card-wrap">
-          <div id="mapContainer" class="map-container"></div>
-
-          <!-- Overlay details panel -->
-          <div class="map-details-panel hidden" id="mapDetailsPanel">
-            <div class="map-details-header" id="mapDetailsHeader">
-              <div class="map-details-title-wrap">
-                <div class="map-details-name" id="mapDetailsName">—</div>
-                <div class="map-details-sub"  id="mapDetailsSub">—</div>
-              </div>
-              <div class="map-details-header-actions">
-                <button class="map-details-edit-btn" id="mapDetailsEditBtn">
-                  <i class="ri-edit-line"></i> Edit
-                </button>
-                <button class="map-details-close-btn" id="mapDetailsPanelClose">
-                  <i class="ri-close-line"></i>
-                </button>
-              </div>
-            </div>
-            <div class="map-details-body" id="mapDetailsBody"></div>
-          </div>
-        </div>
-
+        <div class="map-details-body" id="mapDetailsBody"></div>
       </div>
+
     </div>
   `;
 
@@ -599,18 +600,28 @@ function initMap() {
   }).addTo(map);
 
   // ── Icons ─────────────────────────────────────────────────────────────────
-  function makeIcon(color, size = 32) {
+  function makeIcon(color, size = 30, pulse = false) {
     return L.divIcon({
       className: '',
-      html: `<div class="map-pin" style="--pin-color:${color};">
-               <i class="ri-map-pin-2-fill"></i>
+      html: `<div class="map-pin ${pulse ? 'map-pin-pulse' : ''}" style="--pin-color:${color};width:${size}px;height:${size}px;">
+               <i class="ri-map-pin-2-fill" style="font-size:${size}px;line-height:1;color:${color};"></i>
              </div>`,
       iconSize: [size, size], iconAnchor: [size/2, size], popupAnchor: [0, -(size+4)]
     });
   }
-  const iconActive   = makeIcon('#c0392b');      // red  — active
-  const iconInactive = makeIcon('#c0392b', 28);  // same red, slightly smaller
-  const iconSelected = makeIcon('#f59e0b', 36);  // amber — selected
+
+  function siteIcon(site, selected = false) {
+    if (selected) return makeIcon('#f59e0b', 34);
+    const active  = isActive(site);
+    const devices = Array.isArray(site.devices) ? site.devices : [];
+    const hasIssue = devices.some(d =>
+      d.is_active === false ||
+      (d.license_due && new Date(d.license_due) < new Date())
+    );
+    if (!active)  return makeIcon('#94a3b8', 26);
+    if (hasIssue) return makeIcon('#f59e0b', 30, true);
+    return makeIcon('#22c55e', 30);
+  }
 
   // ── State ─────────────────────────────────────────────────────────────────
   let allSites     = [];
@@ -631,8 +642,7 @@ function initMap() {
       const lng = parseFloat(site.long);
       if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
 
-      const active = isActive(site);
-      const marker = L.marker([lat, lng], { icon: active ? iconActive : iconInactive }).addTo(map);
+      const marker = L.marker([lat, lng], { icon: siteIcon(site) }).addTo(map);
 
       marker.on('click', () => selectSite(site, marker));
       allMarkers[site.site_name] = marker;
@@ -675,14 +685,14 @@ function initMap() {
     // Reset previous selected icon
     if (selectedSite) {
       const prev = allMarkers[selectedSite.site_name];
-      if (prev) prev.setIcon(isActive(selectedSite) ? iconActive : iconInactive);
+      if (prev) prev.setIcon(siteIcon(selectedSite));
     }
 
     selectedSite = site;
 
     // Highlight marker
     if (marker) {
-      marker.setIcon(iconSelected);
+      marker.setIcon(siteIcon(site, true));
       map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
     }
 
@@ -698,114 +708,266 @@ function initMap() {
   }
 
   // ── Details panel ─────────────────────────────────────────────────────────
-  function showDetailsPanel(site) {
-    const panel = document.getElementById('mapDetailsPanel');
-    panel.classList.remove('hidden');
+  function deviceTypeLabel(name) {
+    if (!name) return '—';
+    const m = name.match(/\b(AP\s*1|AP\s*2|AP\s*3|ER|ROUTER)\b/i);
+    if (m) return m[0].replace(/\s+/,'').toUpperCase();
+    const parts = name.split(/[-_]/);
+    return parts[parts.length-1].toUpperCase().slice(0,6);
+  }
+  function deviceTypeColor(t) {
+    t = (t||'').toLowerCase();
+    if (t.includes('er')||t.includes('router')) return '#ef4444';
+    if (t.includes('ap1')) return '#2f4b85';
+    if (t.includes('ap2')) return '#7c3aed';
+    if (t.includes('ap3')) return '#0891b2';
+    return '#64748b';
+  }
+  function isExpired(d) { return d && new Date(d) < new Date(); }
+  function fmtDate(d) {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+  }
+  function buildDeviceCard(d, site) {
+    const devActive = d.is_active !== false;
+    const expired   = isExpired(d.license_due);
+    const tLabel    = deviceTypeLabel(d.device_name);
+    const tColor    = deviceTypeColor(tLabel);
+    return `
+      <div class="map-dev-card ${devActive?'':'map-dev-inactive'}" data-dev-id="${d.id}">
+        <div class="map-dev-card-header">
+          <span class="map-dev-type-badge" style="background:${tColor}18;color:${tColor};border-color:${tColor}40;">${escHtml(tLabel)}</span>
+          <span class="map-dev-name-full">${escHtml(d.device_name||'—')}</span>
+          <div class="map-dev-card-actions">
+            <span class="map-dev-status-dot ${devActive?'dev-active':'dev-inactive'}"></span>
+            <button class="map-dev-toggle-btn" data-id="${d.id}" data-active="${devActive}" title="${devActive?'Deactivate':'Activate'}"><i class="ri-power-line"></i></button>
+            <button class="map-dev-edit-btn"   data-id="${d.id}" title="Edit device"><i class="ri-edit-line"></i></button>
+          </div>
+        </div>
+        <div class="map-dev-card-body">
+          <div class="map-dev-info-row"><span class="map-dev-lbl">SN</span><span>${escHtml(d.serial||d.serial_number||'—')}</span></div>
+          <div class="map-dev-info-row"><span class="map-dev-lbl">MAC</span><span>${escHtml(d.mac_address||'—')}</span></div>
+          <div class="map-dev-info-row"><span class="map-dev-lbl">Model</span><span>${escHtml(d.model||'—')}</span></div>
+          <div class="map-dev-info-row ${expired?'map-dev-lic-expired':''}">
+            <span class="map-dev-lbl">Lic.</span>
+            <span>${fmtDate(d.license_due)}${expired?'<span class="map-dev-expired-tag">Expired</span>':''}</span>
+          </div>
+        </div>
+      </div>`;
+  }
 
-    const active = isActive(site);
+  function showDetailsPanel(site) {
+    const panel   = document.getElementById('mapDetailsPanel');
+    panel.classList.remove('hidden');
+    document.querySelector('.map-page-wrap')?.classList.add('details-open');
+    const active  = isActive(site);
+    const devices = Array.isArray(site.devices) ? site.devices : [];
+    const hasIssue = devices.some(d => d.is_active===false || isExpired(d.license_due));
 
     document.getElementById('mapDetailsName').textContent =
-      site.site_name.replace(/^VSTG2-/, '') || '—';
+      site.site_name.replace(/^VSTG2-/,'') || '—';
     document.getElementById('mapDetailsSub').textContent =
-      `${site.project_name || 'DICT438'} | ${site.province || '—'}`;
-
-    // Devices list (for expanded view)
-    const devices = Array.isArray(site.devices) ? site.devices : [];
-    const devHtml = devices.length
-      ? devices.map(d => {
-          // Extract device type suffix: AP1, AP2, ER
-          const nameRaw = d.device_name || '—';
-          const typeMatch = nameRaw.match(/\b(AP\s*1|AP\s*2|ER)\b/i);
-          const typeLabel = typeMatch ? typeMatch[0].replace(/\s+/,'').toUpperCase() : nameRaw.split('-').pop();
-          return `
-          <div class="map-dev-row">
-            <span class="map-dev-tag">${escHtml(typeLabel)}</span>
-            <div class="map-dev-info">
-              <span class="map-dev-model">${escHtml(d.model || '—')}</span>
-              <span class="map-dev-sn">${escHtml(d.serial || '—')}</span>
-            </div>
-          </div>`;
-        }).join('')
-      : '<div class="map-dev-empty">No devices linked.</div>';
+      `${site.project_name||'DICT438'} | ${site.province||'—'} | ${site.municipality||'—'}`;
 
     document.getElementById('mapDetailsBody').innerHTML = `
-      <!-- Status + Activate -->
+
+      <!-- ── OVERVIEW (always visible) ── -->
       <div class="map-details-status-row">
-        <span class="map-details-status-badge ${active ? 'active' : 'inactive'}">
-          <i class="ri-radio-button-${active ? 'fill' : 'line'}"></i>
-          ${active ? 'Active' : 'Inactive'}
+        <span class="map-details-status-badge ${active?'active':'inactive'}">
+          <i class="ri-record-circle-${active?'fill':'line'}"></i> ${active?'Active':'Inactive'}
         </span>
-        <button class="map-activate-btn ${active ? 'deactivate' : 'activate'}" id="mapActivateBtn">
-          <i class="ri-${active ? 'close' : 'check'}-circle-line"></i>
-          ${active ? 'Deactivate' : 'Activate'}
+        <button class="map-activate-btn ${active?'deactivate':'activate'}" id="mapActivateBtn">
+          <i class="ri-${active?'close':'check'}-circle-line"></i> ${active?'Deactivate':'Activate'}
         </button>
       </div>
 
-      <!-- Overview: quick-glance info -->
-      <div class="map-details-section">
-        <div class="map-details-row"><span class="map-details-label">IP:</span><span>${escHtml(site.ip || '—')}</span></div>
-        <div class="map-details-row"><span class="map-details-label">MAC:</span><span>${escHtml(site.mac || '—')}</span></div>
-        <div class="map-details-row"><span class="map-details-label">Municipality:</span><span>${escHtml(site.municipality || '—')}</span></div>
-        <div class="map-details-row"><span class="map-details-label">Coords:</span>
-          <span>${site.lat ? parseFloat(site.lat).toFixed(5) : '—'}, ${site.long ? parseFloat(site.long).toFixed(5) : '—'}</span>
+      <div class="map-overview-grid">
+        <div class="map-ov-item">
+          <span class="map-ov-label"><i class="ri-router-line"></i> IP</span>
+          <span class="map-ov-value">${escHtml(site.ip||'—')}</span>
+        </div>
+        <div class="map-ov-item">
+          <span class="map-ov-label"><i class="ri-mac-line"></i> MAC</span>
+          <span class="map-ov-value">${escHtml(site.mac||'—')}</span>
+        </div>
+        <div class="map-ov-item">
+          <span class="map-ov-label"><i class="ri-building-line"></i> Municipality</span>
+          <span class="map-ov-value">${escHtml(site.municipality||'—')}</span>
+        </div>
+        <div class="map-ov-item">
+          <span class="map-ov-label"><i class="ri-cpu-line"></i> Devices</span>
+          <span class="map-ov-value">
+            ${devices.length}
+            ${hasIssue ? '<span class="map-ov-issue"><i class="ri-error-warning-line"></i></span>' : ''}
+          </span>
         </div>
       </div>
 
-      <!-- See More expandable -->
+      <!-- ── SEE MORE TOGGLE ── -->
       <button class="map-see-more-btn" id="mapSeeMoreBtn">
         <i class="ri-arrow-down-s-line"></i> See More
       </button>
 
-      <!-- Expanded details (hidden by default) -->
-      <div class="map-expanded-details hidden" id="mapExpandedDetails">
+      <!-- ── EXPANDED DETAILS (hidden by default) ── -->
+      <div class="map-expanded-section hidden" id="mapExpandedSection">
+
+        <div class="map-exp-divider"><span>Details</span></div>
         <div class="map-details-section">
-          <div class="map-details-section-title">EQUIPMENT SPECIFICATIONS</div>
-          <div class="map-details-row"><span class="map-details-label">Modem:</span><span>${escHtml(site.modem || 'MDM2010')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Trans:</span><span>${escHtml(site.transceiver || 'ILB3210 Single Coax')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Dish:</span><span>${escHtml(site.dish || '1.2m Jonsa Satellite Dish')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Coords</span>
+            <span>${site.lat?parseFloat(site.lat).toFixed(5):'—'}, ${site.long?parseFloat(site.long).toFixed(5):'—'}</span>
+          </div>
         </div>
+
+        <div class="map-exp-divider"><span>Equipment</span></div>
         <div class="map-details-section">
-          <div class="map-details-section-title">CONTACTS</div>
-          <div class="map-details-row"><span class="map-details-label">Personnel:</span><span>${escHtml(site.contacts || '—')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Email:</span><span>${escHtml(site.email || '—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Modem</span><span>${escHtml(site.modem||'—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Transceiver</span><span>${escHtml(site.transceiver||'—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Dish</span><span>${escHtml(site.dish||'—')}</span></div>
         </div>
+
+        <div class="map-exp-divider"><span>Contacts</span></div>
         <div class="map-details-section">
-          <div class="map-details-section-title">NETWORK DEVICES</div>
-          <div class="map-devices-list">${devHtml}</div>
+          <div class="map-details-row"><span class="map-details-label">Personnel</span><span>${escHtml(site.contacts||'—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Email</span><span>${escHtml(site.email||'—')}</span></div>
         </div>
+
+        <div class="map-exp-divider">
+          <span>Network Devices ${hasIssue?'<span class="map-dev-warn-badge"><i class="ri-error-warning-line"></i> Issue</span>':''}</span>
+        </div>
+        <div class="map-devices-list" id="mapDevicesList">
+          ${devices.length ? devices.map(d=>buildDeviceCard(d,site)).join('') : '<div class="map-dev-empty"><i class="ri-cpu-line"></i> No devices linked.</div>'}
+        </div>
+
       </div>
     `;
 
-    // Wire See More toggle
+    document.getElementById('mapActivateBtn').onclick = () => {
+      if (!confirm(`${!active?'Activate':'Deactivate'} "${site.site_name.replace(/^VSTG2-/,'')}"?`)) return;
+      activateSite(site, !active);
+    };
+
     document.getElementById('mapSeeMoreBtn').addEventListener('click', function() {
-      const expanded = document.getElementById('mapExpandedDetails');
-      const isOpen   = !expanded.classList.contains('hidden');
-      expanded.classList.toggle('hidden', isOpen);
-      this.innerHTML = isOpen
+      const expanded = document.getElementById('mapExpandedSection');
+      const open     = !expanded.classList.contains('hidden');
+      expanded.classList.toggle('hidden', open);
+      this.innerHTML = open
         ? '<i class="ri-arrow-down-s-line"></i> See More'
         : '<i class="ri-arrow-up-s-line"></i> See Less';
     });
-
-    // Wire activate/deactivate
-    document.getElementById('mapActivateBtn').addEventListener('click', () => {
-      const newStatus = !active;
-      if (!confirm(`${newStatus ? 'Activate' : 'Deactivate'} site "${site.site_name}"?`)) return;
-      activateSite(site, newStatus);
-    });
-
-    // Wire close button
     document.getElementById('mapDetailsPanelClose').onclick = () => {
-      document.getElementById('mapDetailsPanel').classList.add('hidden');
-      if (selectedSite) {
-        const m = allMarkers[selectedSite.site_name];
-        if (m) m.setIcon(isActive(selectedSite) ? iconActive : iconInactive);
-      }
+      panel.classList.add('hidden');
+      document.querySelector('.map-page-wrap')?.classList.remove('details-open');
+      if (selectedSite) { const m = allMarkers[selectedSite.site_name]; if (m) m.setIcon(siteIcon(selectedSite)); }
       document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
       selectedSite = null;
     };
-
-    // Wire edit button
     document.getElementById('mapDetailsEditBtn').onclick = () => openMapEditModal(site);
+
+    document.querySelectorAll('.map-dev-toggle-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = parseInt(btn.dataset.id);
+        const cur = btn.dataset.active === 'true';
+        btn.disabled = true;
+        try {
+          const r = await fetch(`/api/map/devices/${id}/status`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:!cur})});
+          if (!r.ok) throw new Error();
+          const dev = site.devices.find(d=>d.id===id); if (dev) dev.is_active = !cur;
+          const marker = allMarkers[site.site_name];
+          if (marker) marker.setIcon(selectedSite?.site_name===site.site_name ? siteIcon(site,true) : siteIcon(site));
+          showDetailsPanel(site);
+          showToast(`Device ${!cur?'activated':'deactivated'}.`,'success');
+        } catch { showToast('Device update failed.','error'); }
+        finally { btn.disabled=false; }
+      });
+    });
+    document.querySelectorAll('.map-dev-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id  = parseInt(btn.dataset.id);
+        const dev = site.devices.find(d=>d.id===id);
+        if (dev) openDeviceEditModal(dev, site);
+      });
+    });
+  }
+
+  // ── Device Edit Modal ─────────────────────────────────────────────────────
+  function openDeviceEditModal(dev, site) {
+    const m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.innerHTML = `
+      <div class="modal-box add-modal-box" style="max-width:480px;">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-router-line"></i></div>
+          <div class="add-modal-title"><h3>Edit Device</h3><p>${escHtml(dev.device_name||'—')}</p></div>
+          <button class="modal-close-btn" id="devEditClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid">
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-cpu-line"></i> Device Name</label>
+              <input id="devEditName"  class="add-field-input" value="${escHtml(dev.device_name||'')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-price-tag-3-line"></i> Type</label>
+              <select id="devEditType" class="add-field-input">
+                <option value="ER_ROUTER" ${(dev.device_type||'').toUpperCase()==='ER_ROUTER'?'selected':''}>ER Router</option>
+                <option value="AP1"       ${(dev.device_type||'').toUpperCase()==='AP1'?'selected':''}>AP 1</option>
+                <option value="AP2"       ${(dev.device_type||'').toUpperCase()==='AP2'?'selected':''}>AP 2</option>
+                <option value="AP3"       ${(dev.device_type||'').toUpperCase()==='AP3'?'selected':''}>AP 3</option>
+                <option value="OTHER"     ${!['ER_ROUTER','AP1','AP2','AP3'].includes((dev.device_type||'').toUpperCase())?'selected':''}>Other</option>
+              </select>
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-barcode-line"></i> Serial Number</label>
+              <input id="devEditSN"    class="add-field-input" value="${escHtml(dev.serial_number||dev.serial||'')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-mac-line"></i> MAC Address</label>
+              <input id="devEditMAC"   class="add-field-input" value="${escHtml(dev.mac_address||'')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-settings-line"></i> Model</label>
+              <input id="devEditModel" class="add-field-input" value="${escHtml(dev.model||'')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-calendar-line"></i> License Expiry</label>
+              <input id="devEditLic"   class="add-field-input" type="date"
+                value="${dev.license_due?new Date(dev.license_due).toISOString().slice(0,10):''}">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"><i class="ri-information-line"></i> Saved to database</span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="devEditCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="devEditSave"><i class="ri-save-line"></i> Save</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    const close = () => m.remove();
+    document.getElementById('devEditClose').onclick  = close;
+    document.getElementById('devEditCancel').onclick = close;
+    m.onclick = e => { if (e.target===m) close(); };
+    document.getElementById('devEditSave').onclick = async () => {
+      const payload = {
+        device_name:   document.getElementById('devEditName').value.trim(),
+        device_type:   document.getElementById('devEditType').value,
+        serial_number: document.getElementById('devEditSN').value.trim(),
+        mac_address:   document.getElementById('devEditMAC').value.trim(),
+        model:         document.getElementById('devEditModel').value.trim(),
+        license_due:   document.getElementById('devEditLic').value || null,
+      };
+      const btn = document.getElementById('devEditSave');
+      btn.disabled=true; btn.innerHTML='<i class="ri-loader-4-line spin"></i> Saving…';
+      try {
+        const res = await fetch(`/api/map/devices/${dev.id}/edit`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if (!res.ok) throw new Error((await res.json()).error);
+        Object.assign(dev, payload);
+        close(); showDetailsPanel(site);
+        showToast('Device updated.','success');
+      } catch(e) { showToast('Save failed: '+e.message,'error'); }
+      finally { btn.disabled=false; btn.innerHTML='<i class="ri-save-line"></i> Save'; }
+    };
   }
 
   // ── Activate / Deactivate ─────────────────────────────────────────────────
@@ -825,7 +987,7 @@ function initMap() {
 
       // Update marker icon
       const marker = allMarkers[site.site_name];
-      if (marker) marker.setIcon(iconSelected); // keep selected highlight
+      if (marker) marker.setIcon(siteIcon(site, true));
 
       // Refresh sidebar dot + details panel
       const filtered = getFiltered();
@@ -947,25 +1109,67 @@ function initMap() {
     });
   }
 
+  function updateSidebarCount(filtered) {
+    const el = document.getElementById('mapSidebarCount');
+    if (el) el.textContent = `Showing ${filtered.length} site${filtered.length!==1?'s':''}`;
+  }
+
   function applyFilters() {
     const filtered = getFiltered();
     renderSiteList(filtered);
     updateMapStats(filtered);
-
-    // Show/hide markers based on filters
+    updateSidebarCount(filtered);
+    const ab = document.getElementById('mapBulkActivate');
+    const db = document.getElementById('mapBulkDeactivate');
+    if (ab) ab.disabled   = filtered.length === 0;
+    if (db) db.disabled   = filtered.length === 0;
     Object.entries(allMarkers).forEach(([name, marker]) => {
       const inFilter = filtered.some(s => s.site_name === name);
-      if (inFilter) {
-        if (!map.hasLayer(marker)) marker.addTo(map);
-      } else {
-        if (map.hasLayer(marker)) map.removeLayer(marker);
-      }
+      if (inFilter) { if (!map.hasLayer(marker)) marker.addTo(map); }
+      else          { if (map.hasLayer(marker))  map.removeLayer(marker); }
     });
   }
 
   ['mapSearch','mapProjectFilter','mapProvinceFilter','mapStatusFilter'].forEach(id => {
     document.getElementById(id)?.addEventListener(id === 'mapSearch' ? 'input' : 'change', applyFilters);
   });
+
+  // ── Bulk Activate / Deactivate ────────────────────────────────────────────
+  async function bulkUpdateStatus(newStatus) {
+    const filtered = getFiltered();
+    if (!filtered.length) { showToast('No sites match current filters.', 'error'); return; }
+    const all = filtered.length === allSites.length;
+    const msg = all
+      ? `⚠️ This will ${newStatus?'activate':'deactivate'} ALL ${filtered.length} sites. Continue?`
+      : `${newStatus?'Activate':'Deactivate'} ${filtered.length} filtered site${filtered.length!==1?'s':''}?`;
+    if (!confirm(msg)) return;
+    const btnId = newStatus ? 'mapBulkActivate' : 'mapBulkDeactivate';
+    const btn = document.getElementById(btnId);
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Processing…';
+    try {
+      const res = await fetch('/api/map/sites/bulk-status', {
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ site_names: filtered.map(s=>s.site_name), is_active: newStatus })
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      const result = await res.json();
+      filtered.forEach(site => {
+        site.is_active = newStatus;
+        const idx = allSites.findIndex(s => s.site_name === site.site_name);
+        if (idx !== -1) allSites[idx].is_active = newStatus;
+        const marker = allMarkers[site.site_name];
+        if (marker) marker.setIcon(siteIcon(site));
+      });
+      applyFilters();
+      showToast(`${result.updated||filtered.length} sites ${newStatus?'activated':'deactivated'}.`, 'success');
+    } catch(e) { showToast('Bulk update failed: ' + e.message, 'error'); }
+    finally { btn.disabled=false; btn.innerHTML=orig; }
+  }
+
+  document.getElementById('mapBulkActivate')?.addEventListener('click',   () => bulkUpdateStatus(true));
+  document.getElementById('mapBulkDeactivate')?.addEventListener('click', () => bulkUpdateStatus(false));
 
   // ── Load sites ────────────────────────────────────────────────────────────
   function updateMapStats(sites) {
@@ -995,6 +1199,12 @@ function initMap() {
       renderSiteList(allSites);
       plotMarkers(allSites);
       updateMapStats(allSites);
+      updateSidebarCount(allSites);
+      // Enable bulk buttons once loaded
+      const ab = document.getElementById('mapBulkActivate');
+      const db = document.getElementById('mapBulkDeactivate');
+      if (ab) ab.disabled = allSites.length === 0;
+      if (db) db.disabled = allSites.length === 0;
       showToast(`${allSites.length} sites loaded.`, 'success');
     } catch(e) {
       document.getElementById('mapSiteList').innerHTML =
@@ -2216,17 +2426,17 @@ function renderDashCharts(data) {
     const counts     = probRows.length ? probRows.map(r => parseInt(r.count) || 0) : [1];
     const total      = counts.reduce((a,b) => a+b, 0);
 
-    // Muted professional palette
+    // Balanced, professional status palette
     const statusColors = {
-      'offline':       '#64748b',
-      'in progress':   '#94a3b8',
-      'for monitoring':'#2f4b85',
-      'online':        '#475569',
-      'unknown':       '#cbd5e1',
-      'low signal':    '#334155',
-      'intermittent':  '#1e3a6e',
+      'offline':        '#e05252',   // soft red
+      'in progress':    '#f4a443',   // warm amber
+      'for monitoring': '#4a90d9',   // calm blue
+      'online':         '#52b788',   // muted green
+      'unknown':        '#a0aec0',   // neutral grey
+      'low signal':     '#9b72cf',   // muted purple
+      'intermittent':   '#f08080',   // light coral
     };
-    const fallback = ['#2f4b85','#475569','#64748b','#94a3b8','#cbd5e1','#1e3a6e'];
+    const fallback = ['#4a90d9','#52b788','#f4a443','#e05252','#9b72cf','#a0aec0','#f08080'];
     const colors = labels.map((l, i) =>
       statusColors[l.toLowerCase()] || fallback[i % fallback.length]
     );
@@ -2329,9 +2539,9 @@ function renderDashCharts(data) {
     if (badge) badge.textContent = total + ' total';
     const legend = document.getElementById('chartTicketLegend');
     if (legend) legend.innerHTML = `
-      <span class="dcl-item"><span class="dcl-dot" style="background:#2f4b85"></span>Total</span>
-      <span class="dcl-item"><span class="dcl-dot" style="background:#64748b"></span>Open <strong>${open}</strong></span>
-      <span class="dcl-item"><span class="dcl-dot" style="background:#475569"></span>Closed <strong>${closed}</strong></span>
+      <span class="dcl-item"><span class="dcl-dot" style="background:#4a90d9"></span>Total</span>
+      <span class="dcl-item"><span class="dcl-dot" style="background:#e05252"></span>Open <strong>${open}</strong></span>
+      <span class="dcl-item"><span class="dcl-dot" style="background:#52b788"></span>Closed <strong>${closed}</strong></span>
     `;
 
     // Gradient fills
@@ -2349,11 +2559,11 @@ function renderDashCharts(data) {
         datasets: [{
           data: [total, open, closed],
           backgroundColor: [
-            mkGrad(tkCanvas, '#2f4b85', 'rgba(47,75,133,0.4)'),
-            mkGrad(tkCanvas, '#64748b', 'rgba(100,116,139,0.35)'),
-            mkGrad(tkCanvas, '#475569', 'rgba(71,85,105,0.35)'),
+            mkGrad(tkCanvas, '#4a90d9', 'rgba(74,144,217,0.35)'),  // blue  — Total
+            mkGrad(tkCanvas, '#e05252', 'rgba(224,82,82,0.35)'),    // red   — Open
+            mkGrad(tkCanvas, '#52b788', 'rgba(82,183,136,0.35)'),   // green — Closed
           ],
-          borderColor: ['#2f4b85','#64748b','#475569'],
+          borderColor: ['#4a90d9','#e05252','#52b788'],
           borderWidth: 0,
           borderRadius: 10,
           borderSkipped: false,
