@@ -7,6 +7,12 @@
   transition: background 0.3s, color 0.3s, margin-left 0.32s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* prevent ANY scrollbar at root — each section manages its own scroll */
+}
+
 body { background: #f0f2f7; }
 body.dark { background: #0f172a; color: #e2e8f0; }
 
@@ -71,30 +77,33 @@ body.dark .sidebar {
 }
 
 /* ─── Layout wrapper ────────────────────────────────────────────────────── */
-.layout { display: flex; height: 100vh; }
+.layout { display: flex; height: 100vh; overflow: hidden; }
 
 /* ─── Main content shifts with sidebar ─────────────────────────────────── */
 .main {
   margin-left: var(--sidebar-w);
-  width: calc(100vw - var(--sidebar-w));
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
   padding: 28px 30px;
   overflow-y: auto;
   overflow-x: hidden;
-  min-width: 0;
-  flex: 1;
-  transition: margin-left 0.32s cubic-bezier(0.4, 0, 0.2, 1),
-              width       0.32s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: margin-left 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Map page — zero out padding/scroll so map fills the viewport exactly */
+body.map-active .main {
+  padding: 0;
+  overflow: hidden;
 }
 body.sidebar-collapsed .main {
   margin-left: var(--sidebar-w-collapsed);
-  width: calc(100vw - var(--sidebar-w-collapsed));
 }
 
 /* Fallback: sibling selector works even if body class is missing */
 .sidebar.collapsed ~ .main,
 .sidebar.collapsed ~ * .main {
   margin-left: var(--sidebar-w-collapsed) !important;
-  width: calc(100vw - var(--sidebar-w-collapsed)) !important;
 }
 
 /* ─── Logo area ─────────────────────────────────────────────────────────── */
@@ -2673,30 +2682,40 @@ body.dark .tkd-reply-textarea {
 
 /* ── Page wrapper ── */
 .map-page-wrap {
-  display: grid;
-  grid-template-columns: 280px 1fr 0px;   /* details starts hidden (0px) */
-  grid-template-rows: 100%;
-  height: calc(100vh - 56px);
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  width: 100%;
   overflow: hidden;
-  transition: grid-template-columns 0.28s cubic-bezier(0.4,0,0.2,1);
+  gap: 14px;
+  padding: 14px;
+  background: #e8edf5;
+  box-sizing: border-box;
 }
-/* When details panel is open, give it its own column */
-.map-page-wrap.details-open {
-  grid-template-columns: 280px 1fr 290px;
-}
+body.dark .map-page-wrap { background: #0b1426; }
+
+/* details-open no longer changes columns — panel overlays the map */
+.map-page-wrap.details-open { /* no-op kept for JS compat */ }
 
 /* ── LEFT SIDEBAR ── */
 .map-sidebar {
-  grid-column: 1;
-  display: flex; flex-direction: column;
-  background: #1e3a6e; overflow: hidden;
-  border-right: 1px solid rgba(255,255,255,0.06);
+  flex: 0 0 300px;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: #1e3a6e;
+  overflow: hidden;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+  /* Sidebar itself doesn't scroll — only the list inside does */
+  min-height: 0;
 }
-body.dark .map-sidebar { background: #0f1e38; }
+body.dark .map-sidebar { background: #0f1e38; box-shadow: 0 4px 20px rgba(0,0,0,0.35); }
 
 .map-sidebar-filters {
   padding: 14px 12px 12px; display: flex; flex-direction: column; gap: 8px;
   background: #1a3460; border-bottom: 1px solid rgba(255,255,255,0.08); flex-shrink: 0;
+  border-radius: 16px 16px 0 0;
 }
 .map-search-box {
   display: flex; align-items: center; gap: 8px;
@@ -2756,11 +2775,21 @@ body.dark .map-sidebar { background: #0f1e38; }
 
 /* ── CENTER MAP ── */
 .map-card-wrap {
-  grid-column: 2;
-  position: relative; overflow: hidden;
+  flex: 1;
+  position: relative;
+  overflow: hidden;
   background: #e8e8e8;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+  min-width: 0;
+  min-height: 0;
 }
-.map-container { width: 100%; height: 100%; }
+/* Leaflet needs an explicit pixel or 100% height on a sized parent */
+.map-container {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
 
 /* Stats chips overlay */
 .map-stats-overlay {
@@ -2785,19 +2814,28 @@ body.dark .map-stat-chip { background: #1e293b; border-color: #334155; color: #9
 @keyframes mapPinPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.2)} }
 .map-pin-pulse { animation: mapPinPulse 1.8s ease infinite; }
 
-/* ── RIGHT DETAILS PANEL (standalone column) ── */
+/* ── RIGHT DETAILS PANEL — floats over the map ── */
 .map-details-panel {
-  grid-column: 3;
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 290px;
+  max-height: calc(100% - 28px);
+  z-index: 600;
   display: flex; flex-direction: column;
   background: white; overflow: hidden;
-  border-left: 1px solid #e2e8f0;
-  box-shadow: -4px 0 20px rgba(0,0,0,0.08);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  transform: translateX(0);
+  transition: transform 0.28s cubic-bezier(0.4,0,0.2,1),
+              opacity   0.22s ease;
 }
 .map-details-panel.hidden {
-  /* still in grid flow — parent controls the column width */
-  visibility: hidden; pointer-events: none;
+  transform: translateX(calc(100% + 28px));
+  opacity: 0;
+  pointer-events: none;
 }
-body.dark .map-details-panel { background: #1e293b; border-color: #334155; }
+body.dark .map-details-panel { background: #1e293b; }
 
 .map-details-header {
   display: flex; align-items: flex-start; justify-content: space-between;

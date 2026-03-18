@@ -1816,7 +1816,7 @@ app.get('/api/dashboard/stats', async (req, res) => {
   } catch(e) { console.error('Map migration error:', e.message); }
 })();
 
-// GET all network_sites with full details + joined devices
+// GET all network_sites with full details + joined devices + terminal row
 app.get('/api/map/sites', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -1846,7 +1846,34 @@ app.get('/api/map/sites', async (req, res) => {
       GROUP BY ns.id
       ORDER BY ns.province, ns.site_name
     `);
-    res.json(result.rows);
+
+    // For each site, fetch its matching terminal row from site_inventory
+    // Try both the raw site_name and with the VSTG2- prefix stripped
+    const siteNames = result.rows.map(r => r.site_name);
+    const strippedNames = result.rows.map(r => r.site_name.replace(/^VSTG2-/i, ''));
+    const allLookups = [...new Set([...siteNames, ...strippedNames])];
+    let terminalMap = {};
+    if (allLookups.length) {
+      const tResult = await pool.query(
+        `SELECT * FROM site_inventory WHERE LOWER("SITENAME") = ANY($1::text[])`,
+        [allLookups.map(s => s.toLowerCase())]
+      );
+      for (const row of tResult.rows) {
+        if (row['SITENAME']) {
+          terminalMap[row['SITENAME']] = row;
+          terminalMap[row['SITENAME'].toLowerCase()] = row;
+        }
+      }
+    }
+
+    const rows = result.rows.map(r => {
+      const key = r.site_name.toLowerCase();
+      const strippedKey = r.site_name.replace(/^VSTG2-/i, '').toLowerCase();
+      const terminal = terminalMap[key] || terminalMap[strippedKey] || null;
+      return { ...r, terminal };
+    });
+
+    res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

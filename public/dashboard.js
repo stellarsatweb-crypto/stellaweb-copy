@@ -25,6 +25,7 @@ const mainContent = document.getElementById("mainContent");
 
 let currentPage = 1;
 const rowsPerPage = 7;
+let leafletMap = null;  // holds the Leaflet map instance for invalidateSize on sidebar toggle
 
 /* ================= SIDEBAR ================= */
 
@@ -34,6 +35,8 @@ document.querySelectorAll(".menu li").forEach(item => {
     document.querySelectorAll(".menu li").forEach(li => li.classList.remove("active"));
     this.classList.add("active");
     const text = this.innerText.trim();
+    document.body.classList.toggle("map-active", text === "Map");
+    if (text !== "Map") leafletMap = null;
     if (text === "Dashboard") loadDashboard();
     if (text === "Problematic Sites") loadProblematicSites();
     if (text === "Ticket") loadTickets();
@@ -74,7 +77,7 @@ function loadReports() {
 
       <div class="rpt-date-bar">
         <i class="ri-calendar-2-line"></i>
-        <span>January 25 &ndash; February 23, 2026</span>
+        <span id="rptDateBarLabel">Loading…</span>
       </div>
 
       <div class="rpt-card">
@@ -100,6 +103,16 @@ function loadReports() {
   `;
 
   fetchReports();
+
+  // Dynamic date bar — show current month range
+  (() => {
+    const now   = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last  = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const fmt   = d => d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const el    = document.getElementById('rptDateBarLabel');
+    if (el) el.textContent = fmt(first) + ' – ' + fmt(last);
+  })();
 
   document.getElementById('rptSearch').addEventListener('input', function () {
     const q = this.value.toLowerCase();
@@ -593,11 +606,15 @@ function initMap() {
   if (!container) return;
 
   const map = L.map('mapContainer', { zoomControl: false }).setView([16.5, 121.0], 7);
+  leafletMap = map;  // expose globally so sidebar toggle can call invalidateSize
   L.control.zoom({ position: 'bottomright' }).addTo(map);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
     maxZoom: 19
   }).addTo(map);
+
+  // Force Leaflet to recalculate container size after the DOM has settled
+  setTimeout(() => map.invalidateSize(), 0);
 
   // ── Icons ─────────────────────────────────────────────────────────────────
   function makeIcon(color, size = 30, pulse = false) {
@@ -693,7 +710,7 @@ function initMap() {
     // Highlight marker
     if (marker) {
       marker.setIcon(siteIcon(site, true));
-      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 13), { duration: 0.7 });
+      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 12), { duration: 0.6, easeLinearity: 0.5 });
     }
 
     // Sync sidebar
@@ -783,21 +800,21 @@ function initMap() {
 
       <div class="map-overview-grid">
         <div class="map-ov-item">
-          <span class="map-ov-label"><i class="ri-router-line"></i> IP</span>
+          <span class="map-ov-label"><i class="ri-server-line"></i> IP Address</span>
           <span class="map-ov-value">${escHtml(site.ip||'—')}</span>
-        </div>
-        <div class="map-ov-item">
-          <span class="map-ov-label"><i class="ri-mac-line"></i> MAC</span>
-          <span class="map-ov-value">${escHtml(site.mac||'—')}</span>
         </div>
         <div class="map-ov-item">
           <span class="map-ov-label"><i class="ri-building-line"></i> Municipality</span>
           <span class="map-ov-value">${escHtml(site.municipality||'—')}</span>
         </div>
         <div class="map-ov-item">
+          <span class="map-ov-label"><i class="ri-map-pin-2-line"></i> Province</span>
+          <span class="map-ov-value">${escHtml(site.province||'—')}</span>
+        </div>
+        <div class="map-ov-item">
           <span class="map-ov-label"><i class="ri-cpu-line"></i> Devices</span>
           <span class="map-ov-value">
-            ${devices.length}
+            ${devices.length} linked
             ${hasIssue ? '<span class="map-ov-issue"><i class="ri-error-warning-line"></i></span>' : ''}
           </span>
         </div>
@@ -848,11 +865,18 @@ function initMap() {
 
     document.getElementById('mapSeeMoreBtn').addEventListener('click', function() {
       const expanded = document.getElementById('mapExpandedSection');
-      const open     = !expanded.classList.contains('hidden');
-      expanded.classList.toggle('hidden', open);
-      this.innerHTML = open
-        ? '<i class="ri-arrow-down-s-line"></i> See More'
+      const isOpen   = !expanded.classList.contains('hidden');
+      expanded.classList.toggle('hidden', isOpen);
+      this.classList.toggle('open', !isOpen);
+      this.innerHTML = isOpen
+        ? '<i class="ri-arrow-down-s-line"></i> See More Details'
         : '<i class="ri-arrow-up-s-line"></i> See Less';
+      // Scroll down to show expanded content
+      if (!isOpen) {
+        setTimeout(() => {
+          expanded.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 50);
+      }
     });
     document.getElementById('mapDetailsPanelClose').onclick = () => {
       panel.classList.add('hidden');
@@ -1015,7 +1039,7 @@ function initMap() {
         <div class="add-modal-body">
           <div class="add-fields-grid" style="grid-template-columns:1fr 1fr;">
             <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-router-line"></i> IP Address</label>
+              <label class="add-field-label"><i class="ri-server-line"></i> IP Address</label>
               <input type="text" id="mapEditIp" class="add-field-input" value="${escHtml(site.ip || '')}">
             </div>
             <div class="add-field-item">
@@ -1023,16 +1047,28 @@ function initMap() {
               <input type="text" id="mapEditMac" class="add-field-input" value="${escHtml(site.mac || '')}">
             </div>
             <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-focus-3-line"></i> Latitude</label>
+              <label class="add-field-label"><i class="ri-map-pin-line"></i> Latitude</label>
               <input type="number" id="mapEditLat" class="add-field-input" step="0.0000001" value="${site.lat || ''}">
             </div>
             <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-focus-3-line"></i> Longitude</label>
+              <label class="add-field-label"><i class="ri-map-pin-line"></i> Longitude</label>
               <input type="number" id="mapEditLng" class="add-field-input" step="0.0000001" value="${site.long || ''}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-cpu-line"></i> Modem</label>
+              <input type="text" id="mapEditModem" class="add-field-input" value="${escHtml(site.modem || '')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-signal-tower-line"></i> Transceiver</label>
+              <input type="text" id="mapEditTransceiver" class="add-field-input" value="${escHtml(site.transceiver || '')}">
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-base-station-line"></i> Dish</label>
+              <input type="text" id="mapEditDish" class="add-field-input" value="${escHtml(site.dish || '')}">
             </div>
             <div class="add-field-item" style="grid-column:1/-1;">
               <label class="add-field-label"><i class="ri-phone-line"></i> Contacts</label>
-              <textarea id="mapEditContacts" class="add-field-input" style="resize:vertical;min-height:60px;">${escHtml(site.contacts || '')}</textarea>
+              <textarea id="mapEditContacts" class="add-field-input" style="resize:vertical;min-height:54px;">${escHtml(site.contacts || '')}</textarea>
             </div>
             <div class="add-field-item" style="grid-column:1/-1;">
               <label class="add-field-label"><i class="ri-mail-line"></i> Email / Social</label>
@@ -1057,12 +1093,15 @@ function initMap() {
 
     document.getElementById('mapEditSave').onclick = async () => {
       const payload = {
-        ip:       document.getElementById('mapEditIp').value.trim(),
-        mac:      document.getElementById('mapEditMac').value.trim(),
-        lat:      parseFloat(document.getElementById('mapEditLat').value) || null,
-        long:     parseFloat(document.getElementById('mapEditLng').value) || null,
-        contacts: document.getElementById('mapEditContacts').value.trim(),
-        email:    document.getElementById('mapEditEmail').value.trim(),
+        ip:          document.getElementById('mapEditIp').value.trim(),
+        mac:         document.getElementById('mapEditMac').value.trim(),
+        lat:         parseFloat(document.getElementById('mapEditLat').value) || null,
+        long:        parseFloat(document.getElementById('mapEditLng').value) || null,
+        modem:       document.getElementById('mapEditModem').value.trim(),
+        transceiver: document.getElementById('mapEditTransceiver').value.trim(),
+        dish:        document.getElementById('mapEditDish').value.trim(),
+        contacts:    document.getElementById('mapEditContacts').value.trim(),
+        email:       document.getElementById('mapEditEmail').value.trim(),
       };
       const btn = document.getElementById('mapEditSave');
       btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
@@ -1171,6 +1210,11 @@ function initMap() {
   document.getElementById('mapBulkActivate')?.addEventListener('click',   () => bulkUpdateStatus(true));
   document.getElementById('mapBulkDeactivate')?.addEventListener('click', () => bulkUpdateStatus(false));
 
+  // Import Site button (placeholder - extend as needed)
+  document.getElementById('mapImportBtn')?.addEventListener('click', () => {
+    showToast('Import functionality coming soon.', 'success');
+  });
+
   // ── Load sites ────────────────────────────────────────────────────────────
   function updateMapStats(sites) {
     const active   = sites.filter(s => isActive(s)).length;
@@ -1213,6 +1257,26 @@ function initMap() {
   }
 
   loadSites();
+
+  // Close panel on ESC key
+  document.addEventListener('keydown', function onMapEsc(e) {
+    if (e.key !== 'Escape') return;
+    const panel = document.getElementById('mapDetailsPanel');
+    if (panel && !panel.classList.contains('hidden')) {
+      panel.classList.add('hidden');
+      document.querySelector('.map-page-wrap')?.classList.remove('details-open');
+      if (selectedSite) {
+        const m = allMarkers[selectedSite.site_name];
+        if (m) m.setIcon(siteIcon(selectedSite));
+      }
+      document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
+      selectedSite = null;
+    }
+    // Remove listener when map is unloaded
+    if (!document.getElementById('mapContainer')) {
+      document.removeEventListener('keydown', onMapEsc);
+    }
+  });
 }
 
 
@@ -1243,8 +1307,8 @@ function showLogoutModal() {
         <div class="logout-user-card">
           <div class="logout-user-avatar"><i class="ri-user-3-line"></i></div>
           <div class="logout-user-info">
-            <span class="logout-user-name">${JSON.parse(localStorage.getItem("user") || "{}").name || "Admin User"}</span>
-            <span class="logout-user-role">Dashboard Administrator</span>
+            <span class="logout-user-name">${JSON.parse(localStorage.getItem("user") || "{}").full_name || "Admin User"}</span>
+            <span class="logout-user-role">${JSON.parse(localStorage.getItem("user") || "{}").role || "Staff"}</span>
           </div>
           <span class="logout-user-badge"><i class="ri-checkbox-circle-fill"></i> Active</span>
         </div>
@@ -1313,6 +1377,10 @@ document.getElementById("toggleSidebar").addEventListener("click", () => {
   const sidebar = document.getElementById("sidebar");
   sidebar.classList.toggle("collapsed");
   syncSidebar(sidebar);
+  // Wait for the 0.32s CSS transition to finish, then tell Leaflet to resize
+  if (leafletMap) {
+    setTimeout(() => leafletMap.invalidateSize(), 350);
+  }
 });
 
 /* ================= TERMINALS ================= */
@@ -1633,8 +1701,10 @@ async function loadTerminals() {
   document.getElementById('btnCancelSelect').addEventListener('click', () => {
     terminalSelectMode = false;
     terminalSelectedRows.clear();
-    document.getElementById('btnSelect').classList.remove('active-tool');
-    document.getElementById('bulkActions').classList.add('hidden');
+    document.getElementById('btnSelect')?.classList.remove('active-tool');
+    document.getElementById('bulkActions')?.classList.add('hidden');
+    const chk = document.getElementById('bulkSelectAllChk');
+    if (chk) { chk.checked = false; chk.indeterminate = false; }
     renderTerminalTable();
     updateSelectedCount();
   });
@@ -1937,6 +2007,7 @@ function renderTerminalTable() {
           if (terminalPage > maxPage) terminalPage = maxPage;
           renderTerminalTable(); renderTerminalPagination();
           showToast("Record deleted successfully.", "success");
+          dashboardDataChanged();
         } catch (err) { showToast("Network error — could not delete record.", "error"); }
       });
     });
@@ -2254,10 +2325,18 @@ function loadDashboard() {
   `;
 
   // Dark toggle
+  // Sync icon with current theme on load
+  (() => {
+    const icon = document.querySelector('#darkToggle i');
+    if (icon) icon.className = document.body.classList.contains('dark') ? 'ri-sun-line' : 'ri-moon-line';
+  })();
+
   document.getElementById('darkToggle').addEventListener('click', () => {
     document.body.classList.toggle('dark');
     const icon = document.querySelector('#darkToggle i');
-    icon.className = document.body.classList.contains('dark') ? 'ri-sun-line' : 'ri-moon-line';
+    if (icon) icon.className = document.body.classList.contains('dark') ? 'ri-sun-line' : 'ri-moon-line';
+    // Persist theme
+    localStorage.setItem('theme', document.body.classList.contains('dark') ? 'dark' : 'light');
   });
 
   // Manual refresh button
@@ -2760,14 +2839,15 @@ async function loadProblematicSites() {
         </div>
 
         <div id="probBulkActions" class="bulk-actions hidden">
-          <label class="bulk-select-all-wrap">
+          <label class="bulk-select-all-wrap" title="Select all rows">
             <input type="checkbox" id="probBulkSelectAllChk">
-            <span class="bulk-select-all-label">Select All</span>
+            <span class="bulk-select-all-label"><i class="ri-check-double-line"></i> Select All</span>
           </label>
           <span class="bulk-divider"></span>
-          <span class="bulk-count-badge" id="probSelectedCount"><i class="ri-checkbox-multiple-line"></i> 0 selected</span>
+          <span class="bulk-count-badge" id="probSelectedCount"><i class="ri-checkbox-multiple-line"></i> 0 of 0 selected</span>
           <div class="bulk-spacer"></div>
-          <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete</button>
+          <button class="tool-btn danger-btn" id="probDeleteSelected"><i class="ri-delete-bin-line"></i> Delete Selected</button>
+          <button class="tool-btn" id="probBtnCancelSelect" title="Exit selection mode"><i class="ri-close-line"></i> Done</button>
         </div>
 
         <div class="table-wrapper terminals-table-wrapper">
@@ -3028,9 +3108,22 @@ async function loadProblematicSites() {
         if (probPage > maxPage) probPage = maxPage;
         renderProbTable(); renderProbPagination();
         showToast(`${result.deleted} record(s) deleted.`, "success");
+        dashboardDataChanged();
       } catch (err) { showToast("Network error — could not delete.", "error"); }
       finally { btn.disabled = false; btn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete Selected'; }
     });
+  });
+
+  // Done / Cancel prob select mode
+  document.getElementById('probBtnCancelSelect')?.addEventListener('click', () => {
+    probSelectMode = false;
+    probSelectedRows.clear();
+    document.getElementById('probBtnSelect')?.classList.remove('active-tool');
+    document.getElementById('probBulkActions')?.classList.add('hidden');
+    const chk = document.getElementById('probBulkSelectAllChk');
+    if (chk) { chk.checked = false; chk.indeterminate = false; }
+    renderProbTable();
+    updateProbSelectedCount();
   });
 
   // Prob Select All checkbox
@@ -3194,6 +3287,7 @@ function renderProbTable() {
           if (probPage > maxPage) probPage = maxPage;
           renderProbTable(); renderProbPagination();
           showToast("Record deleted successfully.", "success");
+          dashboardDataChanged();
         } catch (err) { showToast("Network error — could not delete.", "error"); }
       });
     });
@@ -3835,6 +3929,7 @@ async function loadTickets() {
 
       await fetchTickets();
       showToast("Ticket submitted successfully.", "success");
+      dashboardDataChanged();
     } catch (err) {
       showToast("Network error: " + err.message, "error");
     } finally {
@@ -5673,8 +5768,15 @@ function loadSettings() {
     try {
       const res  = await fetch('/api/reports');
       const data = await res.json();
-      const csv  = ['Region,Deadline,MIR,Ticket,SLA,Progress,Last Updated',
-        ...data.map(r => [r.region, r.deadline||'', r.mir||'', r.ticket||'', r.sla||'', r.progress||'', r.last_updated||''].join(','))
+      const rows = Array.isArray(data) ? data : [];
+      const esc  = v => { const s = String(v ?? ''); return s.includes(',') ? `"${s}"` : s; };
+      const csv  = [
+        'Region,Start Date,End Date,Deadline,MIR (%),Ticket (%),SLA (%),Progress (%),Created By,Last Updated',
+        ...rows.map(r => [
+          r.region, r.date_start||'', r.date_end||'', r.deadline||'',
+          r.mir||'', r.ticket||'', r.sla||'', r.progress||'',
+          r.created_by||'', r.date ? new Date(r.date).toLocaleDateString() : ''
+        ].map(esc).join(','))
       ].join('\n');
       const blob = new Blob([csv], { type: 'text/csv' });
       const url  = URL.createObjectURL(blob);
