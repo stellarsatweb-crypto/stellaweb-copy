@@ -2044,6 +2044,380 @@ app.delete('/api/reminders/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
+/* ================= ACCEPTANCE ================= */
+
+const acceptanceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const type = req.path.includes('images') ? 'images'
+                 : req.path.includes('videos') ? 'videos' : 'files';
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'acceptance', type);
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext  = require('path').extname(file.originalname);
+      const base = require('path').basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${Date.now()}_${base}${ext}`);
+    }
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 }
+});
+
+// Setup tables
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_sites (
+        id          SERIAL PRIMARY KEY,
+        site_name   CITEXT NOT NULL,
+        status      CITEXT NOT NULL DEFAULT 'Pending' CHECK (LOWER(status) IN ('pending','done')),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        updated_at  TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_files (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        file_name   CITEXT NOT NULL,
+        file_path   TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_images (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        image_name  CITEXT NOT NULL,
+        image_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_videos (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        video_name  CITEXT NOT NULL,
+        video_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        duration    VARCHAR(20),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_progress (
+        id           SERIAL PRIMARY KEY,
+        project_name CITEXT NOT NULL UNIQUE,
+        progress     NUMERIC(5,2) DEFAULT 0,
+        updated_at   TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('Acceptance tables ready ✅');
+  } catch(e) { console.error('Acceptance setup error:', e.message); }
+})();
+
+// GET all projects with progress
+app.get('/api/acceptance/projects', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        pp.project_name,
+        pp.progress,
+        COUNT(ps.id) AS total_sites,
+        COUNT(ps.id) FILTER (WHERE LOWER(ps.status)='done')    AS done_sites,
+        COUNT(ps.id) FILTER (WHERE LOWER(ps.status)='pending') AS pending_sites
+      FROM project_progress pp
+      LEFT JOIN project_sites ps ON ps.project_name = pp.project_name
+      GROUP BY pp.project_name, pp.progress, pp.updated_at
+      ORDER BY pp.project_name
+    `);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET sites for a project
+app.get('/api/acceptance/sites', async (req, res) => {
+  const { project, q } = req.query;
+  try {
+    let query = `
+      SELECT ps.*, u.full_name AS uploader_name,
+        (SELECT COUNT(*) FROM project_files  WHERE site_id=ps.id) AS file_count,
+        (SELECT COUNT(*) FROM project_images WHERE site_id=ps.id) AS image_count,
+        (SELECT COUNT(*) FROM project_videos WHERE site_id=ps.id) AS video_count
+      FROM project_sites ps
+      LEFT JOIN users u ON u.id = ps.uploaded_by
+    `;
+    const params = [];
+    const where = [];
+    if (project) { params.push(project); where.push(`ps.project_name = $${params.length}`); }
+    if (q)       { params.push(`%${q}%`); where.push(`ps.site_name ILIKE $${params.length}`); }
+    if (where.length) query += ' WHERE ' + where.join(' AND ');
+    query += ' ORDER BY ps.site_name';
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST add site
+app.post('/api/acceptance/sites', async (req, res) => {
+  const { site_name, status, uploaded_by, project_name } = req.body || {};
+  if (!site_name?.trim())    return res.status(400).json({ error: 'site_name required' });
+  if (!project_name?.trim()) return res.status(400).json({ error: 'project_name required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_sites (project_name, site_name, status, uploaded_by)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [project_name.trim(), site_name.trim(), status||'Pending', uploaded_by||null]
+    );
+    // Ensure project_progress entry exists
+    await pool.query(
+      `INSERT INTO project_progress (project_name) VALUES ($1) ON CONFLICT DO NOTHING`,
+      [project_name.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT update site status
+app.put('/api/acceptance/sites/:id', async (req, res) => {
+  const { status } = req.body || {};
+  try {
+    const result = await pool.query(
+      `UPDATE project_sites SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
+      [status, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE site
+app.delete('/api/acceptance/sites/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM project_sites WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET media for a site
+app.get('/api/acceptance/sites/:id/media', async (req, res) => {
+  try {
+    const [files, images, videos] = await Promise.all([
+      pool.query(`SELECT f.*, u.full_name AS uploader_name FROM project_files f LEFT JOIN users u ON u.id=f.uploaded_by WHERE f.site_id=$1 ORDER BY f.uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT i.*, u.full_name AS uploader_name FROM project_images i LEFT JOIN users u ON u.id=i.uploaded_by WHERE i.site_id=$1 ORDER BY i.uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT v.*, u.full_name AS uploader_name FROM project_videos v LEFT JOIN users u ON u.id=v.uploaded_by WHERE v.site_id=$1 ORDER BY v.uploaded_at DESC`, [req.params.id]),
+    ]);
+    res.json({ files: files.rows, images: images.rows, videos: videos.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST upload file
+app.post('/api/acceptance/sites/:id/files', acceptanceUpload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const { uploaded_by } = req.body || {};
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.params.id, req.file.originalname, '/uploads/acceptance/files/'+req.file.filename,
+       (req.file.size/1024).toFixed(2), uploaded_by||null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST upload image
+app.post('/api/acceptance/sites/:id/images', acceptanceUpload.single('image'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const { uploaded_by } = req.body || {};
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.params.id, req.file.originalname, '/uploads/acceptance/images/'+req.file.filename,
+       (req.file.size/1024).toFixed(2), uploaded_by||null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST upload video
+app.post('/api/acceptance/sites/:id/videos', acceptanceUpload.single('video'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const { uploaded_by } = req.body || {};
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [req.params.id, req.file.originalname, '/uploads/acceptance/videos/'+req.file.filename,
+       (req.file.size/1024).toFixed(2), uploaded_by||null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE media
+app.delete('/api/acceptance/files/:id',  async (req, res) => { try { await pool.query(`DELETE FROM project_files  WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+app.delete('/api/acceptance/images/:id', async (req, res) => { try { await pool.query(`DELETE FROM project_images WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+app.delete('/api/acceptance/videos/:id', async (req, res) => { try { await pool.query(`DELETE FROM project_videos WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+
+// GET all project_progress for progress view
+app.get('/api/acceptance/progress', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM project_progress ORDER BY project_name`);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST create/update project
+app.post('/api/acceptance/projects', async (req, res) => {
+  const { project_name } = req.body || {};
+  if (!project_name?.trim()) return res.status(400).json({ error: 'project_name required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_progress (project_name) VALUES ($1)
+       ON CONFLICT (project_name) DO UPDATE SET updated_at=NOW() RETURNING *`,
+      [project_name.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ================= ACCEPTANCE ================= */
+
+const multerAcc = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'acceptance');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'))
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 }
+});
+
+// Auto-create acceptance tables
+(async () => {
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_sites (
+        id          SERIAL PRIMARY KEY,
+        site_name   CITEXT NOT NULL,
+        status      CITEXT NOT NULL DEFAULT 'Pending' CHECK (LOWER(status) IN ('pending','done')),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        updated_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_files (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        file_name   CITEXT NOT NULL,
+        file_path   TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_images (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        image_name  CITEXT NOT NULL,
+        image_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_videos (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        video_name  CITEXT NOT NULL,
+        video_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_progress (
+        id           SERIAL PRIMARY KEY,
+        project_name CITEXT NOT NULL UNIQUE,
+        progress     NUMERIC(5,2) DEFAULT 0,
+        updated_at   TIMESTAMP DEFAULT NOW()
+      )`);
+    console.log('Acceptance tables ready ✅');
+  } catch(e) { console.error('Acceptance setup error:', e.message); }
+})();
+
+// (duplicate routes removed — canonical versions defined above)
+
+// POST upload file
+app.post('/api/acceptance/files', multerAcc.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const { site_id, uploaded_by } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [site_id, req.file.originalname, '/uploads/acceptance/' + req.file.filename,
+       (req.file.size / 1024).toFixed(2), uploaded_by || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST upload image
+app.post('/api/acceptance/images', multerAcc.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const { site_id, uploaded_by } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [site_id, req.file.originalname, '/uploads/acceptance/' + req.file.filename,
+       (req.file.size / 1024).toFixed(2), uploaded_by || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST upload video
+app.post('/api/acceptance/videos', multerAcc.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const { site_id, uploaded_by } = req.body;
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [site_id, req.file.originalname, '/uploads/acceptance/' + req.file.filename,
+       (req.file.size / 1024).toFixed(2), uploaded_by || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET files for a site
+app.get('/api/acceptance/sites/:id/files', async (req, res) => {
+  try {
+    const [files, images, videos] = await Promise.all([
+      pool.query(`SELECT *, 'file' AS type FROM project_files WHERE site_id=$1 ORDER BY uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT *, 'image' AS type FROM project_images WHERE site_id=$1 ORDER BY uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT *, 'video' AS type FROM project_videos WHERE site_id=$1 ORDER BY uploaded_at DESC`, [req.params.id]),
+    ]);
+    res.json({ files: files.rows, images: images.rows, videos: videos.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

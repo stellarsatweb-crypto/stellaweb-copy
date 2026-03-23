@@ -14,6 +14,7 @@
 -- COORDINATES (space inside value):
 --   BENGUET_Master.csv  row 36 : long='120. 82169'
 --   QUEZON_Master.csv   row 19 : long='121. 636839'
+
 --   QUEZON_Master.csv   row 46 : long='121. 651703'
 --
 -- SERIAL NUMBERS:
@@ -406,6 +407,9 @@ WHERE nd.site_name = ns.site_name;
 -- STEP 9: CREATE JOINED VIEW
 -- ============================================================
 
+-- Replace the existing CREATE VIEW network_devices_full in STEP 9
+DROP VIEW IF EXISTS network_devices_full CASCADE;
+
 CREATE VIEW network_devices_full AS
 SELECT
     nd.id               AS device_id,
@@ -421,9 +425,14 @@ SELECT
     ns.long,
     ns.contacts,
     ns.email,
-    ns.ip
+    ns.ip,
+    -- Equipment Specs
+    es.modem            AS spec_modem,
+    es.trans            AS spec_trans,
+    es.dish             AS spec_dish
 FROM network_devices nd
-LEFT JOIN network_sites ns ON nd.site_id = ns.id
+LEFT JOIN network_sites    ns ON nd.site_id = ns.id
+LEFT JOIN equipment_specs  es ON es.site_id = ns.id
 ORDER BY nd.province, ns.site_name, nd.device_name;
 
 
@@ -513,3 +522,14 @@ SELECT * FROM network_devices_full;
 
 -- History log
 SELECT * FROM network_devices_full_history ORDER BY saved_at DESC;
+
+-- Equipment specs check
+SELECT
+    ns.site_name,
+    ns.province,
+    es.modem,
+    es.trans,
+    es.dish
+FROM equipment_specs es
+JOIN network_sites ns ON es.site_id = ns.id
+ORDER BY ns.province, ns.site_name;

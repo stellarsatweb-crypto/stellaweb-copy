@@ -45,6 +45,7 @@ document.querySelectorAll(".menu li").forEach(item => {
     if (text === "Reports") loadReports();
     if (text === "Map") loadMap();
     if (text === "Settings") loadSettings();
+    if (text === "Acceptance") loadAcceptance();
   });
 });
 
@@ -524,32 +525,40 @@ function loadMap() {
   mainContent.innerHTML = `
     <div class="map-page-wrap">
 
-      <!-- LEFT SIDEBAR -->
-      <div class="map-sidebar" id="mapSidebar">
-        <div class="map-sidebar-filters">
-          <div class="map-search-box">
-            <i class="ri-search-line"></i>
-            <input type="text" id="mapSearch" placeholder="Search site…">
-          </div>
-          <select id="mapProjectFilter"  class="map-filter-select"><option value="">All Projects</option></select>
-          <select id="mapProvinceFilter" class="map-filter-select"><option value="">All Provinces</option></select>
-          <select id="mapStatusFilter"   class="map-filter-select">
-            <option value="">All Statuses</option>
-            <option value="active">Active Only</option>
-            <option value="inactive">Inactive Only</option>
-          </select>
-          <div class="map-bulk-row">
-            <button class="map-bulk-btn map-bulk-activate"   id="mapBulkActivate"   disabled>
-              <i class="ri-checkbox-circle-line"></i> Activate Filtered
-            </button>
-            <button class="map-bulk-btn map-bulk-deactivate" id="mapBulkDeactivate" disabled>
-              <i class="ri-close-circle-line"></i> Deactivate Filtered
-            </button>
-          </div>
-          <button class="map-import-btn" id="mapImportBtn">
-            <i class="ri-upload-cloud-2-line"></i> Import Site
+      <!-- TOP FILTER BAR -->
+      <div class="map-top-bar">
+        <div class="map-search-box">
+          <i class="ri-search-line"></i>
+          <input type="text" id="mapSearch" placeholder="Search site…">
+        </div>
+        <select id="mapProjectFilter"  class="map-filter-select"><option value="">All Projects</option></select>
+        <select id="mapProvinceFilter" class="map-filter-select"><option value="">All Provinces</option></select>
+        <select id="mapStatusFilter"   class="map-filter-select">
+          <option value="">All Statuses</option>
+          <option value="active">Active Only</option>
+          <option value="inactive">Inactive Only</option>
+        </select>
+        <div class="map-bulk-row" id="mapBulkRow" style="display:none;">
+          <button class="map-bulk-btn map-bulk-activate"   id="mapBulkActivate">
+            <i class="ri-checkbox-circle-line"></i> Activate Filtered
+          </button>
+          <button class="map-bulk-btn map-bulk-deactivate" id="mapBulkDeactivate">
+            <i class="ri-close-circle-line"></i> Deactivate Filtered
           </button>
         </div>
+        <button class="map-import-btn" id="mapAddSiteBtn">
+          <i class="ri-add-line"></i> Add Site
+        </button>
+        <button class="map-import-btn" id="mapImportBtn">
+          <i class="ri-upload-cloud-2-line"></i> Import Sites
+        </button>
+      </div>
+
+      <!-- BODY ROW: SIDEBAR + MAP -->
+      <div class="map-body-row">
+
+      <!-- LEFT SIDEBAR -->
+      <div class="map-sidebar" id="mapSidebar">
         <div class="map-sidebar-count" id="mapSidebarCount">Showing — sites</div>
         <div class="map-sidebar-list" id="mapSiteList">
           <div class="map-list-loading"><i class="ri-loader-4-line spin"></i> Loading sites…</div>
@@ -579,6 +588,8 @@ function loadMap() {
           </div>
         </div>
         <div class="map-details-body" id="mapDetailsBody"></div>
+      </div>
+
       </div>
 
     </div>
@@ -629,15 +640,8 @@ function initMap() {
 
   function siteIcon(site, selected = false) {
     if (selected) return makeIcon('#f59e0b', 34);
-    const active  = isActive(site);
-    const devices = Array.isArray(site.devices) ? site.devices : [];
-    const hasIssue = devices.some(d =>
-      d.is_active === false ||
-      (d.license_due && new Date(d.license_due) < new Date())
-    );
-    if (!active)  return makeIcon('#94a3b8', 26);
-    if (hasIssue) return makeIcon('#f59e0b', 30, true);
-    return makeIcon('#22c55e', 30);
+    const active = isActive(site);
+    return active ? makeIcon('#22c55e', 30) : makeIcon('#ef4444', 26);
   }
 
   // ── State ─────────────────────────────────────────────────────────────────
@@ -661,7 +665,52 @@ function initMap() {
 
       const marker = L.marker([lat, lng], { icon: siteIcon(site) }).addTo(map);
 
-      marker.on('click', () => selectSite(site, marker));
+      // ── Pin popup with activate/deactivate button ──
+      function buildPinPopup(s) {
+        const isAct = isActive(s);
+        const shortName = s.site_name.replace(/^VSTG2-/i, '');
+        return `<div class="map-pin-popup">
+          <div class="map-pin-popup-name">${shortName}</div>
+          <div class="map-pin-popup-meta">${s.municipality || ''}</div>
+          <button class="map-pin-popup-btn ${isAct ? 'deactivate' : 'activate'}"
+            data-site="${s.site_name}">
+            <i class="ri-${isAct ? 'close' : 'check'}-circle-line"></i>
+            ${isAct ? 'Deactivate' : 'Activate'}
+          </button>
+        </div>`;
+      }
+
+      marker.bindPopup(buildPinPopup(site), {
+        closeButton: false, className: 'map-pin-popup-wrap',
+        offset: [0, -28], minWidth: 160
+      });
+
+      marker.on('click', () => {
+        selectSite(site, marker);
+        marker.openPopup();
+      });
+
+      marker.on('popupopen', () => {
+        setTimeout(() => {
+          const popup = marker.getPopup().getElement();
+          if (!popup) return;
+          // Remove previous listener by replacing node
+          const oldBtn = popup.querySelector('.map-pin-popup-btn');
+          if (!oldBtn) return;
+          const newBtn = oldBtn.cloneNode(true);
+          oldBtn.replaceWith(newBtn);
+          newBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const newStatus = !isActive(site);
+            newBtn.disabled = true;
+            newBtn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+            await activateSite(site, newStatus);
+            marker.setPopupContent(buildPinPopup(site));
+          });
+        }, 60);
+      });
+
       allMarkers[site.site_name] = marker;
     });
   }
@@ -678,8 +727,8 @@ function initMap() {
       return `
         <div class="map-list-item ${selectedSite?.site_name === s.site_name ? 'selected' : ''}"
              data-name="${escHtml(s.site_name)}">
-          <div class="map-list-dot" style="background:${active ? '#c0392b' : '#94a3b8'};
-            ${active ? 'box-shadow:0 0 0 3px rgba(192,57,43,0.2)' : ''}"></div>
+          <div class="map-list-dot" style="background:${active ? '#22c55e' : '#ef4444'};
+            ${active ? 'box-shadow:0 0 0 3px rgba(34,197,94,0.2)' : 'box-shadow:0 0 0 3px rgba(239,68,68,0.2)'}"></div>
           <div class="map-list-text">
             <div class="map-list-name">${escHtml(s.site_name.replace(/^VSTG2-/, ''))}</div>
             <div class="map-list-meta">${escHtml(s.project_name || 'DICT438')} | ${escHtml(s.municipality || '—')}</div>
@@ -775,8 +824,51 @@ function initMap() {
 
   function showDetailsPanel(site) {
     const panel   = document.getElementById('mapDetailsPanel');
+    const wasHidden = panel.classList.contains('hidden');
     panel.classList.remove('hidden');
     document.querySelector('.map-page-wrap')?.classList.add('details-open');
+
+    // ── Make panel draggable from its header ──────────────────────────────
+    if (wasHidden) {
+      // Reset to default position when opening fresh
+      panel.style.right  = '14px';
+      panel.style.top    = '14px';
+      panel.style.left   = '';
+      panel.style.transform = '';
+    }
+    if (!panel._dragBound) {
+      panel._dragBound = true;
+      const header = panel.querySelector('.map-details-header');
+      if (header) header.style.cursor = 'grab';
+      header?.addEventListener('mousedown', function(e) {
+        if (e.target.closest('button')) return;
+        e.preventDefault();
+        const rect  = panel.getBoundingClientRect();
+        const offX  = e.clientX - rect.left;
+        const offY  = e.clientY - rect.top;
+        panel.style.transition = 'none';
+        panel.style.left   = rect.left + 'px';
+        panel.style.top    = rect.top  + 'px';
+        panel.style.right  = 'auto';
+        header.style.cursor = 'grabbing';
+        function onMove(ev) {
+          const wrap = document.querySelector('.map-card-wrap')?.getBoundingClientRect()
+                    || { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+          const newLeft = Math.min(Math.max(ev.clientX - offX, wrap.left), wrap.right  - panel.offsetWidth);
+          const newTop  = Math.min(Math.max(ev.clientY - offY, wrap.top),  wrap.bottom - panel.offsetHeight);
+          panel.style.left = newLeft + 'px';
+          panel.style.top  = newTop  + 'px';
+        }
+        function onUp() {
+          header.style.cursor = 'grab';
+          panel.style.transition = '';
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup',   onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup',   onUp);
+      });
+    }
     const active  = isActive(site);
     const devices = Array.isArray(site.devices) ? site.devices : [];
     const hasIssue = devices.some(d => d.is_active===false || isExpired(d.license_due));
@@ -793,9 +885,6 @@ function initMap() {
         <span class="map-details-status-badge ${active?'active':'inactive'}">
           <i class="ri-record-circle-${active?'fill':'line'}"></i> ${active?'Active':'Inactive'}
         </span>
-        <button class="map-activate-btn ${active?'deactivate':'activate'}" id="mapActivateBtn">
-          <i class="ri-${active?'close':'check'}-circle-line"></i> ${active?'Deactivate':'Activate'}
-        </button>
       </div>
 
       <div class="map-overview-grid">
@@ -858,10 +947,7 @@ function initMap() {
       </div>
     `;
 
-    document.getElementById('mapActivateBtn').onclick = () => {
-      if (!confirm(`${!active?'Activate':'Deactivate'} "${site.site_name.replace(/^VSTG2-/,'')}"?`)) return;
-      activateSite(site, !active);
-    };
+
 
     document.getElementById('mapSeeMoreBtn').addEventListener('click', function() {
       const expanded = document.getElementById('mapExpandedSection');
@@ -1153,15 +1239,22 @@ function initMap() {
     if (el) el.textContent = `Showing ${filtered.length} site${filtered.length!==1?'s':''}`;
   }
 
+  function isFilterActive() {
+    const q      = (document.getElementById('mapSearch')?.value || '').trim();
+    const proj   = document.getElementById('mapProjectFilter')?.value  || '';
+    const prov   = document.getElementById('mapProvinceFilter')?.value || '';
+    const status = document.getElementById('mapStatusFilter')?.value   || '';
+    return !!(q || proj || prov || status);
+  }
+
   function applyFilters() {
     const filtered = getFiltered();
     renderSiteList(filtered);
     updateMapStats(filtered);
     updateSidebarCount(filtered);
-    const ab = document.getElementById('mapBulkActivate');
-    const db = document.getElementById('mapBulkDeactivate');
-    if (ab) ab.disabled   = filtered.length === 0;
-    if (db) db.disabled   = filtered.length === 0;
+    const filterActive = isFilterActive();
+    const bulkRow = document.getElementById('mapBulkRow');
+    if (bulkRow) bulkRow.style.display = filterActive ? 'flex' : 'none';
     Object.entries(allMarkers).forEach(([name, marker]) => {
       const inFilter = filtered.some(s => s.site_name === name);
       if (inFilter) { if (!map.hasLayer(marker)) marker.addTo(map); }
@@ -1210,9 +1303,263 @@ function initMap() {
   document.getElementById('mapBulkActivate')?.addEventListener('click',   () => bulkUpdateStatus(true));
   document.getElementById('mapBulkDeactivate')?.addEventListener('click', () => bulkUpdateStatus(false));
 
-  // Import Site button (placeholder - extend as needed)
+  // ── Add Site Modal ───────────────────────────────────────────────────────
+  document.getElementById('mapAddSiteBtn')?.addEventListener('click', () => {
+    const m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'mapAddSiteModal';
+    m.innerHTML = `
+      <div class="modal-box add-modal-box" style="max-width:500px;">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-map-pin-add-line"></i></div>
+          <div class="add-modal-title"><h3>Add Site</h3><p>Register a new network site on the map.</p></div>
+          <button class="modal-close-btn" id="mapAddSiteClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid" style="grid-template-columns:1fr 1fr;">
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-map-pin-2-line"></i> Site Name *</label>
+              <input type="text" id="asSiteName" class="add-field-input" placeholder="e.g. L1-0001-ABIANG-BRGY">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-building-line"></i> Municipality</label>
+              <input type="text" id="asMuni" class="add-field-input" placeholder="e.g. ATOK">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-earth-line"></i> Province</label>
+              <input type="text" id="asProvince" class="add-field-input" placeholder="e.g. BENGUET">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-map-pin-line"></i> Latitude</label>
+              <input type="number" id="asLat" class="add-field-input" step="0.0000001" placeholder="e.g. 16.57563">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-map-pin-line"></i> Longitude</label>
+              <input type="number" id="asLng" class="add-field-input" step="0.0000001" placeholder="e.g. 120.74202">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-server-line"></i> IP Address</label>
+              <input type="text" id="asIp" class="add-field-input" placeholder="e.g. 10.0.0.1">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-briefcase-line"></i> Project</label>
+              <input type="text" id="asProject" class="add-field-input" placeholder="DICT438" value="DICT438">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-cpu-line"></i> Modem</label>
+              <input type="text" id="asModem" class="add-field-input" placeholder="MDM2010">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-signal-tower-line"></i> Transceiver</label>
+              <input type="text" id="asTransceiver" class="add-field-input" placeholder="ILB3210 Single Coax">
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-base-station-line"></i> Dish</label>
+              <input type="text" id="asDish" class="add-field-input" placeholder="1.2m Jonsa Satellite Dish">
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-phone-line"></i> Contacts</label>
+              <textarea id="asContacts" class="add-field-input" style="resize:vertical;min-height:54px;" placeholder="Name and number…"></textarea>
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-mail-line"></i> Email / Social</label>
+              <input type="text" id="asEmail" class="add-field-input" placeholder="email@example.com">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="mapAddSiteCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="mapAddSiteSave"><i class="ri-save-line"></i> Add Site</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    const close = () => m.remove();
+    document.getElementById('mapAddSiteClose').onclick  = close;
+    document.getElementById('mapAddSiteCancel').onclick = close;
+    m.onclick = e => { if (e.target === m) close(); };
+    document.getElementById('mapAddSiteSave').onclick = async () => {
+      const site_name = document.getElementById('asSiteName').value.trim();
+      if (!site_name) { showToast('Site name is required.', 'error'); return; }
+      const payload = {
+        site_name,
+        municipality:  document.getElementById('asMuni').value.trim()        || null,
+        province:      document.getElementById('asProvince').value.trim()    || null,
+        lat:           parseFloat(document.getElementById('asLat').value)    || null,
+        long:          parseFloat(document.getElementById('asLng').value)    || null,
+        ip:            document.getElementById('asIp').value.trim()          || null,
+        project_name:  document.getElementById('asProject').value.trim()     || 'DICT438',
+        modem:         document.getElementById('asModem').value.trim()       || null,
+        transceiver:   document.getElementById('asTransceiver').value.trim() || null,
+        dish:          document.getElementById('asDish').value.trim()        || null,
+        contacts:      document.getElementById('asContacts').value.trim()    || null,
+        email:         document.getElementById('asEmail').value.trim()       || null,
+      };
+      const btn = document.getElementById('mapAddSiteSave');
+      btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+      try {
+        const res = await fetch('/api/map/sites', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await res.json();
+        if (!res.ok) { showToast('Failed: ' + (result.error || 'Unknown'), 'error'); return; }
+        // Add to local state and plot marker
+        result.devices = [];
+        allSites.push(result);
+        if (result.lat && result.long) {
+          const marker = L.marker([parseFloat(result.lat), parseFloat(result.long)], { icon: siteIcon(result) }).addTo(map);
+          marker.on('click', () => selectSite(result, marker));
+          allMarkers[result.site_name] = marker;
+        }
+        applyFilters();
+        close();
+        showToast(`Site "${site_name}" added.`, 'success');
+      } catch (err) { showToast('Network error: ' + err.message, 'error'); }
+      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Add Site'; }
+    };
+  });
+
+  // ── Import Sites Modal ────────────────────────────────────────────────────
   document.getElementById('mapImportBtn')?.addEventListener('click', () => {
-    showToast('Import functionality coming soon.', 'success');
+    const m = document.createElement('div');
+    m.className = 'modal-overlay';
+    m.id = 'mapImportSitesModal';
+    m.innerHTML = `
+      <div class="modal-box add-modal-box" style="max-width:480px;">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-upload-cloud-2-line"></i></div>
+          <div class="add-modal-title">
+            <h3>Import Sites</h3>
+            <p>Upload a CSV or XLSX file to bulk-add sites to the map.</p>
+          </div>
+          <button class="modal-close-btn" id="mapImportClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="import-drop-zone" id="mapImportDropZone" style="margin-bottom:8px;">
+            <i class="ri-file-upload-line" style="font-size:36px;color:#2f4b85;"></i>
+            <p style="margin:8px 0 4px;font-weight:600;color:#1e293b;">Drop file here or click to browse</p>
+            <p style="font-size:12px;color:#94a3b8;">CSV or XLSX — columns: site_name, municipality, province, lat, long, ip, project_name, modem, transceiver, dish, contacts, email</p>
+            <input type="file" id="mapImportFileInput" accept=".csv,.xlsx" class="hidden">
+          </div>
+          <div id="mapImportFileName" style="font-size:13px;color:#2f4b85;min-height:18px;"></div>
+          <div id="mapImportProgress" style="display:none;margin-top:14px;">
+            <div style="background:#e2e8f0;border-radius:99px;height:6px;overflow:hidden;">
+              <div id="mapImportBar" style="height:100%;background:#2f4b85;width:0%;transition:width 0.3s;border-radius:99px;"></div>
+            </div>
+            <div id="mapImportProgressText" style="font-size:12px;color:#64748b;margin-top:6px;"></div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"><i class="ri-information-line"></i> Duplicate site names will be skipped</span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="mapImportCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="mapImportConfirm" disabled><i class="ri-upload-2-line"></i> Import</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+
+    let parsedRows = [];
+    const close = () => m.remove();
+    document.getElementById('mapImportClose').onclick  = close;
+    document.getElementById('mapImportCancel').onclick = close;
+    m.onclick = e => { if (e.target === m) close(); };
+
+    const zone   = document.getElementById('mapImportDropZone');
+    const input  = document.getElementById('mapImportFileInput');
+    const fname  = document.getElementById('mapImportFileName');
+    const confirm = document.getElementById('mapImportConfirm');
+
+    zone.onclick     = () => input.click();
+    zone.ondragover  = e => { e.preventDefault(); zone.classList.add('drop-hover'); };
+    zone.ondragleave = () => zone.classList.remove('drop-hover');
+    zone.ondrop      = e => { e.preventDefault(); zone.classList.remove('drop-hover'); handleFile(e.dataTransfer.files[0]); };
+    input.onchange   = () => handleFile(input.files[0]);
+
+    async function handleFile(file) {
+      if (!file) return;
+      fname.textContent = '';
+      parsedRows = [];
+      confirm.disabled = true;
+      try {
+        const COLS = ['site_name','municipality','province','lat','long','ip','project_name','modem','transceiver','dish','contacts','email'];
+        const norm = s => String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
+        if (file.name.endsWith('.csv')) {
+          const text = await file.text();
+          const lines = text.split(/\r?\n/).filter(l => l.trim());
+          const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
+          parsedRows = lines.slice(1).map(line => {
+            const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,))/g) || [];
+            const row = {};
+            headers.forEach((h,i) => {
+              const col = COLS.find(c => norm(c) === norm(h));
+              if (col) row[col] = (vals[i]||'').replace(/^"|"$/g,'').trim();
+            });
+            return row;
+          }).filter(r => r.site_name);
+        } else {
+          await new Promise((res, rej) => {
+            if (window.XLSX) { res(); return; }
+            const s = document.createElement('script');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+            s.onload = res; s.onerror = rej;
+            document.head.appendChild(s);
+          });
+          const ab = await file.arrayBuffer();
+          const wb = XLSX.read(ab, { type: 'array' });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
+          parsedRows = raw.map(r => {
+            const row = {};
+            Object.entries(r).forEach(([h,v]) => {
+              const col = COLS.find(c => norm(c) === norm(h));
+              if (col) row[col] = String(v||'').trim();
+            });
+            return row;
+          }).filter(r => r.site_name);
+        }
+        fname.textContent = `📄 ${file.name} — ${parsedRows.length} rows found`;
+        confirm.disabled = parsedRows.length === 0;
+      } catch (err) {
+        fname.textContent = `⚠️ Could not read file: ${err.message}`;
+      }
+    }
+
+    document.getElementById('mapImportConfirm').onclick = async () => {
+      if (!parsedRows.length) return;
+      const btn  = document.getElementById('mapImportConfirm');
+      const prog = document.getElementById('mapImportProgress');
+      const bar  = document.getElementById('mapImportBar');
+      const txt  = document.getElementById('mapImportProgressText');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Importing…';
+      prog.style.display = 'block';
+      bar.style.width = '30%';
+      txt.textContent = 'Sending to server…';
+      try {
+        const res = await fetch('/api/map/sites/import', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sites: parsedRows })
+        });
+        const result = await res.json();
+        bar.style.width = '100%';
+        if (!res.ok) { showToast('Import failed: ' + (result.error||'Unknown'), 'error'); return; }
+        txt.textContent = `Done — ${result.inserted} inserted, ${result.skipped} skipped.`;
+        showToast(`Imported ${result.inserted} site(s).`, result.inserted > 0 ? 'success' : 'error');
+        // Reload all sites to reflect new entries
+        setTimeout(async () => {
+          close();
+          const r2 = await fetch('/api/map/sites');
+          allSites = await r2.json();
+          plotMarkers(allSites);
+          applyFilters();
+        }, 1200);
+      } catch (err) { showToast('Network error: ' + err.message, 'error'); }
+      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-upload-2-line"></i> Import'; }
+    };
   });
 
   // ── Load sites ────────────────────────────────────────────────────────────
@@ -1245,10 +1592,7 @@ function initMap() {
       updateMapStats(allSites);
       updateSidebarCount(allSites);
       // Enable bulk buttons once loaded
-      const ab = document.getElementById('mapBulkActivate');
-      const db = document.getElementById('mapBulkDeactivate');
-      if (ab) ab.disabled = allSites.length === 0;
-      if (db) db.disabled = allSites.length === 0;
+      // Bulk buttons hidden until a filter is applied
       showToast(`${allSites.length} sites loaded.`, 'success');
     } catch(e) {
       document.getElementById('mapSiteList').innerHTML =
@@ -6036,4 +6380,635 @@ function _stgApplyDisplaySettings() {
   if (fontSize)   document.documentElement.style.fontSize = fontSize + 'px';
   if (theme === 'dark') document.body.classList.add('dark');
   if (nightLight) document.body.style.filter = 'sepia(0.3) brightness(0.96)';
+}
+
+/* ================= ACCEPTANCE PAGE ================= */
+
+let accAllProjects  = [];
+let accAllSites     = {};
+let accOpenProjects = new Set();
+
+function loadAcceptance() {
+  accAllProjects  = [];
+  accAllSites     = {};
+  accOpenProjects = new Set();
+
+  mainContent.innerHTML = `
+    <div class="acc-page" id="accPage">
+      <div class="acc-topbar">
+        <h2 class="acc-title"><i class="ri-checkbox-circle-line"></i> Acceptance</h2>
+        <div class="acc-topbar-right">
+          <div class="acc-search-box">
+            <i class="ri-search-line"></i>
+            <input type="text" id="accSearch" placeholder="Search here…">
+          </div>
+          <button class="acc-btn acc-btn-primary" id="accAddProjectBtn">
+            <i class="ri-add-line"></i> Add Project
+          </button>
+        </div>
+      </div>
+
+      <div class="acc-date-bar">
+        <i class="ri-calendar-2-line"></i>
+        <span id="accDateBarLabel">Loading…</span>
+      </div>
+
+      <div class="acc-projects-wrap" id="accProjectsWrap">
+        <div class="acc-loading">
+          <i class="ri-loader-4-line spin"></i>
+          <span>Loading projects…</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  (() => {
+    const now   = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last  = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const fmt   = d => d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    const el    = document.getElementById('accDateBarLabel');
+    if (el) el.textContent = fmt(first) + ' – ' + fmt(last);
+  })();
+
+  document.getElementById('accSearch').addEventListener('input', function () {
+    accRenderProjects(this.value.toLowerCase().trim());
+  });
+
+  document.getElementById('accAddProjectBtn').addEventListener('click', () => accOpenAddProjectModal());
+
+  accFetchProjects();
+}
+
+async function accFetchProjects() {
+  try {
+    const res  = await fetch('/api/acceptance/projects');
+    const data = await res.json();
+    accAllProjects = data;
+    accRenderProjects('');
+  } catch {
+    const wrap = document.getElementById('accProjectsWrap');
+    if (wrap) wrap.innerHTML = `<div class="acc-empty"><i class="ri-error-warning-line"></i><span>Failed to load projects. Please try again.</span></div>`;
+  }
+}
+
+function accRenderProjects(query) {
+  const wrap = document.getElementById('accProjectsWrap');
+  if (!wrap) return;
+
+  let projects = accAllProjects;
+  if (query) {
+    projects = projects.filter(p => (p.project_name||'').toLowerCase().includes(query));
+  }
+
+  if (!projects.length) {
+    wrap.innerHTML = `<div class="acc-empty"><i class="ri-inbox-line"></i><span>${query ? 'No projects match your search.' : 'No projects yet. Click "Add Project" to get started.'}</span></div>`;
+    return;
+  }
+
+  wrap.innerHTML = projects.map(p => accProjectCardHTML(p)).join('');
+
+  projects.forEach(p => {
+    if (accOpenProjects.has(p.project_name)) {
+      const card = wrap.querySelector(`.acc-project-card[data-project="${CSS.escape(p.project_name)}"]`);
+      if (card) _accExpandProject(card, p.project_name, false);
+    }
+  });
+
+  wrap.querySelectorAll('.acc-project-header').forEach(header => {
+    header.addEventListener('click', function () {
+      const card    = this.closest('.acc-project-card');
+      const pname   = card.dataset.project;
+      const body    = card.querySelector('.acc-project-body');
+      const chevron = card.querySelector('.acc-chevron');
+      if (body.classList.contains('open')) {
+        body.classList.remove('open');
+        chevron.classList.remove('open');
+        card.classList.remove('open');
+        accOpenProjects.delete(pname);
+      } else {
+        _accExpandProject(card, pname, true);
+      }
+    });
+  });
+}
+
+function accProjectCardHTML(p) {
+  const pct     = parseFloat(p.progress || 0);
+  const done    = parseInt(p.done_sites    || 0);
+  const pending = parseInt(p.pending_sites || 0);
+  const total   = parseInt(p.total_sites   || 0);
+  return `
+    <div class="acc-project-card" data-project="${escHtml(p.project_name)}">
+      <div class="acc-project-header">
+        <div class="acc-project-info">
+          <div class="acc-project-name">${escHtml(p.project_name)}</div>
+          <div class="acc-project-counts">
+            <span class="acc-count-done"><i class="ri-checkbox-circle-fill"></i> ${done} Done</span>
+            <span class="acc-count-sep">·</span>
+            <span class="acc-count-pending"><i class="ri-time-line"></i> ${pending} Pending</span>
+            <span class="acc-count-sep">·</span>
+            <span>${total} Total</span>
+          </div>
+        </div>
+        <div class="acc-project-right">
+          ${accCircleSvg(pct)}
+          <i class="ri-arrow-down-s-line acc-chevron"></i>
+        </div>
+      </div>
+      <div class="acc-project-body">
+        <div class="acc-loading" id="accSiteLoader-${CSS.escape(p.project_name)}">
+          <i class="ri-loader-4-line spin"></i><span>Loading sites…</span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function accCircleSvg(pct) {
+  const v    = Math.min(100, Math.max(0, pct));
+  const c    = v >= 80 ? '#22c55e' : v >= 50 ? '#f59e0b' : '#3b82f6';
+  const R    = 22;
+  const circ = 2 * Math.PI * R;
+  const dash = v >= 100 ? circ : (v / 100) * circ;
+  const gap  = v >= 100 ? 0 : circ - dash;
+  return `
+    <svg width="56" height="56" viewBox="0 0 56 56">
+      <circle cx="28" cy="28" r="${R}" fill="none" stroke="#e5e7eb" stroke-width="5"/>
+      <circle cx="28" cy="28" r="${R}" fill="none" stroke="${c}" stroke-width="5"
+        stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}"
+        stroke-dashoffset="${(circ * 0.25).toFixed(2)}"
+        stroke-linecap="butt"/>
+      <text x="28" y="33" text-anchor="middle" font-size="10.5" font-weight="700" fill="${c}">${Math.round(v)}%</text>
+    </svg>`;
+}
+
+function _accExpandProject(card, projectName, fetchNow) {
+  const body    = card.querySelector('.acc-project-body');
+  const chevron = card.querySelector('.acc-chevron');
+  body.classList.add('open');
+  chevron.classList.add('open');
+  card.classList.add('open');
+  accOpenProjects.add(projectName);
+  if (fetchNow || !accAllSites[projectName]) {
+    accFetchSites(projectName, card);
+  } else {
+    accRenderSitesTable(projectName, card, accAllSites[projectName]);
+  }
+}
+
+async function accFetchSites(projectName, card) {
+  try {
+    const res  = await fetch(`/api/acceptance/sites?project=${encodeURIComponent(projectName)}`);
+    const data = await res.json();
+    accAllSites[projectName] = data;
+    accRenderSitesTable(projectName, card, data);
+  } catch {
+    const body = card.querySelector('.acc-project-body');
+    if (body) body.innerHTML = `<div class="acc-empty"><i class="ri-error-warning-line"></i><span>Failed to load sites.</span></div>`;
+  }
+}
+
+function accRenderSitesTable(projectName, card, sites) {
+  const body = card.querySelector('.acc-project-body');
+  if (!body) return;
+  const isAdmin = user && ['admin','executive','noc'].includes((user.role||'').toLowerCase());
+
+  // Store projectName directly on the DOM element — no escaping issues
+  body._accProjectName = projectName;
+
+  body.innerHTML = `
+    <div class="acc-table-toolbar">
+      <div class="acc-filter-row">
+        <button class="acc-filter-chip active" data-filter="all">All</button>
+        <button class="acc-filter-chip"        data-filter="done"><i class="ri-checkbox-circle-fill" style="color:#22c55e"></i> Done</button>
+        <button class="acc-filter-chip"        data-filter="pending"><i class="ri-time-line" style="color:#f59e0b"></i> Pending</button>
+      </div>
+      <div class="acc-table-actions">
+        ${isAdmin ? `<button class="acc-btn acc-btn-primary acc-add-site-btn" style="font-size:12px;padding:7px 14px;border-radius:8px;"><i class="ri-add-line"></i> Add Site</button>` : ''}
+      </div>
+    </div>
+    <div class="acc-sites-subtable">
+      <table class="acc-inner-table">
+        <thead>
+          <tr>
+            <th>Site Name</th>
+            <th>Status</th>
+            <th>By</th>
+            <th style="text-align:center;">Upload</th>
+            ${isAdmin ? '<th style="text-align:center;">Actions</th>' : ''}
+          </tr>
+        </thead>
+        <tbody id="accSiteTbody-${CSS.escape(projectName)}">
+          ${accSiteRows(sites, projectName, isAdmin)}
+        </tbody>
+      </table>
+      ${!sites.length ? `<div class="acc-empty" style="padding:28px 16px;"><i class="ri-inbox-line"></i><span>No sites yet.</span></div>` : ''}
+    </div>`;
+
+  // Re-attach projectName after innerHTML wipe
+  body._accProjectName = projectName;
+
+  // Filter chips
+  body.querySelectorAll('.acc-filter-chip').forEach(chip => {
+    chip.addEventListener('click', function () {
+      accFilterSites(this, body._accProjectName);
+    });
+  });
+
+  // Add Site button
+  const addSiteBtn = body.querySelector('.acc-add-site-btn');
+  if (addSiteBtn) {
+    addSiteBtn.addEventListener('click', () => accOpenAddSiteModal(body._accProjectName));
+  }
+
+  // Media open buttons
+  body.querySelectorAll('.acc-media-open-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+      accOpenMediaModal(parseInt(this.dataset.siteId), this.dataset.siteName, this.dataset.tab);
+    });
+  });
+
+  // Toggle status buttons
+  body.querySelectorAll('.acc-toggle-status-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+      accToggleSiteStatus(parseInt(this.dataset.siteId), this.dataset.newStatus, body._accProjectName);
+    });
+  });
+
+  // Delete site buttons
+  body.querySelectorAll('.acc-delete-site-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+      accDeleteSite(parseInt(this.dataset.siteId), body._accProjectName);
+    });
+  });
+}
+
+function accSiteRows(sites, projectName, isAdmin) {
+  if (!sites.length) return '';
+  return sites.map(s => {
+    const isDone    = (s.status||'').toLowerCase() === 'done';
+    const fileCount = parseInt(s.file_count  || 0);
+    const imgCount  = parseInt(s.image_count || 0);
+    const vidCount  = parseInt(s.video_count || 0);
+    const safeP     = escHtml(projectName);
+    const safeName  = escHtml(s.site_name);
+    return `
+      <tr class="acc-site-row" data-status="${isDone ? 'done' : 'pending'}" data-id="${s.id}">
+        <td class="acc-site-name">${safeName}</td>
+        <td>
+          <span class="acc-status-badge ${isDone ? 'done' : 'pending'}">
+            ${isDone ? '<i class="ri-checkbox-circle-fill"></i> Done' : '<i class="ri-time-line"></i> Pending'}
+          </span>
+        </td>
+        <td style="color:#64748b;font-size:13px;">${escHtml(s.uploader_name || '—')}</td>
+        <td class="acc-upload-cell">
+          <button class="acc-upload-btn acc-media-open-btn" title="Files"  data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="files">
+            <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-media-count">${fileCount}</span>` : ''}
+          </button>
+          <button class="acc-upload-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="images">
+            <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-media-count">${imgCount}</span>` : ''}
+          </button>
+          <button class="acc-upload-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="videos">
+            <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-media-count">${vidCount}</span>` : ''}
+          </button>
+        </td>
+        ${isAdmin ? `
+        <td style="text-align:center;white-space:nowrap;">
+          <button class="acc-upload-btn acc-toggle-status-btn" title="${isDone ? 'Mark Pending' : 'Mark Done'}"
+            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}" data-project="${safeP}">
+            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}" style="color:${isDone ? '#f59e0b' : '#22c55e'}"></i>
+          </button>
+          <button class="acc-upload-btn acc-delete-site-btn" title="Delete"
+            data-site-id="${s.id}" data-project="${safeP}">
+            <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
+          </button>
+        </td>` : ''}
+      </tr>`;
+  }).join('');
+}
+
+function accFilterSites(btn, projectName) {
+  const filter = btn.dataset.filter;
+  btn.closest('.acc-filter-row').querySelectorAll('.acc-filter-chip').forEach(c => c.classList.remove('active'));
+  btn.classList.add('active');
+  const safeP = CSS.escape(projectName);
+  const tbody = document.getElementById(`accSiteTbody-${safeP}`);
+  if (!tbody) return;
+  tbody.querySelectorAll('tr.acc-site-row').forEach(row => {
+    row.style.display = (filter === 'all' || row.dataset.status === filter) ? '' : 'none';
+  });
+}
+
+async function accToggleSiteStatus(siteId, newStatus, projectName) {
+  try {
+    const res = await fetch(`/api/acceptance/sites/${siteId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus })
+    });
+    if (!res.ok) throw new Error();
+    delete accAllSites[projectName];
+    const card = document.querySelector(`.acc-project-card[data-project="${CSS.escape(projectName)}"]`);
+    if (card) { await accFetchSites(projectName, card); await accRefreshProjectProgress(projectName); }
+    showToast(`Site marked as ${newStatus}.`, 'success');
+  } catch { showToast('Failed to update status.', 'error'); }
+}
+
+async function accDeleteSite(siteId, projectName) {
+  if (!confirm('Delete this site? All uploads will also be removed.')) return;
+  try {
+    const res = await fetch(`/api/acceptance/sites/${siteId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error();
+    delete accAllSites[projectName];
+    const card = document.querySelector(`.acc-project-card[data-project="${CSS.escape(projectName)}"]`);
+    if (card) { await accFetchSites(projectName, card); await accRefreshProjectProgress(projectName); }
+    showToast('Site deleted.', 'success');
+  } catch { showToast('Failed to delete site.', 'error'); }
+}
+
+async function accRefreshProjectProgress(projectName) {
+  try {
+    const res  = await fetch('/api/acceptance/projects');
+    const data = await res.json();
+    accAllProjects = data;
+    const p    = data.find(x => x.project_name === projectName);
+    if (!p) return;
+    const card = document.querySelector(`.acc-project-card[data-project="${CSS.escape(projectName)}"]`);
+    if (!card) return;
+    const rightEl = card.querySelector('.acc-project-right');
+    if (rightEl) {
+      const chevron = rightEl.querySelector('.acc-chevron');
+      rightEl.innerHTML = accCircleSvg(parseFloat(p.progress || 0));
+      if (chevron) rightEl.appendChild(chevron);
+    }
+    const countsEl = card.querySelector('.acc-project-counts');
+    if (countsEl) {
+      countsEl.innerHTML = `
+        <span class="acc-count-done"><i class="ri-checkbox-circle-fill"></i> ${parseInt(p.done_sites||0)} Done</span>
+        <span class="acc-count-sep">·</span>
+        <span class="acc-count-pending"><i class="ri-time-line"></i> ${parseInt(p.pending_sites||0)} Pending</span>
+        <span class="acc-count-sep">·</span>
+        <span>${parseInt(p.total_sites||0)} Total</span>`;
+    }
+  } catch {}
+}
+
+function accOpenAddProjectModal() {
+  const m = document.createElement('div');
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="acc-modal-shell">
+      <div class="acc-modal-header">
+        <div class="acc-modal-title-row">
+          <div class="acc-modal-icon"><i class="ri-folder-add-line"></i></div>
+          <div>
+            <div class="acc-modal-title">New Project</div>
+            <div class="acc-modal-sub">Create a new acceptance project</div>
+          </div>
+        </div>
+        <button class="acc-modal-close-btn" id="accProjClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="acc-modal-body">
+        <label class="acc-modal-label">Project Name <span style="color:#ef4444">*</span></label>
+        <input type="text" id="accProjNameInput" class="acc-modal-input" placeholder="e.g. Satellite Internet Infrastructure">
+      </div>
+      <div class="acc-modal-footer">
+        <button class="acc-modal-cancel" id="accProjCancel">Cancel</button>
+        <button class="acc-modal-submit" id="accProjSubmit"><i class="ri-save-line"></i> Create Project</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  document.getElementById('accProjClose').onclick  = close;
+  document.getElementById('accProjCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+  document.getElementById('accProjSubmit').addEventListener('click', async () => {
+    const name = document.getElementById('accProjNameInput').value.trim();
+    if (!name) { showToast('Please enter a project name.', 'error'); return; }
+    const btn = document.getElementById('accProjSubmit');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Creating…';
+    try {
+      const res = await fetch('/api/acceptance/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: name })
+      });
+      if (!res.ok) { const r = await res.json(); showToast(r.error || 'Failed.', 'error'); return; }
+      close(); showToast('Project created!', 'success'); accFetchProjects();
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Create Project'; }
+  });
+}
+
+function accOpenAddSiteModal(projectName) {
+  const m = document.createElement('div');
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="acc-modal-shell">
+      <div class="acc-modal-header">
+        <div class="acc-modal-title-row">
+          <div class="acc-modal-icon"><i class="ri-map-pin-add-line"></i></div>
+          <div>
+            <div class="acc-modal-title">Add Site</div>
+            <div class="acc-modal-sub">${escHtml(projectName)}</div>
+          </div>
+        </div>
+        <button class="acc-modal-close-btn" id="accSiteClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="acc-modal-body">
+        <label class="acc-modal-label">Site Name <span style="color:#ef4444">*</span></label>
+        <input type="text" id="accSiteNameInput" class="acc-modal-input" placeholder="e.g. VSTG2-L1-001">
+        <label class="acc-modal-label" style="margin-top:14px;">Initial Status</label>
+        <div class="acc-modal-status-row">
+          <label class="acc-modal-radio-label"><input type="radio" name="accSiteStatus" value="Pending" checked> Pending</label>
+          <label class="acc-modal-radio-label"><input type="radio" name="accSiteStatus" value="Done"> Done</label>
+        </div>
+      </div>
+      <div class="acc-modal-footer">
+        <button class="acc-modal-cancel" id="accSiteCancel">Cancel</button>
+        <button class="acc-modal-submit" id="accSiteSubmit"><i class="ri-save-line"></i> Add Site</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  document.getElementById('accSiteClose').onclick  = close;
+  document.getElementById('accSiteCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+  document.getElementById('accSiteSubmit').addEventListener('click', async () => {
+    const name   = document.getElementById('accSiteNameInput').value.trim();
+    const status = document.querySelector('input[name="accSiteStatus"]:checked')?.value || 'Pending';
+    if (!name) { showToast('Please enter a site name.', 'error'); return; }
+    const btn = document.getElementById('accSiteSubmit');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Adding…';
+    try {
+      const res = await fetch('/api/acceptance/sites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ site_name: name, status, project_name: projectName, uploaded_by: user?.id || null })
+      });
+      if (!res.ok) { const r = await res.json(); showToast(r.error || 'Failed.', 'error'); return; }
+      close(); showToast('Site added!', 'success');
+      delete accAllSites[projectName];
+      const card = document.querySelector(`.acc-project-card[data-project="${CSS.escape(projectName)}"]`);
+      if (card) { await accFetchSites(projectName, card); await accRefreshProjectProgress(projectName); }
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Add Site'; }
+  });
+}
+
+function accOpenMediaModal(siteId, siteName, defaultTab) {
+  const m = document.createElement('div');
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="acc-media-shell">
+      <div class="acc-modal-header">
+        <div class="acc-modal-title-row">
+          <div class="acc-modal-icon"><i class="ri-upload-cloud-2-line"></i></div>
+          <div>
+            <div class="acc-modal-title">Site Uploads</div>
+            <div class="acc-modal-sub">${escHtml(siteName)}</div>
+          </div>
+        </div>
+        <button class="acc-modal-close-btn" id="accMediaClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="acc-media-tabs">
+        <button class="acc-media-tab ${defaultTab==='files'  ? 'active':''}" data-tab="files"><i class="ri-folder-open-line"></i> Files</button>
+        <button class="acc-media-tab ${defaultTab==='images' ? 'active':''}" data-tab="images"><i class="ri-image-line"></i> Images</button>
+        <button class="acc-media-tab ${defaultTab==='videos' ? 'active':''}" data-tab="videos"><i class="ri-video-line"></i> Videos</button>
+      </div>
+      <div class="acc-media-body" id="accMediaBody">
+        <div class="acc-loading"><i class="ri-loader-4-line spin"></i><span>Loading…</span></div>
+      </div>
+      <div class="acc-media-footer">
+        <label class="acc-media-upload-btn" id="accUploadLabel">
+          <i class="ri-upload-2-line"></i> Upload
+          <input type="file" id="accUploadInput" style="display:none;" multiple>
+        </label>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+
+  let currentTab = defaultTab;
+  const close = () => m.remove();
+  document.getElementById('accMediaClose').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  m.querySelectorAll('.acc-media-tab').forEach(tab => {
+    tab.addEventListener('click', function () {
+      m.querySelectorAll('.acc-media-tab').forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+      currentTab = this.dataset.tab;
+      _accSetUploadAccept(currentTab);
+      accLoadMediaTab(siteId, currentTab, m);
+    });
+  });
+
+  _accSetUploadAccept(currentTab);
+
+  document.getElementById('accUploadInput').addEventListener('change', async function () {
+    const files = Array.from(this.files);
+    if (!files.length) return;
+    const label = document.getElementById('accUploadLabel');
+    label.innerHTML = '<i class="ri-loader-4-line spin"></i> Uploading…';
+    label.style.pointerEvents = 'none';
+    let ok = 0;
+    for (const file of files) {
+      try {
+        const fd  = new FormData();
+        const key = currentTab === 'files' ? 'file' : currentTab === 'images' ? 'image' : 'video';
+        fd.append(key, file);
+        fd.append('uploaded_by', user?.id || '');
+        const res = await fetch(`/api/acceptance/sites/${siteId}/${currentTab}`, { method: 'POST', body: fd });
+        if (res.ok) ok++;
+      } catch {}
+    }
+    label.innerHTML = '<i class="ri-upload-2-line"></i> Upload';
+    label.style.pointerEvents = '';
+    this.value = '';
+    if (ok) {
+      showToast(`${ok} file(s) uploaded.`, 'success');
+      accLoadMediaTab(siteId, currentTab, m);
+      const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
+      if (row) {
+        const card = row.closest('.acc-project-card');
+        if (card) { const pn = card.dataset.project; delete accAllSites[pn]; accFetchSites(pn, card); }
+      }
+    } else { showToast('Upload failed.', 'error'); }
+  });
+
+  accLoadMediaTab(siteId, currentTab, m);
+}
+
+function _accSetUploadAccept(tab) {
+  const input = document.getElementById('accUploadInput');
+  if (!input) return;
+  input.accept   = tab === 'images' ? 'image/*' : tab === 'videos' ? 'video/*' : '*/*';
+  input.multiple = true;
+}
+
+async function accLoadMediaTab(siteId, tab, modal) {
+  const body = modal.querySelector('#accMediaBody');
+  if (!body) return;
+  body.innerHTML = `<div class="acc-loading"><i class="ri-loader-4-line spin"></i><span>Loading…</span></div>`;
+  try {
+    const res   = await fetch(`/api/acceptance/sites/${siteId}/media`);
+    const data  = await res.json();
+    const items = data[tab] || [];
+    if (!items.length) {
+      body.innerHTML = `<div class="acc-media-empty"><i class="ri-inbox-line"></i><span>No ${tab} uploaded yet.</span></div>`;
+      return;
+    }
+    body.innerHTML = `<div class="acc-media-list">${items.map(item => accMediaItemHTML(item, tab)).join('')}</div>`;
+    body.querySelectorAll('.acc-media-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async function () {
+        if (!confirm('Delete this file?')) return;
+        try {
+          const r = await fetch(`/api/acceptance/${this.dataset.type}/${this.dataset.id}`, { method: 'DELETE' });
+          if (!r.ok) throw new Error();
+          showToast('Deleted.', 'success');
+          accLoadMediaTab(siteId, tab, modal);
+          const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
+          if (row) {
+            const card = row.closest('.acc-project-card');
+            if (card) { const pn = card.dataset.project; delete accAllSites[pn]; accFetchSites(pn, card); }
+          }
+        } catch { showToast('Delete failed.', 'error'); }
+      });
+    });
+  } catch {
+    body.innerHTML = `<div class="acc-media-empty"><i class="ri-error-warning-line"></i><span>Failed to load.</span></div>`;
+  }
+}
+
+function accMediaItemHTML(item, tab) {
+  const name    = escHtml(item.file_name || item.image_name || item.video_name || 'Unknown');
+  const size    = item.file_size ? `${parseFloat(item.file_size).toFixed(1)} KB` : '';
+  const path    = item.file_path || item.image_path || item.video_path || '#';
+  const date    = item.uploaded_at ? new Date(item.uploaded_at).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '';
+  const by      = item.uploader_name ? `by ${escHtml(item.uploader_name)}` : '';
+  const typeKey = tab === 'images' ? 'images' : tab === 'videos' ? 'videos' : 'files';
+  let thumb = '';
+  if (tab === 'images') {
+    thumb = `<div class="acc-media-thumb"><img src="${path}" alt="${name}" onerror="this.parentElement.innerHTML='<i class=\\'ri-image-line\\'></i>'"></div>`;
+  } else if (tab === 'videos') {
+    thumb = `<div class="acc-media-thumb acc-media-thumb-video"><i class="ri-film-line"></i></div>`;
+  } else {
+    const ext  = (name.split('.').pop()||'').toLowerCase();
+    const icon = ext==='pdf' ? 'ri-file-pdf-2-line' : ext.match(/doc/) ? 'ri-file-word-line' : ext.match(/xls/) ? 'ri-file-excel-line' : 'ri-file-line';
+    thumb = `<div class="acc-media-thumb acc-media-thumb-file"><i class="${icon}"></i></div>`;
+  }
+  return `
+    <div class="acc-media-item">
+      ${thumb}
+      <div class="acc-media-info">
+        <div class="acc-media-name" title="${name}">${name}</div>
+        <div class="acc-media-meta">${[size, date, by].filter(Boolean).join(' · ')}</div>
+      </div>
+      <div class="acc-media-actions">
+        <a href="${path}" target="_blank" download class="acc-upload-btn" title="Download" style="text-decoration:none;">
+          <i class="ri-download-2-line" style="color:#2f4b85;"></i>
+        </a>
+        <button class="acc-upload-btn acc-media-delete-btn" title="Delete" data-id="${item.id}" data-type="${typeKey}">
+          <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
+        </button>
+      </div>
+    </div>`;
 }
