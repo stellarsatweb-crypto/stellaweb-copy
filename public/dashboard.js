@@ -5667,296 +5667,375 @@ loadDashboard();
 function loadSettings() {
   const user = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
 
+  const initials = user.full_name
+    ? user.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+    : 'U';
+
   mainContent.innerHTML = `
     <div class="stg-page">
 
-      <div class="stg-topbar">
-        <h2 class="stg-title">Settings</h2>
-        <div class="stg-search-box">
-          <i class="ri-search-line"></i>
-          <input type="text" placeholder="Search here" id="stgSearch">
+      <!-- Page header -->
+      <div class="stg-page-header">
+        <div class="stg-page-header-left">
+          <h2 class="stg-title">Settings</h2>
+          <p class="stg-subtitle">Manage your account, display and privacy preferences</p>
         </div>
       </div>
 
-      <!-- Tabs -->
-      <div class="stg-tabs">
-        <button class="stg-tab active" data-tab="account">Account</button>
-        <button class="stg-tab" data-tab="display">Display</button>
-        <button class="stg-tab" data-tab="privacy">Privacy &amp; Data</button>
-      </div>
+      <!-- Two-column layout -->
+      <div class="stg-layout">
 
-      <!-- Account Tab -->
-      <div class="stg-panel active" id="stg-tab-account">
-        <div class="stg-card">
+        <!-- ── Left sidebar nav ── -->
+        <nav class="stg-sidenav">
+          <button class="stg-navitem active" data-tab="account">
+            <div class="stg-navitem-icon"><i class="ri-user-3-line"></i></div>
+            <div class="stg-navitem-text">
+              <span class="stg-navitem-label">Account</span>
+              <span class="stg-navitem-sub">Profile &amp; security</span>
+            </div>
+            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+          </button>
+          <button class="stg-navitem" data-tab="display">
+            <div class="stg-navitem-icon"><i class="ri-palette-line"></i></div>
+            <div class="stg-navitem-text">
+              <span class="stg-navitem-label">Display</span>
+              <span class="stg-navitem-sub">Theme &amp; appearance</span>
+            </div>
+            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+          </button>
+          <button class="stg-navitem" data-tab="privacy">
+            <div class="stg-navitem-icon"><i class="ri-shield-check-line"></i></div>
+            <div class="stg-navitem-text">
+              <span class="stg-navitem-label">Privacy &amp; Data</span>
+              <span class="stg-navitem-sub">Security &amp; export</span>
+            </div>
+            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+          </button>
 
-          <!-- Profile header -->
-          <div class="stg-profile-header">
-            <!-- Avatar with upload button -->
-            <div class="stg-avatar-wrap">
+          <!-- Compact user card -->
+          <div class="stg-nav-usercard">
+            <div class="stg-nav-avatar">
               ${user.photo
-                ? `<img src="${user.photo}" class="stg-avatar-img" id="stgAvatarImg" alt="Profile">`
-                : `<div class="stg-avatar" id="stgAvatar">${user.full_name ? user.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : 'U'}</div>`
-              }
-              <label class="stg-avatar-upload-btn" for="stgPhotoInput" title="Change photo">
-                <i class="ri-camera-line"></i>
-              </label>
-              <input type="file" id="stgPhotoInput" accept="image/*" style="display:none;">
+                ? `<img src="${user.photo}" class="stg-nav-avatar-img" alt="avatar">`
+                : `<span>${initials}</span>`}
             </div>
-            <div class="stg-profile-info">
-              <div class="stg-profile-name">${escHtml(user.full_name || '—')}</div>
-              <span class="stg-role-badge">${escHtml(user.role || '—')}</span>
-            </div>
-            <button class="stg-edit-btn" id="stgEditBtn">
-              <i class="ri-edit-line"></i> Edit
-            </button>
-          </div>
-
-          <div class="stg-divider"></div>
-
-          <!-- Profile fields -->
-          <div class="stg-section-title">Profile</div>
-          <div class="stg-fields-grid">
-            <div class="stg-field-group">
-              <label class="stg-field-label">Full Name</label>
-              <input type="text" class="stg-field-input" id="stgFullName" value="${user.full_name || ''}" readonly>
-            </div>
-            <div class="stg-field-group">
-              <label class="stg-field-label">ID Number</label>
-              <input type="text" class="stg-field-input" id="stgIdNo" value="${user.id_no || ''}" readonly>
-            </div>
-            <div class="stg-field-group">
-              <label class="stg-field-label">Email</label>
-              <input type="text" class="stg-field-input" id="stgEmail" value="${user.email || ''}" readonly>
-            </div>
-            <div class="stg-field-group">
-              <label class="stg-field-label">Role</label>
-              <input type="text" class="stg-field-input" value="${user.role || ''}" readonly>
+            <div class="stg-nav-userinfo">
+              <div class="stg-nav-username">${escHtml(user.full_name || '—')}</div>
+              <div class="stg-nav-userrole">${escHtml(user.role || '—')}</div>
             </div>
           </div>
+        </nav>
 
-          <div class="stg-divider"></div>
+        <!-- ── Right panels ── -->
+        <div class="stg-panels">
 
-          <!-- Actions -->
-          <div class="stg-actions-row">
-            <button class="stg-action-btn stg-primary-btn" id="stgChangePwBtn">
-              <i class="ri-lock-password-line"></i> Change Password
-            </button>
-            <button class="stg-action-btn stg-secondary-btn" id="stgLeaveBtn">
-              <i class="ri-calendar-todo-line"></i> Request for Leave
-            </button>
+          <!-- ACCOUNT -->
+          <div class="stg-panel active" id="stg-tab-account">
+
+            <!-- Profile card -->
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-user-3-line"></i> Profile Information</div>
+                <button class="stg-outline-btn" id="stgEditBtn"><i class="ri-edit-line"></i> Edit Profile</button>
+              </div>
+
+              <div class="stg-profile-hero">
+                <div class="stg-avatar-wrap">
+                  ${user.photo
+                    ? `<img src="${user.photo}" class="stg-avatar-img" id="stgAvatarImg" alt="Profile">`
+                    : `<div class="stg-avatar" id="stgAvatar">${initials}</div>`}
+                  <label class="stg-avatar-upload-btn" for="stgPhotoInput" title="Change photo">
+                    <i class="ri-camera-line"></i>
+                  </label>
+                  <input type="file" id="stgPhotoInput" accept="image/*" style="display:none;">
+                </div>
+                <div class="stg-profile-hero-info">
+                  <div class="stg-profile-name">${escHtml(user.full_name || '—')}</div>
+                  <span class="stg-role-badge">${escHtml(user.role || '—')}</span>
+                  <div class="stg-photo-hint"><i class="ri-information-line"></i> Click the camera icon to update your photo</div>
+                </div>
+              </div>
+
+              <div class="stg-info-grid">
+                <div class="stg-info-cell">
+                  <div class="stg-info-label"><i class="ri-user-line"></i> Full Name</div>
+                  <div class="stg-info-value">${escHtml(user.full_name || '—')}</div>
+                </div>
+                <div class="stg-info-cell">
+                  <div class="stg-info-label"><i class="ri-id-card-line"></i> ID Number</div>
+                  <div class="stg-info-value">${escHtml(user.id_no || '—')}</div>
+                </div>
+                <div class="stg-info-cell">
+                  <div class="stg-info-label"><i class="ri-mail-line"></i> Email Address</div>
+                  <div class="stg-info-value">${escHtml(user.email || '—')}</div>
+                </div>
+                <div class="stg-info-cell">
+                  <div class="stg-info-label"><i class="ri-shield-user-line"></i> Role</div>
+                  <div class="stg-info-value" style="text-transform:capitalize;">${escHtml(user.role || '—')}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick actions card -->
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-flashlight-line"></i> Quick Actions</div>
+              </div>
+              <div class="stg-action-tiles">
+                <button class="stg-action-tile" id="stgChangePwBtn">
+                  <div class="stg-tile-icon stg-tile-blue"><i class="ri-lock-password-line"></i></div>
+                  <div class="stg-tile-body">
+                    <div class="stg-tile-label">Change Password</div>
+                    <div class="stg-tile-desc">Update your account password</div>
+                  </div>
+                  <i class="ri-arrow-right-s-line stg-tile-arrow"></i>
+                </button>
+                <button class="stg-action-tile" id="stgLeaveBtn">
+                  <div class="stg-tile-icon stg-tile-green"><i class="ri-calendar-todo-line"></i></div>
+                  <div class="stg-tile-body">
+                    <div class="stg-tile-label">Request Leave</div>
+                    <div class="stg-tile-desc">Submit a leave request to admin</div>
+                  </div>
+                  <i class="ri-arrow-right-s-line stg-tile-arrow"></i>
+                </button>
+              </div>
+            </div>
+
           </div>
-        </div>
-      </div>
 
-      <!-- Display Tab -->
-      <div class="stg-panel" id="stg-tab-display">
-        <div class="stg-card">
+          <!-- DISPLAY -->
+          <div class="stg-panel" id="stg-tab-display">
 
-          <div class="stg-section-title">Brightness &amp; Color</div>
-          <div class="stg-setting-card">
-            <div class="stg-setting-row" style="border-bottom:1px solid #f1f5f9;">
-              <div class="stg-setting-left">
-                <div class="stg-setting-icon"><i class="ri-sun-line"></i></div>
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-sun-line"></i> Brightness &amp; Color</div>
+              </div>
+              <div class="stg-row-list">
+
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#fef9c3;color:#b45309;"><i class="ri-sun-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Brightness</div>
+                    <div class="stg-row-desc">Adjust the display brightness level</div>
+                  </div>
+                  <div class="stg-row-ctrl">
+                    <span class="stg-val-badge" id="stgBrightnessVal">100%</span>
+                    <input type="range" class="stg-slider" id="stgBrightness" min="20" max="100" value="100">
+                  </div>
+                </div>
+
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#ede9fe;color:#7c3aed;"><i class="ri-moon-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Night Light</div>
+                    <div class="stg-row-desc">Warmer colors to reduce eye strain</div>
+                  </div>
+                  <label class="stg-toggle">
+                    <input type="checkbox" id="stgNightLight">
+                    <span class="stg-toggle-track"><span class="stg-toggle-thumb"></span></span>
+                  </label>
+                </div>
+
+              </div>
+            </div>
+
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-contrast-2-line"></i> Theme</div>
+              </div>
+              <div class="stg-row-list">
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#f0f9ff;color:#0284c7;"><i class="ri-contrast-2-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Color Mode</div>
+                    <div class="stg-row-desc">Switch between light and dark interface</div>
+                  </div>
+                  <div class="stg-theme-pills" id="stgThemePills">
+                    <button class="stg-theme-pill active" data-theme="light"><i class="ri-sun-fill"></i> Light</button>
+                    <button class="stg-theme-pill" data-theme="dark"><i class="ri-moon-fill"></i> Dark</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-text-spacing"></i> Typography</div>
+              </div>
+              <div class="stg-row-list">
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#f0fdf4;color:#16a34a;font-size:15px;font-weight:800;letter-spacing:-1px;">Aa</div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Text Size</div>
+                    <div class="stg-row-desc">Adjust font size throughout the app</div>
+                  </div>
+                  <div class="stg-row-ctrl">
+                    <span class="stg-font-sm">A</span>
+                    <input type="range" class="stg-slider" id="stgFontSize" min="12" max="20" value="14">
+                    <span class="stg-font-lg">A</span>
+                    <span class="stg-val-badge" id="stgFontVal">14px</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="stg-card2-footer">
+              <button class="stg-outline-btn" id="stgFontApply"><i class="ri-refresh-line"></i> Apply Font</button>
+              <button class="stg-save-btn" id="stgDisplaySave"><i class="ri-save-line"></i> Save Changes</button>
+            </div>
+
+          </div>
+
+          <!-- PRIVACY -->
+          <div class="stg-panel" id="stg-tab-privacy">
+
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-lock-line"></i> File Upload Privacy</div>
+              </div>
+              <div class="stg-row-list">
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#eff6ff;color:#2563eb;"><i class="ri-file-shield-2-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Restrict Evidence Files</div>
+                    <div class="stg-row-desc">Limit file access to authorized users only</div>
+                  </div>
+                  <label class="stg-toggle">
+                    <input type="checkbox" id="stgPrivRestrict" checked>
+                    <span class="stg-toggle-track"><span class="stg-toggle-thumb"></span></span>
+                  </label>
+                </div>
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#f0fdf4;color:#16a34a;"><i class="ri-global-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Public File Access</div>
+                    <div class="stg-row-desc">Allow anyone to view uploaded evidence files</div>
+                  </div>
+                  <label class="stg-toggle">
+                    <input type="checkbox" id="stgPrivPublic">
+                    <span class="stg-toggle-track"><span class="stg-toggle-thumb"></span></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="stg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-database-2-line"></i> Data Management</div>
+              </div>
+              <div class="stg-row-list">
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#f0fdf4;color:#16a34a;"><i class="ri-cloud-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Automatic Backup</div>
+                    <div class="stg-row-desc">Enable scheduled system backups</div>
+                  </div>
+                  <label class="stg-toggle">
+                    <input type="checkbox" id="stgBackup" checked>
+                    <span class="stg-toggle-track"><span class="stg-toggle-thumb"></span></span>
+                  </label>
+                </div>
+                <div class="stg-row">
+                  <div class="stg-row-icon" style="background:#eff6ff;color:#2563eb;"><i class="ri-file-chart-line"></i></div>
+                  <div class="stg-row-body">
+                    <div class="stg-row-label">Export Reports</div>
+                    <div class="stg-row-desc">Download all reports as a CSV file</div>
+                  </div>
+                  <button class="stg-outline-btn" id="stgExportBtn"><i class="ri-download-2-line"></i> Export</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="stg-card2 stg-danger-zone">
+              <div class="stg-card2-header stg-danger-header">
+                <div class="stg-card2-title" style="color:#dc2626;"><i class="ri-error-warning-line"></i> Danger Zone</div>
+              </div>
+              <div class="stg-danger-row">
                 <div>
-                  <div class="stg-setting-name">Brightness</div>
-                  <div class="stg-setting-desc">Change the brightness for the built-in display</div>
+                  <div class="stg-danger-label">Delete Account</div>
+                  <div class="stg-danger-desc">A deletion request will be sent to the admin. This cannot be undone.</div>
                 </div>
-              </div>
-              <input type="range" class="stg-slider" id="stgBrightness" min="20" max="100" value="100">
-            </div>
-            <div class="stg-setting-row">
-              <div class="stg-setting-left">
-                <div class="stg-setting-icon"><i class="ri-moon-line"></i></div>
-                <div>
-                  <div class="stg-setting-name">Night Light</div>
-                  <div class="stg-setting-desc">Use warmer colors to help to block blue light</div>
-                </div>
-              </div>
-              <label class="stg-toggle">
-                <input type="checkbox" id="stgNightLight">
-                <span class="stg-toggle-track"><span class="stg-toggle-thumb"></span></span>
-              </label>
-            </div>
-          </div>
-
-          <div class="stg-section-title" style="margin-top:24px;">Theme</div>
-          <div class="stg-setting-card">
-            <div class="stg-setting-row">
-              <div class="stg-setting-left">
-                <div class="stg-setting-icon"><i class="ri-contrast-2-line"></i></div>
-                <div>
-                  <div class="stg-setting-name">Choose Mode</div>
-                  <div class="stg-setting-desc">Change the color that appear in your Windows and apps</div>
-                </div>
-              </div>
-              <select class="stg-mode-select" id="stgThemeMode">
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="stg-section-title" style="margin-top:24px;">Font</div>
-          <div class="stg-setting-card">
-            <div class="stg-setting-row">
-              <div class="stg-setting-left">
-                <div class="stg-setting-icon" style="font-weight:700;font-size:14px;gap:2px;display:flex;">
-                  <span style="font-size:12px;">A</span><span style="font-size:18px;">A</span>
-                </div>
-                <div>
-                  <div class="stg-setting-name">Text Size</div>
-                  <div class="stg-setting-desc">Text size that appears throughout Windows and your apps</div>
-                </div>
-              </div>
-              <div class="stg-font-row">
-                <span class="stg-font-a small">A</span>
-                <input type="range" class="stg-slider" id="stgFontSize" min="12" max="20" value="14" style="width:120px;">
-                <span class="stg-font-a large">A</span>
-                <button class="stg-apply-btn" id="stgFontApply">Apply</button>
+                <button class="stg-delete-btn" id="stgDeleteAccBtn">
+                  <i class="ri-delete-bin-line"></i> Request Deletion
+                </button>
               </div>
             </div>
+
           </div>
 
-          <div class="stg-save-row">
-            <button class="stg-save-btn" id="stgDisplaySave">
-              <i class="ri-save-line"></i> Save Changes
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Privacy & Data Tab -->
-      <div class="stg-panel" id="stg-tab-privacy">
-        <div class="stg-card">
-
-          <div class="stg-setting-card">
-            <div class="stg-setting-name" style="padding:14px 18px 8px;font-weight:700;font-size:15px;">File Upload Privacy</div>
-            <div class="stg-setting-row stg-checkbox-row" style="border-bottom:1px solid #f1f5f9;">
-              <span class="stg-setting-desc" style="padding-left:18px;">Restrict evidence files to authorized users only</span>
-              <label class="stg-checkbox-wrap">
-                <input type="checkbox" id="stgPrivRestrict" checked>
-                <span class="stg-checkbox-box"></span>
-              </label>
-            </div>
-            <div class="stg-setting-row stg-checkbox-row">
-              <span class="stg-setting-desc" style="padding-left:18px;">Allow public access to evidence files</span>
-              <label class="stg-checkbox-wrap">
-                <input type="checkbox" id="stgPrivPublic">
-                <span class="stg-checkbox-box"></span>
-              </label>
-            </div>
-          </div>
-
-          <div class="stg-setting-card" style="margin-top:12px;">
-            <div class="stg-setting-row stg-checkbox-row">
-              <div>
-                <div class="stg-setting-name">Backup</div>
-                <div class="stg-setting-desc">Enable automatic system backup</div>
-              </div>
-              <label class="stg-checkbox-wrap">
-                <input type="checkbox" id="stgBackup" checked>
-                <span class="stg-checkbox-box"></span>
-              </label>
-            </div>
-          </div>
-
-          <div class="stg-setting-card" style="margin-top:12px;">
-            <div class="stg-setting-row">
-              <div>
-                <div class="stg-setting-name">Data Management</div>
-              </div>
-              <button class="stg-export-btn" id="stgExportBtn">
-                <i class="ri-download-2-line"></i> Export Reports
-              </button>
-            </div>
-          </div>
-
-          <div class="stg-setting-card stg-danger-card" style="margin-top:12px;">
-            <div class="stg-setting-row">
-              <div>
-                <div class="stg-setting-name">Account Deletion Request</div>
-                <div class="stg-setting-desc">If you wish to delete your account, a request will be sent to the admin for approval.</div>
-              </div>
-              <button class="stg-delete-btn" id="stgDeleteAccBtn">
-                Request Account Deletion
-              </button>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
+        </div><!-- /stg-panels -->
+      </div><!-- /stg-layout -->
     </div>
 
     <!-- Change Password Modal -->
     <div class="modal-overlay hidden" id="stgPwModal">
-      <div class="modal-box add-modal-box" style="max-width:420px;">
-        <div class="add-modal-header">
-          <div class="add-modal-icon"><i class="ri-lock-password-line"></i></div>
-          <div class="add-modal-title"><h3>Change Password</h3><p>Enter your current and new password.</p></div>
-          <button class="modal-close-btn" id="stgPwClose"><i class="ri-close-line"></i></button>
-        </div>
-        <div class="add-modal-body">
-          <div class="add-fields-grid" style="grid-template-columns:1fr;">
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-lock-line"></i> Current Password</label>
-              <input type="password" id="stgPwCurrent" class="add-field-input" placeholder="Current password">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-lock-2-line"></i> New Password</label>
-              <input type="password" id="stgPwNew" class="add-field-input" placeholder="New password">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-lock-2-line"></i> Confirm New Password</label>
-              <input type="password" id="stgPwConfirm" class="add-field-input" placeholder="Confirm new password">
+      <div class="acc-modal-shell">
+        <div class="acc-modal-header">
+          <div class="acc-modal-title-row">
+            <div class="acc-modal-icon"><i class="ri-lock-password-line"></i></div>
+            <div>
+              <div class="acc-modal-title">Change Password</div>
+              <div class="acc-modal-sub">Enter your current and new password</div>
             </div>
           </div>
+          <button class="acc-modal-close-btn" id="stgPwClose"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-footer">
-          <span class="add-modal-hint"></span>
-          <div class="modal-actions">
-            <button class="tool-btn" id="stgPwCancel">Cancel</button>
-            <button class="tool-btn apply-btn" id="stgPwSave"><i class="ri-save-line"></i> Update Password</button>
+        <div class="acc-modal-body" style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            <label class="acc-modal-label">Current Password</label>
+            <input type="password" id="stgPwCurrent" class="acc-modal-input" placeholder="Enter current password">
           </div>
+          <div>
+            <label class="acc-modal-label">New Password</label>
+            <input type="password" id="stgPwNew" class="acc-modal-input" placeholder="Enter new password">
+          </div>
+          <div>
+            <label class="acc-modal-label">Confirm New Password</label>
+            <input type="password" id="stgPwConfirm" class="acc-modal-input" placeholder="Repeat new password">
+          </div>
+        </div>
+        <div class="acc-modal-footer">
+          <button class="acc-modal-cancel" id="stgPwCancel">Cancel</button>
+          <button class="acc-modal-submit" id="stgPwSave"><i class="ri-save-line"></i> Update Password</button>
         </div>
       </div>
     </div>
 
     <!-- Edit Profile Modal -->
     <div class="modal-overlay hidden" id="stgEditModal">
-      <div class="modal-box add-modal-box" style="max-width:420px;">
-        <div class="add-modal-header">
-          <div class="add-modal-icon"><i class="ri-user-settings-line"></i></div>
-          <div class="add-modal-title"><h3>Edit Profile</h3><p>Update your display name and email.</p></div>
-          <button class="modal-close-btn" id="stgEditClose"><i class="ri-close-line"></i></button>
-        </div>
-        <div class="add-modal-body">
-          <div class="add-fields-grid" style="grid-template-columns:1fr;">
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-user-line"></i> Full Name</label>
-              <input type="text" id="stgEditName" class="add-field-input" value="${user.full_name || ''}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-mail-line"></i> Email</label>
-              <input type="email" id="stgEditEmail" class="add-field-input" value="${user.email || ''}">
+      <div class="acc-modal-shell">
+        <div class="acc-modal-header">
+          <div class="acc-modal-title-row">
+            <div class="acc-modal-icon"><i class="ri-user-settings-line"></i></div>
+            <div>
+              <div class="acc-modal-title">Edit Profile</div>
+              <div class="acc-modal-sub">Update your display name and email</div>
             </div>
           </div>
+          <button class="acc-modal-close-btn" id="stgEditClose"><i class="ri-close-line"></i></button>
         </div>
-        <div class="add-modal-footer">
-          <span class="add-modal-hint"></span>
-          <div class="modal-actions">
-            <button class="tool-btn" id="stgEditCancel">Cancel</button>
-            <button class="tool-btn apply-btn" id="stgEditSave"><i class="ri-save-line"></i> Save Changes</button>
+        <div class="acc-modal-body" style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            <label class="acc-modal-label">Full Name</label>
+            <input type="text" id="stgEditName" class="acc-modal-input" value="${escHtml(user.full_name || '')}">
           </div>
+          <div>
+            <label class="acc-modal-label">Email Address</label>
+            <input type="email" id="stgEditEmail" class="acc-modal-input" value="${escHtml(user.email || '')}">
+          </div>
+        </div>
+        <div class="acc-modal-footer">
+          <button class="acc-modal-cancel" id="stgEditCancel">Cancel</button>
+          <button class="acc-modal-submit" id="stgEditSave"><i class="ri-save-line"></i> Save Changes</button>
         </div>
       </div>
     </div>
   `;
 
-  // ── Tab switching ──────────────────────────────────────────────────────────
-  document.querySelectorAll('.stg-tab').forEach(tab => {
-    tab.addEventListener('click', function() {
-      document.querySelectorAll('.stg-tab').forEach(t => t.classList.remove('active'));
+  // ── Nav switching ──────────────────────────────────────────────────────────
+  document.querySelectorAll('.stg-navitem').forEach(btn => {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
       this.classList.add('active');
       document.getElementById(`stg-tab-${this.dataset.tab}`).classList.add('active');
@@ -6003,6 +6082,9 @@ function loadSettings() {
   document.getElementById('stgEditClose').onclick  =
   document.getElementById('stgEditCancel').onclick = () =>
     document.getElementById('stgEditModal').classList.add('hidden');
+  document.getElementById('stgEditModal').onclick = function(e) {
+    if (e.target === this) this.classList.add('hidden');
+  };
 
   document.getElementById('stgEditSave').onclick = async () => {
     const full_name = document.getElementById('stgEditName').value.trim();
@@ -6034,6 +6116,9 @@ function loadSettings() {
   document.getElementById('stgPwClose').onclick  =
   document.getElementById('stgPwCancel').onclick = () =>
     document.getElementById('stgPwModal').classList.add('hidden');
+  document.getElementById('stgPwModal').onclick = function(e) {
+    if (e.target === this) this.classList.add('hidden');
+  };
 
   document.getElementById('stgPwSave').onclick = async () => {
     const current = document.getElementById('stgPwCurrent').value;
@@ -6061,13 +6146,20 @@ function loadSettings() {
 
   // ── Display: Theme mode ────────────────────────────────────────────────────
   const savedTheme = localStorage.getItem('theme') || 'light';
-  document.getElementById('stgThemeMode').value = savedTheme;
-  if (savedTheme === 'dark') document.body.classList.add('dark');
-
-  document.getElementById('stgThemeMode').addEventListener('change', function() {
-    if (this.value === 'dark') document.body.classList.add('dark');
-    else document.body.classList.remove('dark');
-    localStorage.setItem('theme', this.value);
+  if (savedTheme === 'dark') {
+    document.body.classList.add('dark');
+    document.querySelectorAll('.stg-theme-pill').forEach(p => {
+      p.classList.toggle('active', p.dataset.theme === 'dark');
+    });
+  }
+  document.querySelectorAll('.stg-theme-pill').forEach(pill => {
+    pill.addEventListener('click', function () {
+      document.querySelectorAll('.stg-theme-pill').forEach(p => p.classList.remove('active'));
+      this.classList.add('active');
+      if (this.dataset.theme === 'dark') document.body.classList.add('dark');
+      else document.body.classList.remove('dark');
+      localStorage.setItem('theme', this.dataset.theme);
+    });
   });
 
   // ── Display: Night Light ───────────────────────────────────────────────────
@@ -6083,15 +6175,22 @@ function loadSettings() {
   // ── Display: Brightness ────────────────────────────────────────────────────
   const savedBright = localStorage.getItem('brightness') || '100';
   document.getElementById('stgBrightness').value = savedBright;
+  document.getElementById('stgBrightnessVal').textContent = savedBright + '%';
   document.body.style.opacity = (parseInt(savedBright) / 100).toFixed(2);
 
   document.getElementById('stgBrightness').addEventListener('input', function() {
     document.body.style.opacity = (parseInt(this.value) / 100).toFixed(2);
+    document.getElementById('stgBrightnessVal').textContent = this.value + '%';
   });
 
   // ── Display: Font size ─────────────────────────────────────────────────────
   const savedFont = localStorage.getItem('fontSize') || '14';
   document.getElementById('stgFontSize').value = savedFont;
+  document.getElementById('stgFontVal').textContent = savedFont + 'px';
+
+  document.getElementById('stgFontSize').addEventListener('input', function () {
+    document.getElementById('stgFontVal').textContent = this.value + 'px';
+  });
 
   document.getElementById('stgFontApply').onclick = () => {
     const size = document.getElementById('stgFontSize').value;
@@ -6395,14 +6494,18 @@ function loadAcceptance() {
 
   mainContent.innerHTML = `
     <div class="acc-page" id="accPage">
-      <div class="acc-topbar">
-        <h2 class="acc-title"><i class="ri-checkbox-circle-line"></i> Acceptance</h2>
-        <div class="acc-topbar-right">
+
+      <div class="acc-page-header">
+        <div class="acc-page-header-left">
+          <h2 class="acc-title"><i class="ri-checkbox-circle-line"></i> Acceptance</h2>
+          <p class="acc-subtitle">Track project site acceptance and upload evidence</p>
+        </div>
+        <div class="acc-page-header-right">
           <div class="acc-search-box">
             <i class="ri-search-line"></i>
-            <input type="text" id="accSearch" placeholder="Search here…">
+            <input type="text" id="accSearch" placeholder="Search projects…">
           </div>
-          <button class="acc-btn acc-btn-primary" id="accAddProjectBtn">
+          <button class="acc-primary-btn" id="accAddProjectBtn">
             <i class="ri-add-line"></i> Add Project
           </button>
         </div>
@@ -6419,6 +6522,7 @@ function loadAcceptance() {
           <span>Loading projects…</span>
         </div>
       </div>
+
     </div>
   `;
 
@@ -6498,17 +6602,19 @@ function accProjectCardHTML(p) {
   const done    = parseInt(p.done_sites    || 0);
   const pending = parseInt(p.pending_sites || 0);
   const total   = parseInt(p.total_sites   || 0);
+  const tier    = pct >= 80 ? 'high' : pct >= 40 ? 'mid' : 'low';
   return `
-    <div class="acc-project-card" data-project="${escHtml(p.project_name)}">
+    <div class="acc-project-card ${tier}" data-project="${escHtml(p.project_name)}">
       <div class="acc-project-header">
-        <div class="acc-project-info">
-          <div class="acc-project-name">${escHtml(p.project_name)}</div>
-          <div class="acc-project-counts">
-            <span class="acc-count-done"><i class="ri-checkbox-circle-fill"></i> ${done} Done</span>
-            <span class="acc-count-sep">·</span>
-            <span class="acc-count-pending"><i class="ri-time-line"></i> ${pending} Pending</span>
-            <span class="acc-count-sep">·</span>
-            <span>${total} Total</span>
+        <div class="acc-project-meta">
+          <div class="acc-project-icon"><i class="ri-folder-3-line"></i></div>
+          <div class="acc-project-info">
+            <div class="acc-project-name">${escHtml(p.project_name)}</div>
+            <div class="acc-project-chips">
+              <span class="acc-chip acc-chip-done"><i class="ri-checkbox-circle-fill"></i> ${done} Done</span>
+              <span class="acc-chip acc-chip-pending"><i class="ri-time-line"></i> ${pending} Pending</span>
+              <span class="acc-chip acc-chip-total"><i class="ri-stack-line"></i> ${total} Total</span>
+            </div>
           </div>
         </div>
         <div class="acc-project-right">
@@ -6517,7 +6623,7 @@ function accProjectCardHTML(p) {
         </div>
       </div>
       <div class="acc-project-body">
-        <div class="acc-loading" id="accSiteLoader-${CSS.escape(p.project_name)}">
+        <div class="acc-loading">
           <i class="ri-loader-4-line spin"></i><span>Loading sites…</span>
         </div>
       </div>
@@ -6579,12 +6685,12 @@ function accRenderSitesTable(projectName, card, sites) {
   body.innerHTML = `
     <div class="acc-table-toolbar">
       <div class="acc-filter-row">
-        <button class="acc-filter-chip active" data-filter="all">All</button>
-        <button class="acc-filter-chip"        data-filter="done"><i class="ri-checkbox-circle-fill" style="color:#22c55e"></i> Done</button>
-        <button class="acc-filter-chip"        data-filter="pending"><i class="ri-time-line" style="color:#f59e0b"></i> Pending</button>
+        <button class="acc-filter-chip active" data-filter="all">All <span class="acc-chip-count">${sites.length}</span></button>
+        <button class="acc-filter-chip" data-filter="done"><i class="ri-checkbox-circle-fill"></i> Done <span class="acc-chip-count">${sites.filter(s=>(s.status||'').toLowerCase()==='done').length}</span></button>
+        <button class="acc-filter-chip" data-filter="pending"><i class="ri-time-line"></i> Pending <span class="acc-chip-count">${sites.filter(s=>(s.status||'').toLowerCase()!=='done').length}</span></button>
       </div>
       <div class="acc-table-actions">
-        ${isAdmin ? `<button class="acc-btn acc-btn-primary acc-add-site-btn" style="font-size:12px;padding:7px 14px;border-radius:8px;"><i class="ri-add-line"></i> Add Site</button>` : ''}
+        ${isAdmin ? `<button class="acc-add-site-btn"><i class="ri-add-line"></i> Add Site</button>` : ''}
       </div>
     </div>
     <div class="acc-sites-subtable">
@@ -6593,8 +6699,8 @@ function accRenderSitesTable(projectName, card, sites) {
           <tr>
             <th>Site Name</th>
             <th>Status</th>
-            <th>By</th>
-            <th style="text-align:center;">Upload</th>
+            <th>Uploaded By</th>
+            <th style="text-align:center;">Files</th>
             ${isAdmin ? '<th style="text-align:center;">Actions</th>' : ''}
           </tr>
         </thead>
@@ -6602,7 +6708,12 @@ function accRenderSitesTable(projectName, card, sites) {
           ${accSiteRows(sites, projectName, isAdmin)}
         </tbody>
       </table>
-      ${!sites.length ? `<div class="acc-empty" style="padding:28px 16px;"><i class="ri-inbox-line"></i><span>No sites yet.</span></div>` : ''}
+      ${!sites.length ? `
+        <div class="acc-empty-state">
+          <div class="acc-empty-icon"><i class="ri-map-pin-add-line"></i></div>
+          <div class="acc-empty-title">No sites yet</div>
+          <div class="acc-empty-desc">Add your first site to start tracking acceptance progress.</div>
+        </div>` : ''}
     </div>`;
 
   // Re-attach projectName after innerHTML wipe
@@ -6650,37 +6761,44 @@ function accSiteRows(sites, projectName, isAdmin) {
     const fileCount = parseInt(s.file_count  || 0);
     const imgCount  = parseInt(s.image_count || 0);
     const vidCount  = parseInt(s.video_count || 0);
-    const safeP     = escHtml(projectName);
     const safeName  = escHtml(s.site_name);
     return `
       <tr class="acc-site-row" data-status="${isDone ? 'done' : 'pending'}" data-id="${s.id}">
-        <td class="acc-site-name">${safeName}</td>
+        <td>
+          <div class="acc-site-name-cell">
+            <div class="acc-site-dot ${isDone ? 'done' : 'pending'}"></div>
+            <span class="acc-site-name">${safeName}</span>
+          </div>
+        </td>
         <td>
           <span class="acc-status-badge ${isDone ? 'done' : 'pending'}">
             ${isDone ? '<i class="ri-checkbox-circle-fill"></i> Done' : '<i class="ri-time-line"></i> Pending'}
           </span>
         </td>
-        <td style="color:#64748b;font-size:13px;">${escHtml(s.uploader_name || '—')}</td>
+        <td class="acc-by-cell">${escHtml(s.uploader_name || '—')}</td>
         <td class="acc-upload-cell">
-          <button class="acc-upload-btn acc-media-open-btn" title="Files"  data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="files">
-            <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-media-count">${fileCount}</span>` : ''}
-          </button>
-          <button class="acc-upload-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="images">
-            <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-media-count">${imgCount}</span>` : ''}
-          </button>
-          <button class="acc-upload-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="videos">
-            <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-media-count">${vidCount}</span>` : ''}
-          </button>
+          <div class="acc-upload-group">
+            <button class="acc-file-btn acc-media-open-btn" title="Files" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="files">
+              <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-file-badge">${fileCount}</span>` : ''}
+            </button>
+            <button class="acc-file-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="images">
+              <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-file-badge">${imgCount}</span>` : ''}
+            </button>
+            <button class="acc-file-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="videos">
+              <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-file-badge">${vidCount}</span>` : ''}
+            </button>
+          </div>
         </td>
         ${isAdmin ? `
-        <td style="text-align:center;white-space:nowrap;">
-          <button class="acc-upload-btn acc-toggle-status-btn" title="${isDone ? 'Mark Pending' : 'Mark Done'}"
-            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}" data-project="${safeP}">
-            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}" style="color:${isDone ? '#f59e0b' : '#22c55e'}"></i>
+        <td class="acc-actions-cell">
+          <button class="acc-action-icon-btn acc-toggle-status-btn ${isDone ? 'warn' : 'success'}"
+            title="${isDone ? 'Mark Pending' : 'Mark Done'}"
+            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}">
+            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}"></i>
           </button>
-          <button class="acc-upload-btn acc-delete-site-btn" title="Delete"
-            data-site-id="${s.id}" data-project="${safeP}">
-            <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
+          <button class="acc-action-icon-btn danger acc-delete-site-btn" title="Delete"
+            data-site-id="${s.id}">
+            <i class="ri-delete-bin-line"></i>
           </button>
         </td>` : ''}
       </tr>`;
