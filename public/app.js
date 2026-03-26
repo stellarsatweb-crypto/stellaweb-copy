@@ -22,6 +22,16 @@ const toggleConfirmPassword = document.getElementById("toggleConfirmPassword");
 
 let mode = "signin";
 
+const DASHBOARD_BY_ROLE = {
+  finance: "finance-dashboard.html",
+  noc: "noc-dashboard.html",
+};
+
+function getDashboardPathForRole(role) {
+  const key = String(role || "").trim().toLowerCase();
+  return DASHBOARD_BY_ROLE[key] || "noc-dashboard.html";
+}
+
 /* ================= API CALL ================= */
 async function callAuthApi(body) {
   const res = await fetch("/api/auth", {
@@ -183,7 +193,7 @@ form.addEventListener("submit", async (e) => {
       });
 
       localStorage.setItem("user", JSON.stringify(data.user));
-      window.location.href = "dashboard.html";
+      window.location.href = getDashboardPathForRole(data.user?.role);
 
     } catch (err) {
       message.style.color = "red";

@@ -6,6 +6,21 @@ if (!user) {
   window.location.href = "index.html";
 }
 
+const dashboardShell = String(window.__dashboardShell || "").trim().toLowerCase();
+
+function getDashboardPathForRole(role) {
+  return String(role || "").trim().toLowerCase() === "finance"
+    ? "finance-dashboard.html"
+    : "noc-dashboard.html";
+}
+
+if (user && dashboardShell) {
+  const expectedShell = String(user.role || "").trim().toLowerCase() === "finance" ? "finance" : "noc";
+  if (dashboardShell !== expectedShell) {
+    window.location.replace(getDashboardPathForRole(user.role));
+  }
+}
+
 /* ================= GLOBAL ================= */
 
 /* ── Dashboard event bus ─────────────────────────────────
@@ -22,32 +37,86 @@ function dashboardDataChanged() {
 
 
 const mainContent = document.getElementById("mainContent");
+const sidebarMenu = document.getElementById("sidebarMenu");
+const roleKey = String(user?.role || "").trim().toLowerCase();
+
+document.body.classList.toggle("finance-role", roleKey === "finance");
 
 let currentPage = 1;
 const rowsPerPage = 7;
 let leafletMap = null;  // holds the Leaflet map instance for invalidateSize on sidebar toggle
 
 /* ================= SIDEBAR ================= */
+const PAGE_DEFS = {
+  dashboard:          { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => loadDashboard() },
+  terminals:          { label: "Terminals",         icon: "ri-terminal-line",         loader: () => loadTerminals() },
+  problematicSites:   { label: "Problematic Sites", icon: "ri-error-warning-line",    loader: () => loadProblematicSites() },
+  ticket:             { label: "Ticket",            icon: "ri-ticket-line",           loader: () => loadTickets() },
+  reports:            { label: "Reports",           icon: "ri-bar-chart-line",        loader: () => loadReports() },
+  letters:            { label: "Letters",           icon: "ri-file-line",             loader: () => loadLetters() },
+  map:                { label: "Map",               icon: "ri-map-2-line",            loader: () => loadMap() },
+  acceptance:         { label: "Acceptance",        icon: "ri-checkbox-circle-line",  loader: () => loadAcceptance() },
+  financeDashboard:   { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => loadFinanceDashboard() },
+  companyIncome:      { label: "Company Income",    icon: "ri-line-chart-line",       loader: () => loadFinanceCompanyIncome() },
+  companyExpenses:    { label: "Company Expenses",  icon: "ri-shopping-cart-line",    loader: () => loadFinanceCompanyExpenses() },
+  projectExpenses:    { label: "Project Expenses",  icon: "ri-file-list-3-line",      loader: () => loadFinanceLedger("project_expenses") },
+  employee:           { label: "Employee",          icon: "ri-user-line",             loader: () => loadFinanceEmployeeCenter() },
+  financialReport:    { label: "Financial Report",  icon: "ri-bar-chart-2-line",      loader: () => loadFinanceReport() },
+  collections:        { label: "Collections",       icon: "ri-hand-coin-line",        loader: () => loadFinanceLedger("collections") },
+  settings:           { label: "Settings",          icon: "ri-settings-3-line",       loader: () => loadSettings() },
+  logout:             { label: "Log Out",           icon: "ri-logout-circle-r-line",  loader: () => showLogoutModal() },
+};
 
-document.querySelectorAll(".menu li").forEach(item => {
-  item.addEventListener("click", function () {
-    if (this.id === "logout") return;
-    document.querySelectorAll(".menu li").forEach(li => li.classList.remove("active"));
-    this.classList.add("active");
-    const text = this.innerText.trim();
-    document.body.classList.toggle("map-active", text === "Map");
-    if (text !== "Map") leafletMap = null;
-    if (text === "Dashboard") loadDashboard();
-    if (text === "Problematic Sites") loadProblematicSites();
-    if (text === "Ticket") loadTickets();
-    if (text === "Terminals") loadTerminals();
-    if (text === "Letters") loadLetters();
-    if (text === "Reports") loadReports();
-    if (text === "Map") loadMap();
-    if (text === "Settings") loadSettings();
-    if (text === "Acceptance") loadAcceptance();
+const ROLE_MENUS = {
+  finance: ["financeDashboard", "companyIncome", "companyExpenses", "projectExpenses", "employee", "financialReport", "collections", "letters", "settings", "logout"],
+  default: ["dashboard", "terminals", "problematicSites", "ticket", "reports", "letters", "map", "acceptance", "settings", "logout"],
+};
+
+function getVisiblePages() {
+  if (roleKey === "finance") return ROLE_MENUS.finance;
+  return ROLE_MENUS.default;
+}
+
+function getHomePageKey() {
+  return roleKey === "finance" ? "financeDashboard" : "dashboard";
+}
+
+function activateMenu(pageKey) {
+  document.querySelectorAll(".menu li").forEach(li => {
+    li.classList.toggle("active", li.dataset.page === pageKey);
   });
-});
+}
+
+function openPage(pageKey) {
+  const page = PAGE_DEFS[pageKey];
+  if (!page) return;
+  if (pageKey === "logout") {
+    page.loader();
+    return;
+  }
+  activateMenu(pageKey);
+  document.body.classList.toggle("map-active", pageKey === "map");
+  if (pageKey !== "map") leafletMap = null;
+  page.loader();
+}
+
+function renderSidebarMenu() {
+  if (!sidebarMenu) return;
+  sidebarMenu.innerHTML = getVisiblePages().map((pageKey, index) => {
+    const page = PAGE_DEFS[pageKey];
+    return `
+      <li data-page="${pageKey}" class="${index === 0 ? "active" : ""}">
+        <i class="${page.icon}"></i><span>${page.label}</span>
+      </li>
+    `;
+  }).join("");
+
+  sidebarMenu.querySelectorAll("li").forEach(item => {
+    item.addEventListener("click", function () {
+      openPage(this.dataset.page);
+    });
+  });
+}
 
 /* ================= REPORTS ================= */
 
@@ -1626,10 +1695,6 @@ function initMap() {
 
 /* ================= LOGOUT ================= */
 
-document.getElementById("logout").addEventListener("click", () => {
-  showLogoutModal();
-});
-
 function showLogoutModal() {
   if (document.getElementById("logoutModal")) return;
 
@@ -2549,6 +2614,1377 @@ function showToast(message, type = "success") {
   setTimeout(() => { toast.classList.remove("toast-show"); setTimeout(() => toast.remove(), 400); }, 3500);
 }
 
+/* ================= FINANCE ================= */
+
+const FINANCE_SECTION_META = {
+  company_income: {
+    title: "Company Income",
+    icon: "ri-line-chart-line",
+    accent: "green",
+    subtitle: "Track incoming company revenue and posted income entries.",
+    empty: "No income records yet.",
+    columns: [
+      { key: "date", label: "Date", format: v => formatFinanceDate(v) },
+      { key: "description", label: "Description" },
+      { key: "category", label: "Category" },
+      { key: "amount", label: "Amount", format: v => formatFinanceCurrency(v) },
+      { key: "status", label: "Status", format: v => financeStatusBadge(v) }
+    ],
+    fields: [
+      { key: "date", label: "Date", type: "date", required: true },
+      { key: "lot", label: "Lot", type: "text", required: false, placeholder: "Lot A" },
+      { key: "source", label: "Source", type: "text", required: true, placeholder: "Client payment / Service income" },
+      { key: "description", label: "Description", type: "text", required: true, placeholder: "Client payment, service income..." },
+      { key: "category", label: "Category", type: "text", required: false, placeholder: "Revenue / Retainer / Payment" },
+      { key: "amount", label: "Amount", type: "number", required: true, step: "0.01", min: "0" },
+      { key: "status", label: "Status", type: "select", required: true, options: ["completed", "pending", "cancelled"] },
+      { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
+    ]
+  },
+  company_expenses: {
+    title: "Company Expenses",
+    icon: "ri-shopping-cart-line",
+    accent: "red",
+    subtitle: "Monitor operational costs, utilities, and overhead spending.",
+    empty: "No company expense records yet.",
+    columns: [
+      { key: "date", label: "Date", format: v => formatFinanceDate(v) },
+      { key: "description", label: "Description" },
+      { key: "category", label: "Category" },
+      { key: "amount", label: "Amount", format: v => formatFinanceCurrency(v) },
+      { key: "status", label: "Status", format: v => financeStatusBadge(v) }
+    ],
+    fields: [
+      { key: "date", label: "Date", type: "date", required: true },
+      { key: "expense_group", label: "Group", type: "select", required: true, options: ["expenses", "purchases", "overhead"] },
+      { key: "category", label: "Category", type: "text", required: true, placeholder: "Utilities / Equipment / Rent" },
+      { key: "description", label: "Description", type: "text", required: true, placeholder: "Office supplies, utilities..." },
+      { key: "amount", label: "Amount", type: "number", required: true, step: "0.01", min: "0" },
+      { key: "status", label: "Status", type: "select", required: true, options: ["completed", "pending", "cancelled"] },
+      { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
+    ]
+  },
+  project_expenses: {
+    title: "Project Expenses",
+    icon: "ri-file-list-3-line",
+    accent: "orange",
+    subtitle: "Track project-level spending for materials, field work, and delivery.",
+    empty: "No project expense records yet.",
+    columns: [
+      { key: "date", label: "Date", format: v => formatFinanceDate(v) },
+      { key: "project_name", label: "Project" },
+      { key: "description", label: "Description" },
+      { key: "amount", label: "Amount", format: v => formatFinanceCurrency(v) },
+      { key: "status", label: "Status", format: v => financeStatusBadge(v) }
+    ],
+    fields: [
+      { key: "date", label: "Date", type: "date", required: true },
+      { key: "project_name", label: "Project Name", type: "text", required: true, placeholder: "Project Alpha" },
+      { key: "description", label: "Description", type: "text", required: true, placeholder: "Materials / deployment / transport" },
+      { key: "amount", label: "Amount", type: "number", required: true, step: "0.01", min: "0" },
+      { key: "status", label: "Status", type: "select", required: true, options: ["completed", "pending", "cancelled"] },
+      { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
+    ]
+  },
+  collections: {
+    title: "Collections",
+    icon: "ri-hand-coin-line",
+    accent: "blue",
+    subtitle: "Manage receivables, due dates, and collection progress.",
+    empty: "No collection records yet.",
+    columns: [
+      { key: "client_name", label: "Client" },
+      { key: "project_name", label: "Project" },
+      { key: "due_date", label: "Due Date", format: v => formatFinanceDate(v) },
+      { key: "amount_due", label: "Amount Due", format: v => formatFinanceCurrency(v) },
+      { key: "amount_collected", label: "Collected", format: v => formatFinanceCurrency(v) },
+      { key: "status", label: "Status", format: v => financeStatusBadge(v) }
+    ],
+    fields: [
+      { key: "date", label: "Entry Date", type: "date", required: true },
+      { key: "client_name", label: "Client Name", type: "text", required: true, placeholder: "XYZ Corp" },
+      { key: "project_name", label: "Project Name", type: "text", required: false, placeholder: "Project Delta" },
+      { key: "due_date", label: "Due Date", type: "date", required: true },
+      { key: "amount_due", label: "Amount Due", type: "number", required: true, step: "0.01", min: "0" },
+      { key: "amount_collected", label: "Amount Collected", type: "number", required: true, step: "0.01", min: "0" },
+      { key: "status", label: "Status", type: "select", required: true, options: ["pending", "partial", "completed", "overdue"] },
+      { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
+    ]
+  }
+};
+
+function financeCanManage() {
+  return ["finance", "admin", "executive"].includes(roleKey);
+}
+
+function financeHeaders(extra = {}) {
+  return {
+    "x-user-role": user?.role || "",
+    "x-user-id": String(user?.id || ""),
+    ...extra
+  };
+}
+
+async function financeRequest(url, options = {}) {
+  const opts = { ...options };
+  const headers = financeHeaders(options.headers || {});
+  const hasJsonBody = opts.body && !(opts.body instanceof FormData);
+  if (hasJsonBody && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+  opts.headers = headers;
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+
+function formatFinanceCurrency(amount) {
+  const n = Number(amount || 0);
+  return "PHP " + n.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatFinanceDate(dateStr) {
+  if (!dateStr) return "—";
+  return new Date(dateStr).toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "2-digit" });
+}
+
+function financeStatusBadge(status) {
+  const s = String(status || "pending").toLowerCase();
+  return `<span class="fin-status ${s}">${escHtml(s)}</span>`;
+}
+
+function toggleFinanceDarkMode() {
+  const dark = !document.body.classList.contains('dark');
+  document.body.classList.toggle('dark', dark);
+  localStorage.setItem('darkMode', dark ? 'true' : 'false');
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+}
+
+function financeApplyDarkModeFromStorage() {
+  if (roleKey !== "finance") return;
+  const dark = localStorage.getItem("darkMode") === "true" || localStorage.getItem("theme") === "dark";
+  document.body.classList.toggle("dark", dark);
+}
+
+financeApplyDarkModeFromStorage();
+
+let financeChartLoaderPromise = null;
+let financeIncomeLineChart = null;
+let financeIncomeLotChart = null;
+let financeExpenseBarChart = null;
+let financeExpensePieChart = null;
+
+function ensureFinanceChartsLoaded() {
+  if (typeof Chart !== "undefined") return Promise.resolve();
+  if (financeChartLoaderPromise) return financeChartLoaderPromise;
+  financeChartLoaderPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Unable to load chart library."));
+    document.head.appendChild(script);
+  });
+  return financeChartLoaderPromise;
+}
+
+function destroyFinanceChart(instance) {
+  if (instance) {
+    try { instance.destroy(); } catch (e) {}
+  }
+  return null;
+}
+
+function buildFinanceMonthlySeries(rows) {
+  const labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const totals = new Array(12).fill(0);
+  rows.forEach(row => {
+    const date = new Date(row.date);
+    if (Number.isNaN(date.getTime())) return;
+    totals[date.getMonth()] += Number(row.amount || 0);
+  });
+  return { labels, totals };
+}
+
+function buildFinanceLotSeries(rows) {
+  const bucket = new Map();
+  rows.forEach(row => {
+    const key = String(row.lot || "General").trim() || "General";
+    bucket.set(key, (bucket.get(key) || 0) + Number(row.amount || 0));
+  });
+  const entries = Array.from(bucket.entries()).sort((a, b) => b[1] - a[1]).slice(0, 7);
+  return {
+    labels: entries.length ? entries.map(([label]) => label) : ["No Data"],
+    totals: entries.length ? entries.map(([, total]) => total) : [0]
+  };
+}
+
+function buildFinanceExpenseDistribution(rows) {
+  const groups = ["expenses", "purchases", "overhead"];
+  const labels = ["Expenses", "Purchases", "Overhead"];
+  const totals = groups.map(group => rows
+    .filter(row => String(row.expense_group || "expenses").toLowerCase() === group)
+    .reduce((sum, row) => sum + Number(row.amount || 0), 0));
+  return { labels, totals };
+}
+
+async function renderFinanceIncomeCharts(rows) {
+  const lineCanvas = document.getElementById("finIncLineChart");
+  const lotCanvas = document.getElementById("finIncLotChart");
+  if (!lineCanvas || !lotCanvas) return;
+
+  try {
+    await ensureFinanceChartsLoaded();
+  } catch (err) {
+    [lineCanvas, lotCanvas].forEach(canvas => {
+      const card = canvas.parentElement;
+      if (card && !card.querySelector(".fin-chart-empty")) {
+        card.insertAdjacentHTML("beforeend", `<div class="fin-chart-empty">${escHtml(err.message || "Charts unavailable.")}</div>`);
+      }
+    });
+    return;
+  }
+
+  const isDark = document.body.classList.contains("dark");
+  const textColor = isDark ? "#cbd5e1" : "#35507e";
+  const gridColor = isDark ? "rgba(148,163,184,0.14)" : "rgba(30,58,110,0.08)";
+  const tickColor = isDark ? "#94a3b8" : "#6b7280";
+  const monthly = buildFinanceMonthlySeries(rows);
+  const lots = buildFinanceLotSeries(rows);
+
+  financeIncomeLineChart = destroyFinanceChart(financeIncomeLineChart);
+  financeIncomeLotChart = destroyFinanceChart(financeIncomeLotChart);
+
+  financeIncomeLineChart = new Chart(lineCanvas, {
+    type: "line",
+    data: {
+      labels: monthly.labels,
+      datasets: [{
+        label: "Income",
+        data: monthly.totals,
+        borderColor: "#1e3a6e",
+        backgroundColor: "rgba(77, 217, 192, 0.22)",
+        fill: true,
+        tension: 0.34,
+        pointRadius: 4,
+        pointHoverRadius: 5,
+        pointBackgroundColor: "#4dd9c0",
+        pointBorderColor: "#ffffff",
+        pointBorderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: context => formatFinanceCurrency(context.parsed.y || 0)
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: tickColor }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: gridColor },
+          ticks: {
+            color: tickColor,
+            callback: value => formatFinanceCurrency(value).replace(".00", "")
+          }
+        }
+      }
+    }
+  });
+
+  financeIncomeLotChart = new Chart(lotCanvas, {
+    type: "bar",
+    data: {
+      labels: lots.labels,
+      datasets: [{
+        data: lots.totals,
+        backgroundColor: ["#2f4b85", "#4dd9c0", "#29b6e0", "#7dd3fc", "#60a5fa", "#1d4ed8", "#a5f3fc"],
+        borderRadius: 10,
+        borderSkipped: false
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: context => formatFinanceCurrency(context.parsed.y || 0)
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: textColor }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: gridColor },
+          ticks: {
+            color: tickColor,
+            callback: value => formatFinanceCurrency(value).replace(".00", "")
+          }
+        }
+      }
+    }
+  });
+}
+
+async function renderFinanceExpenseCharts(rows) {
+  const barCanvas = document.getElementById("finExpBarChart");
+  const pieCanvas = document.getElementById("finExpPieChart");
+  if (!barCanvas || !pieCanvas) return;
+
+  try {
+    await ensureFinanceChartsLoaded();
+  } catch (err) {
+    [barCanvas, pieCanvas].forEach(canvas => {
+      const card = canvas.parentElement;
+      if (card && !card.querySelector(".fin-chart-empty")) {
+        card.insertAdjacentHTML("beforeend", `<div class="fin-chart-empty">${escHtml(err.message || "Charts unavailable.")}</div>`);
+      }
+    });
+    return;
+  }
+
+  const isDark = document.body.classList.contains("dark");
+  const textColor = isDark ? "#cbd5e1" : "#35507e";
+  const gridColor = isDark ? "rgba(148,163,184,0.14)" : "rgba(30,58,110,0.08)";
+  const tickColor = isDark ? "#94a3b8" : "#6b7280";
+  const monthly = buildFinanceMonthlySeries(rows);
+  const distribution = buildFinanceExpenseDistribution(rows);
+
+  financeExpenseBarChart = destroyFinanceChart(financeExpenseBarChart);
+  financeExpensePieChart = destroyFinanceChart(financeExpensePieChart);
+
+  financeExpenseBarChart = new Chart(barCanvas, {
+    type: "bar",
+    data: {
+      labels: monthly.labels,
+      datasets: [{
+        data: monthly.totals,
+        backgroundColor: monthly.labels.map((_, index) => index % 2 === 0 ? "#4dd9c0" : "#29b6e0"),
+        borderRadius: 10,
+        borderSkipped: false
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: context => formatFinanceCurrency(context.parsed.y || 0)
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: textColor }
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: gridColor },
+          ticks: {
+            color: tickColor,
+            callback: value => formatFinanceCurrency(value).replace(".00", "")
+          }
+        }
+      }
+    }
+  });
+
+  financeExpensePieChart = new Chart(pieCanvas, {
+    type: "doughnut",
+    data: {
+      labels: distribution.labels,
+      datasets: [{
+        data: distribution.totals,
+        backgroundColor: ["#29b6e0", "#4dd9c0", "#a5f3fc"],
+        borderColor: isDark ? "#0f172a" : "#ffffff",
+        borderWidth: 3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: "58%",
+      plugins: {
+        legend: {
+          position: "right",
+          labels: {
+            color: textColor,
+            padding: 18,
+            font: { size: 12, weight: "700" }
+          }
+        },
+        tooltip: {
+          callbacks: {
+            label: context => `${context.label}: ${formatFinanceCurrency(context.parsed || 0)}`
+          }
+        }
+      }
+    }
+  });
+}
+
+function financeTopbar(title, subtitle = "") {
+  return `
+    <div class="topbar finance-topbar">
+      <div class="left">
+        <h2><i class="ri-bank-card-line" style="color:#2f4b85;"></i> ${title}</h2>
+        <p class="finance-topbar-sub">${subtitle || `Welcome back, ${escHtml(user?.full_name || user?.email || "Finance Officer")}`}</p>
+      </div>
+      <div class="right">
+        <div class="search-box finance-search-shell">
+          <i class="ri-search-line"></i>
+          <input type="text" placeholder="Search records…">
+        </div>
+        <button class="icon-btn" title="Notifications">
+          <i class="ri-notification-3-line"></i>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+function loadFinanceDashboardLegacy() {
+  mainContent.innerHTML = `
+    ${financeTopbar("Finance Dashboard", `Welcome back, ${escHtml(user?.full_name || user?.email || "Finance Officer")}`)}
+    <div class="section-title">Key Financial Indicators</div>
+    <div class="cards" id="finDashCards">
+      <div class="card">
+        <div class="card-top"><div class="icon-box green"><i class="ri-line-chart-line"></i></div><div class="stat"><h1 id="finIncome">—</h1><span class="trend up">posted revenue</span></div></div>
+        <p>Total Company Income</p>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon-box red"><i class="ri-shopping-cart-line"></i></div><div class="stat"><h1 id="finCompExp">—</h1><span class="trend down">operating spend</span></div></div>
+        <p>Company Expenses</p>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon-box orange"><i class="ri-file-list-3-line"></i></div><div class="stat"><h1 id="finProjExp">—</h1><span class="trend down">project spend</span></div></div>
+        <p>Project Expenses</p>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon-box blue"><i class="ri-hand-coin-line"></i></div><div class="stat"><h1 id="finCollections">—</h1><span class="trend up">receivables</span></div></div>
+        <p>Total Collections</p>
+      </div>
+    </div>
+    <div class="finance-summary-strip">
+      <div class="finance-summary-card">
+        <span>Net Cashflow</span>
+        <strong id="finCashflow">—</strong>
+      </div>
+      <div class="finance-summary-card">
+        <span>Outstanding Balance</span>
+        <strong id="finOutstanding">—</strong>
+      </div>
+    </div>
+    <div class="section-title">Recent Transactions</div>
+    <div class="table-container">
+      <div class="table-title"><i class="ri-exchange-funds-line"></i> Latest Financial Activity</div>
+      <table>
+        <thead><tr><th>#</th><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr></thead>
+        <tbody id="finRecentTransactions"><tr><td colspan="6" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="section-title">Collections Overview</div>
+    <div class="table-container">
+      <div class="table-title"><i class="ri-hand-coin-line"></i> Pending & Recent Collections</div>
+      <table>
+        <thead><tr><th>#</th><th>Client / Project</th><th>Due Date</th><th>Amount Due</th><th>Collected</th><th>Balance</th><th>Status</th></tr></thead>
+        <tbody id="finRecentCollections"><tr><td colspan="7" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  `;
+
+  financeRequest("/api/finance/summary")
+    .then(data => {
+      const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = formatFinanceCurrency(val); };
+      setVal("finIncome", data.total_income);
+      setVal("finCompExp", data.company_expenses);
+      setVal("finProjExp", data.project_expenses);
+      setVal("finCollections", data.total_collections);
+      setVal("finCashflow", data.net_cashflow);
+      setVal("finOutstanding", data.outstanding_collections);
+
+      const txBody = document.getElementById("finRecentTransactions");
+      txBody.innerHTML = (data.recent_transactions || []).length
+        ? data.recent_transactions.map((row, idx) => `
+            <tr>
+              <td>${idx + 1}</td>
+              <td>${formatFinanceDate(row.date)}</td>
+              <td>${escHtml(row.description || "—")}</td>
+              <td>${escHtml(row.category || row.record_type || "—")}</td>
+              <td>${formatFinanceCurrency(row.amount)}</td>
+              <td>${financeStatusBadge(row.status)}</td>
+            </tr>
+          `).join("")
+        : `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No recent activity</td></tr>`;
+
+      const collectionBody = document.getElementById("finRecentCollections");
+      collectionBody.innerHTML = (data.collection_rows || []).length
+        ? data.collection_rows.map((row, idx) => {
+            const balance = Number(row.amount_due || 0) - Number(row.amount_collected || 0);
+            return `
+              <tr>
+                <td>${idx + 1}</td>
+                <td>${escHtml([row.client_name, row.project_name].filter(Boolean).join(" / ") || "—")}</td>
+                <td>${formatFinanceDate(row.due_date)}</td>
+                <td>${formatFinanceCurrency(row.amount_due)}</td>
+                <td>${formatFinanceCurrency(row.amount_collected)}</td>
+                <td>${formatFinanceCurrency(balance)}</td>
+                <td>${financeStatusBadge(row.status)}</td>
+              </tr>
+            `;
+          }).join("")
+        : `<tr><td colspan="7" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No collection records</td></tr>`;
+    })
+    .catch(err => showToast(err.message || "Failed to load finance dashboard.", "error"));
+}
+
+function loadFinanceDashboard() {
+  mainContent.innerHTML = `
+    <div class="topbar">
+      <div class="left">
+        <h2><i class="ri-dashboard-line" style="color:#2f4b85;"></i> Finance Dashboard</h2>
+        <p style="color:#6b7280;font-size:13px;margin-top:2px;">Welcome back, ${escHtml(user?.full_name || user?.email || "Finance Officer")}</p>
+      </div>
+      <div class="right">
+        <div class="search-box">
+          <i class="ri-search-line"></i>
+          <input type="text" placeholder="Search records...">
+        </div>
+        <button class="icon-btn" title="Notifications">
+          <i class="ri-notification-3-line"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="section-title">Key Financial Indicators</div>
+
+    <div class="cards" id="finDashCards">
+      <div class="card">
+        <div class="card-top"><div class="icon-box green"><i class="ri-line-chart-line"></i></div>
+          <div class="stat"><h1 id="finIncome">0</h1><span class="trend up">↑ this year</span></div>
+        </div><p>Total Company Income</p>
+      </div>
+      <div class="card pulse">
+        <div class="card-top"><div class="icon-box red"><i class="ri-shopping-cart-line"></i></div>
+          <div class="stat"><h1 id="finCompExp">0</h1><span class="trend down">this year</span></div>
+        </div><p>Company Expenses</p>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon-box orange"><i class="ri-file-list-3-line"></i></div>
+          <div class="stat"><h1 id="finProjExp">0</h1><span class="trend down">this year</span></div>
+        </div><p>Project Expenses</p>
+      </div>
+      <div class="card">
+        <div class="card-top"><div class="icon-box blue"><i class="ri-hand-coin-line"></i></div>
+          <div class="stat"><h1 id="finCollections">0</h1><span class="trend up">↑ this year</span></div>
+        </div><p>Total Collections</p>
+      </div>
+    </div>
+
+    <div class="section-title">Recent Transactions</div>
+
+    <div class="table-container">
+      <div class="table-title"><i class="ri-exchange-funds-line"></i> Latest Financial Activity</div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Date</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th>Amount</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="finRecentTransactions">
+          <tr><td colspan="6" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-title">Collections Overview</div>
+    <div class="table-container">
+      <div class="table-title"><i class="ri-hand-coin-line"></i> Pending & Recent Collections</div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Client / Project</th>
+            <th>Due Date</th>
+            <th>Amount Due</th>
+            <th>Collected</th>
+            <th>Balance</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="finRecentCollections">
+          <tr><td colspan="7" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  financeRequest("/api/finance/summary")
+    .then(data => {
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = formatFinanceCurrency(val);
+      };
+      setVal("finIncome", data.total_income);
+      setVal("finCompExp", data.company_expenses);
+      setVal("finProjExp", data.project_expenses);
+      setVal("finCollections", data.total_collections);
+
+      const txBody = document.getElementById("finRecentTransactions");
+      txBody.innerHTML = (data.recent_transactions || []).length
+        ? data.recent_transactions.map((row, idx) => `
+            <tr>
+              <td>${idx + 1}</td>
+              <td>${formatFinanceDate(row.date)}</td>
+              <td>${escHtml(row.description || "—")}</td>
+              <td>${escHtml(row.category || row.record_type || "—")}</td>
+              <td>${formatFinanceCurrency(row.amount)}</td>
+              <td>${financeStatusBadge(row.status)}</td>
+            </tr>
+          `).join("")
+        : `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No recent activity</td></tr>`;
+
+      const collectionBody = document.getElementById("finRecentCollections");
+      collectionBody.innerHTML = (data.collection_rows || []).length
+        ? data.collection_rows.map((row, idx) => {
+            const balance = Number(row.amount_due || 0) - Number(row.amount_collected || 0);
+            return `
+              <tr>
+                <td>${idx + 1}</td>
+                <td>${escHtml([row.client_name, row.project_name].filter(Boolean).join(" / ") || "—")}</td>
+                <td>${formatFinanceDate(row.due_date)}</td>
+                <td>${formatFinanceCurrency(row.amount_due)}</td>
+                <td>${formatFinanceCurrency(row.amount_collected)}</td>
+                <td>${formatFinanceCurrency(balance)}</td>
+                <td>${financeStatusBadge(row.status)}</td>
+              </tr>
+            `;
+          }).join("")
+        : `<tr><td colspan="7" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No collection records</td></tr>`;
+    })
+    .catch(err => showToast(err.message || "Failed to load finance dashboard.", "error"));
+}
+
+async function loadFinanceCompanyIncome() {
+  mainContent.innerHTML = `
+    <div class="inc-page">
+      <div class="inc-hdr" style="background:transparent;">
+        <div class="inc-av"><i class="ri-user-smile-line" style="font-size:22px;color:#1e3a6e;"></i></div>
+        <span class="inc-wb">Welcome back!</span>
+        <div class="inc-srch"><i class="ri-search-line"></i><input type="text" placeholder="Search here" id="finIncSearch"></div>
+        <button class="inc-bell"><i class="ri-notification-3-line"></i><span class="bdot"></span></button>
+      </div>
+      <div style="padding:6px 28px 0;background:transparent;">
+        <div style="display:inline-flex;background:white;border-radius:10px;padding:4px;gap:2px;box-shadow:0 2px 10px rgba(0,0,0,0.07);">
+          <button class="exp-tab active" id="finIncTabOv">Overview</button>
+          <button class="exp-tab" id="finIncTabList">Income</button>
+        </div>
+      </div>
+      <div class="inc-body">
+        <div id="finIncOverview">
+          <div class="inc-kpi-card">
+            <div class="inc-kpi-icon">&#128176;</div>
+            <div>
+              <div class="inc-kpi-amount" id="finIncKpi">Loading...</div>
+              <div class="inc-kpi-label">Total Income This Year</div>
+            </div>
+          </div>
+          <div class="inc-charts-row">
+            <div class="inc-chart-card">
+              <div class="inc-chart-title">Income Trends</div>
+              <div class="fin-chart-canvas-wrap">
+                <canvas id="finIncLineChart"></canvas>
+              </div>
+            </div>
+            <div class="inc-chart-bare">
+              <div class="inc-chart-title">Income by Lot</div>
+              <div class="fin-chart-canvas-wrap fin-chart-canvas-wrap-tall">
+                <canvas id="finIncLotChart"></canvas>
+              </div>
+            </div>
+          </div>
+          <div class="inc-tbl-wrap" style="margin-top:18px;">
+            <div class="inc-tbl-banner">RECENT INCOME REPORTS</div>
+            <table class="inc-tbl">
+              <thead><tr><th>Date</th><th>Lot</th><th>Source</th><th>Description</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody id="finIncRecentBody"><tr><td colspan="6" class="inc-empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="finIncList" style="display:none;">
+          <div style="display:flex;align-items:center;justify-content:space-between;background:#1e3a6e;border-radius:13px;padding:18px 28px;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:14px;">
+              <div style="width:46px;height:46px;background:rgba(255,255,255,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;">&#128176;</div>
+              <div>
+                <div style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.65);text-transform:uppercase;letter-spacing:.6px;">Total Income</div>
+                <div id="finIncTotal" style="font-size:28px;font-weight:900;color:white;line-height:1.2;">PHP 0.00</div>
+              </div>
+            </div>
+            <button class="inc-btn-add" id="finIncAddBtn"><i class="ri-add-line"></i> Add Income</button>
+          </div>
+          <div class="inc-tbl-wrap">
+            <div class="inc-tbl-banner">INCOME REPORTS</div>
+            <table class="inc-tbl">
+              <thead><tr><th>Date</th><th>Lot</th><th>Source</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead>
+              <tbody id="finIncTableBody"><tr><td colspan="6" class="inc-empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  let rows = [];
+  const render = () => {
+    const q = (document.getElementById("finIncSearch")?.value || "").trim().toLowerCase();
+    const filtered = !q ? rows : rows.filter(row => JSON.stringify(row).toLowerCase().includes(q));
+    const total = filtered.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    document.getElementById("finIncTotal").textContent = formatFinanceCurrency(total);
+    document.getElementById("finIncKpi").textContent = formatFinanceCurrency(total);
+    renderFinanceIncomeCharts(filtered);
+    document.getElementById("finIncRecentBody").innerHTML = filtered.length
+      ? filtered.slice(0, 5).map(row => `
+          <tr>
+            <td>${formatFinanceDate(row.date)}</td>
+            <td>${escHtml(row.lot || "General")}</td>
+            <td>${escHtml(row.source || row.category || "—")}</td>
+            <td>${escHtml(row.description || "—")}</td>
+            <td>${formatFinanceCurrency(row.amount)}</td>
+            <td>${financeStatusBadge(row.status)}</td>
+          </tr>
+        `).join("")
+      : `<tr><td colspan="6" class="inc-empty">No records found.</td></tr>`;
+    document.getElementById("finIncTableBody").innerHTML = filtered.length
+      ? filtered.map(row => `
+          <tr>
+            <td style="color:#64748b;font-size:12.5px;white-space:nowrap;">${formatFinanceDate(row.date)}</td>
+            <td><span style="display:inline-flex;align-items:center;padding:5px 13px;border-radius:20px;font-size:11.5px;font-weight:800;background:#dbeafe;color:#1e40af;letter-spacing:.4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.08);">${escHtml(row.lot || "General")}</span></td>
+            <td style="font-weight:600;color:#374151;">${escHtml(row.source || row.category || "—")}</td>
+            <td style="color:#64748b;font-size:13px;">${escHtml(row.description || "—")}</td>
+            <td><span style="font-size:14.5px;font-weight:900;color:#1e3a6e;background:rgba(30,58,110,.07);padding:4px 10px;border-radius:8px;display:inline-block;">${formatFinanceCurrency(row.amount)}</span></td>
+            <td><div class="inc-row-btns"><button class="inc-row-btn inc-btn-edit fin-inc-edit" data-id="${row.id}"><i class="ri-pencil-line"></i> Edit</button><button class="inc-row-btn inc-btn-del fin-inc-del" data-id="${row.id}"><i class="ri-delete-bin-line"></i> Delete</button></div></td>
+          </tr>
+        `).join("")
+      : `<tr><td colspan="6" class="inc-empty">No records found.</td></tr>`;
+    document.querySelectorAll(".fin-inc-edit").forEach(btn => btn.onclick = () => {
+      const row = rows.find(r => String(r.id) === btn.dataset.id);
+      openFinanceRecordModal("company_income", row, () => loadFinanceCompanyIncome());
+    });
+    document.querySelectorAll(".fin-inc-del").forEach(btn => btn.onclick = async () => {
+      if (!confirm("Delete this income record?")) return;
+      try {
+        await financeRequest(`/api/finance/records/company_income/${btn.dataset.id}`, { method: "DELETE" });
+        showToast("Income deleted.", "success");
+        loadFinanceCompanyIncome();
+      } catch (err) { showToast(err.message || "Delete failed.", "error"); }
+    });
+  };
+
+  document.getElementById("finIncSearch").addEventListener("input", render);
+  document.getElementById("finIncAddBtn").onclick = () => openFinanceRecordModal("company_income", null, () => loadFinanceCompanyIncome());
+  document.getElementById("finIncTabOv").onclick = () => {
+    document.getElementById("finIncTabOv").classList.add("active");
+    document.getElementById("finIncTabList").classList.remove("active");
+    document.getElementById("finIncOverview").style.display = "";
+    document.getElementById("finIncList").style.display = "none";
+  };
+  document.getElementById("finIncTabList").onclick = () => {
+    document.getElementById("finIncTabList").classList.add("active");
+    document.getElementById("finIncTabOv").classList.remove("active");
+    document.getElementById("finIncOverview").style.display = "none";
+    document.getElementById("finIncList").style.display = "";
+  };
+
+  try {
+    rows = await financeRequest("/api/finance/records/company_income");
+    render();
+  } catch (err) {
+    document.getElementById("finIncRecentBody").innerHTML = `<tr><td colspan="6" class="inc-empty">${escHtml(err.message || "Failed to load income.")}</td></tr>`;
+    document.getElementById("finIncTableBody").innerHTML = `<tr><td colspan="6" class="inc-empty">${escHtml(err.message || "Failed to load income.")}</td></tr>`;
+  }
+}
+
+async function loadFinanceCompanyExpenses() {
+  mainContent.innerHTML = `
+    <div class="exp-page">
+      <div class="inc-hdr" style="background:transparent;">
+        <div class="inc-av"><i class="ri-shopping-cart-line" style="font-size:22px;color:white;"></i></div>
+        <span class="inc-wb">Welcome back!</span>
+        <div class="inc-srch"><i class="ri-search-line"></i><input type="text" placeholder="Search here" id="finExpSearch"></div>
+        <button class="inc-bell"><i class="ri-notification-3-line"></i><span class="bdot"></span></button>
+      </div>
+      <div style="padding:6px 28px 0;background:transparent;">
+        <div style="display:inline-flex;background:white;border-radius:10px;padding:4px;gap:2px;box-shadow:0 2px 10px rgba(0,0,0,0.07);">
+          <button class="exp-tab active" id="finExpTabOv">Overview</button>
+          <button class="exp-tab" id="finExpTabExpenses">Company Expenses</button>
+          <button class="exp-tab" id="finExpTabPurchases">Purchases</button>
+          <button class="exp-tab" id="finExpTabOverhead">Overhead</button>
+        </div>
+      </div>
+      <div class="exp-body">
+        <div id="finExpOverview">
+          <div class="exp-kpi-row">
+            <div class="exp-kpi-card exp-kpi-blue"><div class="exp-kpi-icon"><i class="ri-money-dollar-circle-line"></i></div><div><div class="exp-kpi-val" id="finExpGrand">—</div><div class="exp-kpi-lbl">Grand Total</div></div></div>
+            <div class="exp-kpi-card exp-kpi-teal"><div class="exp-kpi-icon"><i class="ri-bank-card-line"></i></div><div><div class="exp-kpi-val" id="finExpExpenses">—</div><div class="exp-kpi-lbl">Company Expenses</div></div></div>
+            <div class="exp-kpi-card exp-kpi-cyan"><div class="exp-kpi-icon"><i class="ri-shopping-cart-line"></i></div><div><div class="exp-kpi-val" id="finExpPurchases">—</div><div class="exp-kpi-lbl">Company Purchase</div></div></div>
+            <div class="exp-kpi-card exp-kpi-indigo"><div class="exp-kpi-icon"><i class="ri-building-line"></i></div><div><div class="exp-kpi-val" id="finExpOverhead">—</div><div class="exp-kpi-lbl">Overhead Expenses</div></div></div>
+          </div>
+          <div class="exp-charts-row">
+            <div class="exp-chart-card">
+              <div class="inc-chart-title">Expenses per Month</div>
+              <div class="fin-chart-canvas-wrap">
+                <canvas id="finExpBarChart"></canvas>
+              </div>
+            </div>
+            <div class="exp-chart-card">
+              <div class="inc-chart-title">Expenses Distribution</div>
+              <div class="fin-chart-canvas-wrap">
+                <canvas id="finExpPieChart"></canvas>
+              </div>
+            </div>
+          </div>
+          <div class="inc-tbl-wrap" style="margin-top:20px;">
+            <div class="inc-tbl-banner">RECENT FINANCIAL RECORDS</div>
+            <table class="inc-tbl">
+              <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody id="finExpRecentBody"><tr><td colspan="5" class="inc-empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="finExpSub" style="display:none;">
+          <div class="exp-kpi-row" id="finExpSubKpis"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 12px;flex-wrap:wrap;gap:10px;">
+            <h3 id="finExpSubTitle" style="font-size:20px;font-weight:800;color:#1e3a6e;"></h3>
+            <button class="inc-btn-add" id="finExpAddBtn"><i class="ri-add-line"></i> Add</button>
+          </div>
+          <div class="inc-tbl-wrap">
+            <table class="inc-tbl">
+              <thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="finExpSubBody"><tr><td colspan="6" class="inc-empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  let rows = [];
+  let active = "overview";
+  const render = () => {
+    const q = (document.getElementById("finExpSearch")?.value || "").trim().toLowerCase();
+    const filtered = !q ? rows : rows.filter(row => JSON.stringify(row).toLowerCase().includes(q));
+    const totals = filtered.reduce((acc, row) => {
+      const amt = Number(row.amount || 0);
+      const group = String(row.expense_group || "expenses").toLowerCase();
+      acc.grand += amt;
+      acc[group] = (acc[group] || 0) + amt;
+      return acc;
+    }, { grand: 0, expenses: 0, purchases: 0, overhead: 0 });
+    document.getElementById("finExpGrand").textContent = formatFinanceCurrency(totals.grand);
+    document.getElementById("finExpExpenses").textContent = formatFinanceCurrency(totals.expenses);
+    document.getElementById("finExpPurchases").textContent = formatFinanceCurrency(totals.purchases);
+    document.getElementById("finExpOverhead").textContent = formatFinanceCurrency(totals.overhead);
+    renderFinanceExpenseCharts(filtered);
+    document.getElementById("finExpRecentBody").innerHTML = filtered.length ? filtered.slice(0, 6).map(r => `
+      <tr><td>${formatFinanceDate(r.date)}</td><td>${escHtml(r.category || r.expense_group || "—")}</td><td>${escHtml(r.description || "—")}</td><td style="font-weight:700;color:#dc2626;">${formatFinanceCurrency(r.amount)}</td><td>${financeStatusBadge(r.status)}</td></tr>
+    `).join("") : `<tr><td colspan="5" class="inc-empty">No records found.</td></tr>`;
+    if (active === "overview") return;
+    const subset = filtered.filter(r => String(r.expense_group || "expenses").toLowerCase() === active);
+    document.getElementById("finExpSubTitle").textContent = active === "expenses" ? "Company Expenses" : active === "purchases" ? "Company Purchases" : "Overhead Expenses";
+    document.getElementById("finExpSubKpis").innerHTML = `
+      <div class="exp-kpi-card exp-kpi-blue"><div class="exp-kpi-icon"><i class="ri-money-dollar-circle-line"></i></div><div><div class="exp-kpi-val">${formatFinanceCurrency(subset.reduce((s,r)=>s+Number(r.amount||0),0))}</div><div class="exp-kpi-lbl">Total</div></div></div>
+      <div class="exp-kpi-card exp-kpi-teal"><div class="exp-kpi-icon"><i class="ri-checkbox-circle-line"></i></div><div><div class="exp-kpi-val">${subset.filter(r=>['paid','completed','approved'].includes(String(r.status).toLowerCase())).length}</div><div class="exp-kpi-lbl">Paid</div></div></div>
+      <div class="exp-kpi-card exp-kpi-cyan"><div class="exp-kpi-icon"><i class="ri-close-circle-line"></i></div><div><div class="exp-kpi-val">${subset.filter(r=>String(r.status).toLowerCase()==='unpaid').length}</div><div class="exp-kpi-lbl">Unpaid</div></div></div>
+      <div class="exp-kpi-card exp-kpi-indigo"><div class="exp-kpi-icon"><i class="ri-time-line"></i></div><div><div class="exp-kpi-val">${subset.filter(r=>String(r.status).toLowerCase()==='pending').length}</div><div class="exp-kpi-lbl">Pending</div></div></div>
+    `;
+    document.getElementById("finExpSubBody").innerHTML = subset.length ? subset.map(r => `
+      <tr>
+        <td>${formatFinanceDate(r.date)}</td>
+        <td>${escHtml(r.category || "—")}</td>
+        <td>${escHtml(r.description || "—")}</td>
+        <td style="font-weight:700;color:#dc2626;">${formatFinanceCurrency(r.amount)}</td>
+        <td>${financeStatusBadge(r.status)}</td>
+        <td><div class="inc-row-btns"><button class="inc-row-btn inc-btn-edit fin-exp-edit" data-id="${r.id}"><i class="ri-pencil-line"></i> Edit</button><button class="inc-row-btn inc-btn-del fin-exp-del" data-id="${r.id}"><i class="ri-delete-bin-line"></i> Delete</button></div></td>
+      </tr>
+    `).join("") : `<tr><td colspan="6" class="inc-empty">No records found.</td></tr>`;
+    document.querySelectorAll(".fin-exp-edit").forEach(btn => btn.onclick = () => {
+      const row = rows.find(r => String(r.id) === btn.dataset.id);
+      openFinanceRecordModal("company_expenses", row, () => loadFinanceCompanyExpenses());
+    });
+    document.querySelectorAll(".fin-exp-del").forEach(btn => btn.onclick = async () => {
+      if (!confirm("Delete this expense record?")) return;
+      try {
+        await financeRequest(`/api/finance/records/company_expenses/${btn.dataset.id}`, { method: "DELETE" });
+        showToast("Expense deleted.", "success");
+        loadFinanceCompanyExpenses();
+      } catch (err) { showToast(err.message || "Delete failed.", "error"); }
+    });
+  };
+  const switchTab = (tab) => {
+    active = tab;
+    ["finExpTabOv","finExpTabExpenses","finExpTabPurchases","finExpTabOverhead"].forEach(id => document.getElementById(id)?.classList.remove("active"));
+    document.getElementById(tab === "overview" ? "finExpTabOv" : tab === "expenses" ? "finExpTabExpenses" : tab === "purchases" ? "finExpTabPurchases" : "finExpTabOverhead").classList.add("active");
+    document.getElementById("finExpOverview").style.display = tab === "overview" ? "" : "none";
+    document.getElementById("finExpSub").style.display = tab === "overview" ? "none" : "";
+    render();
+  };
+  document.getElementById("finExpSearch").addEventListener("input", render);
+  document.getElementById("finExpTabOv").onclick = () => switchTab("overview");
+  document.getElementById("finExpTabExpenses").onclick = () => switchTab("expenses");
+  document.getElementById("finExpTabPurchases").onclick = () => switchTab("purchases");
+  document.getElementById("finExpTabOverhead").onclick = () => switchTab("overhead");
+  document.getElementById("finExpAddBtn").onclick = () => openFinanceRecordModal("company_expenses", { expense_group: active }, () => loadFinanceCompanyExpenses());
+  try {
+    rows = await financeRequest("/api/finance/records/company_expenses");
+    render();
+  } catch (err) {
+    document.getElementById("finExpRecentBody").innerHTML = `<tr><td colspan="5" class="inc-empty">${escHtml(err.message || "Failed to load expenses.")}</td></tr>`;
+  }
+}
+
+async function loadFinanceEmployeeCenter() {
+  mainContent.innerHTML = `
+    <div style="background:#f0f4fa;min-height:100%;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:28px 32px 16px;flex-wrap:wrap;gap:12px;">
+        <h2 style="font-size:26px;font-weight:800;color:#1e3a6e;margin:0;">Employee</h2>
+        <div class="search-box" style="max-width:400px;flex:1;"><i class="ri-search-line"></i><input type="text" id="empSearch" placeholder="Search here" style="width:100%;"></div>
+      </div>
+      <div style="padding:0 32px 16px;">
+        <div style="display:inline-flex;background:white;border-radius:12px;padding:5px;gap:3px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+          <button class="exp-tab active" id="empTabRmb">Reimburse</button>
+          <button class="exp-tab" id="empTabBdg">Request of Budget</button>
+          <button class="exp-tab" id="empTabSal">Salary Advancement</button>
+        </div>
+      </div>
+      <div id="empActionRow" style="display:none;justify-content:flex-end;gap:10px;padding:0 32px 12px;">
+        <button id="empAddSalaryBtn" style="display:inline-flex;align-items:center;gap:7px;padding:10px 22px;border-radius:8px;border:none;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 4px 14px rgba(30,58,110,.35);">
+          <i class="ri-add-line"></i> Add
+        </button>
+      </div>
+      <div style="padding:0 32px 32px;">
+        <div style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+          <div id="empBanner" style="background:linear-gradient(135deg,#1a3460,#1e3a6e,#2a52a0);color:white;text-align:center;font-size:16px;font-weight:700;padding:18px 24px;letter-spacing:1px;">Employee Reimburse</div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;">
+              <thead><tr id="empThead" style="background:linear-gradient(90deg,rgba(184,212,236,.6),rgba(184,212,236,.3));"></tr></thead>
+              <tbody id="empTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  let activeTab = "reimburse";
+  let reimburse = [];
+  let budget = [];
+  let salary = [];
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-PH", { month: "2-digit", day: "2-digit", year: "numeric" }) : "—";
+  const render = () => {
+    const q = (document.getElementById("empSearch")?.value || "").trim().toLowerCase();
+    const bannerMap = { reimburse: "Employee Reimburse", budget: "Requests", salary: "Salary Advances" };
+    const headMap = {
+      reimburse: ["Name","Roles","Date","Description","Amount","Status","Action","Comments"],
+      budget: ["Name","Roles","Date","Description","Amount","Status","Action","Comments"],
+      salary: ["Name","Amount","Balance","Date","Status","Actions"]
+    };
+    document.getElementById("empBanner").textContent = bannerMap[activeTab];
+    document.getElementById("empActionRow").style.display = activeTab === "salary" ? "flex" : "none";
+    document.getElementById("empThead").innerHTML = headMap[activeTab].map(h => `<th style="padding:14px 20px;text-align:center;font-size:13px;font-weight:700;color:#1e3a6e;">${h}</th>`).join("");
+    const source = activeTab === "reimburse" ? reimburse : activeTab === "budget" ? budget : salary;
+    const rows = !q ? source : source.filter(row => JSON.stringify(row).toLowerCase().includes(q));
+    const tbody = document.getElementById("empTbody");
+    if (activeTab === "salary") {
+      tbody.innerHTML = rows.length ? rows.map(r => `
+        <tr style="border-bottom:1px solid #eef2f8;transition:background .15s;">
+          <td style="padding:16px 20px;text-align:center;">${escHtml(r.employee_name)}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">${formatFinanceCurrency(r.advance_amount)}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">${formatFinanceCurrency(r.balance)}</td>
+          <td style="padding:16px 20px;text-align:center;">${fmtDate(r.advance_date)}</td>
+          <td style="padding:16px 20px;text-align:center;">${financeStatusBadge(r.status)}</td>
+          <td style="padding:16px 20px;text-align:center;"><div style="display:flex;gap:8px;justify-content:center;align-items:center;"><button class="fin-sal-edit" data-id="${r.id}" style="width:34px;height:34px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;"><i class="ri-pencil-line"></i></button><button class="fin-sal-del" data-id="${r.id}" style="width:34px;height:34px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;"><i class="ri-delete-bin-line"></i></button></div></td>
+        </tr>
+      `).join("") : `<tr><td colspan="6" style="text-align:center;padding:40px;color:#9ca3af;">No records found.</td></tr>`;
+      document.querySelectorAll(".fin-sal-edit").forEach(btn => btn.onclick = async () => {
+        try {
+          const row = await financeRequest(`/api/employee/salary/${btn.dataset.id}`);
+          openFinanceSalaryModal(row, () => loadFinanceEmployeeCenter());
+        } catch (err) { showToast(err.message || "Failed to load salary record.", "error"); }
+      });
+      document.querySelectorAll(".fin-sal-del").forEach(btn => btn.onclick = async () => {
+        if (!confirm("Delete this salary advancement record?")) return;
+        try {
+          await financeRequest(`/api/employee/salary/${btn.dataset.id}`, { method: "DELETE" });
+          showToast("Record deleted.", "success");
+          loadFinanceEmployeeCenter();
+        } catch (err) { showToast(err.message || "Delete failed.", "error"); }
+      });
+      return;
+    }
+    tbody.innerHTML = rows.length ? rows.map(r => `
+      <tr style="border-bottom:1px solid #eef2f8;transition:background .15s;">
+        <td style="padding:16px 20px;text-align:center;">${escHtml(r.employee_name)}</td>
+        <td style="padding:16px 20px;text-align:center;"><span style="background:#e8f0fe;color:#1e3a6e;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;">${escHtml(r.role || "Staff")}</span></td>
+        <td style="padding:16px 20px;text-align:center;">${fmtDate(r.request_date)}</td>
+        <td style="padding:16px 20px;text-align:center;">${escHtml(r.description)}</td>
+        <td style="padding:16px 20px;text-align:center;font-weight:700;">${formatFinanceCurrency(r.amount)}</td>
+        <td style="padding:16px 20px;text-align:center;">${financeStatusBadge(r.status)}</td>
+        <td style="padding:16px 20px;text-align:center;"><button class="fin-emp-action" data-type="${activeTab}" data-id="${r.id}" style="display:inline-flex;align-items:center;gap:5px;padding:7px 16px;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;border:none;border-radius:20px;font-size:12.5px;font-weight:700;cursor:pointer;"><i class="ri-check-line"></i> Action</button></td>
+        <td style="padding:16px 20px;text-align:center;color:#374151;font-size:13px;max-width:180px;word-break:break-word;">${escHtml(r.comment || "—")}</td>
+      </tr>
+    `).join("") : `<tr><td colspan="8" style="text-align:center;padding:40px;color:#9ca3af;">No records found.</td></tr>`;
+    document.querySelectorAll(".fin-emp-action").forEach(btn => btn.onclick = () => openFinanceEmployeeActionModal(btn.dataset.type, btn.dataset.id, () => loadFinanceEmployeeCenter()));
+  };
+  const switchTab = (tab) => {
+    activeTab = tab;
+    ["empTabRmb","empTabBdg","empTabSal"].forEach(id => document.getElementById(id)?.classList.remove("active"));
+    document.getElementById(tab === "reimburse" ? "empTabRmb" : tab === "budget" ? "empTabBdg" : "empTabSal").classList.add("active");
+    render();
+  };
+  document.getElementById("empSearch").addEventListener("input", render);
+  document.getElementById("empTabRmb").onclick = () => switchTab("reimburse");
+  document.getElementById("empTabBdg").onclick = () => switchTab("budget");
+  document.getElementById("empTabSal").onclick = () => switchTab("salary");
+  document.getElementById("empAddSalaryBtn").onclick = () => openFinanceSalaryModal(null, () => loadFinanceEmployeeCenter());
+  try {
+    [reimburse, budget, salary] = await Promise.all([
+      financeRequest("/api/employee/reimburse"),
+      financeRequest("/api/employee/budget"),
+      financeRequest("/api/employee/salary")
+    ]);
+  } catch (err) {
+    showToast(err.message || "Failed to load employee data.", "error");
+  }
+  render();
+}
+
+function openFinanceEmployeeActionModal(type, id, onDone) {
+  const modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.innerHTML = `
+    <div class="fin-modal" style="max-width:520px;">
+      <div class="fin-modal-head"><div><h3>Employee Request Action</h3><p>Approve or decline this request and leave a comment if needed.</p></div><button class="modal-close-btn" id="empReqClose"><i class="ri-close-line"></i></button></div>
+      <div class="fin-modal-body"><label class="fin-field fin-field-span"><span>Comment</span><textarea id="empReqComment" placeholder="Optional note"></textarea></label></div>
+      <div class="fin-modal-actions"><button class="tool-btn" id="empReqDecline">Decline</button><button class="tool-btn apply-btn" id="empReqApprove"><i class="ri-save-line"></i> Approve</button></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  document.getElementById("empReqClose").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  const submit = async (status) => {
+    try {
+      await financeRequest(`/api/employee/${type}/${id}/action`, {
+        method: "PATCH",
+        body: JSON.stringify({ status, comment: document.getElementById("empReqComment").value.trim() || null })
+      });
+      close();
+      showToast(`Marked as ${status}.`, "success");
+      onDone?.();
+    } catch (err) { showToast(err.message || "Action failed.", "error"); }
+  };
+  document.getElementById("empReqDecline").onclick = () => submit("Decline");
+  document.getElementById("empReqApprove").onclick = () => submit("Approved");
+}
+
+function openFinanceSalaryModal(existing, onDone) {
+  const modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.innerHTML = `
+    <div class="fin-modal">
+      <div class="fin-modal-head"><div><h3>${existing ? "Edit" : "Add"} Salary Advancement</h3><p>Maintain salary advance requests in the same workflow as the original finance plan.</p></div><button class="modal-close-btn" id="finSalaryClose"><i class="ri-close-line"></i></button></div>
+      <div class="fin-modal-body">
+        <div class="fin-form-grid">
+          <label class="fin-field"><span>Name *</span><input id="finSalaryName" value="${escHtml(existing?.employee_name || "")}"></label>
+          <label class="fin-field"><span>Amount *</span><input id="finSalaryAmount" type="number" step="0.01" min="0" value="${escHtml(existing?.advance_amount ?? "")}"></label>
+          <label class="fin-field"><span>Balance *</span><input id="finSalaryBalance" type="number" step="0.01" min="0" value="${escHtml(existing?.balance ?? "")}"></label>
+          <label class="fin-field"><span>Date *</span><input id="finSalaryDate" type="date" value="${escHtml(existing?.advance_date ? String(existing.advance_date).slice(0,10) : "")}"></label>
+          <label class="fin-field"><span>Status *</span><select id="finSalaryStatus"><option value="Pending">Pending</option><option value="Approved">Approved</option><option value="Decline">Decline</option></select></label>
+        </div>
+      </div>
+      <div class="fin-modal-actions"><button class="tool-btn" id="finSalaryCancel">Cancel</button><button class="tool-btn apply-btn" id="finSalarySave"><i class="ri-save-line"></i> Save</button></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById("finSalaryStatus").value = existing?.status || "Pending";
+  const close = () => modal.remove();
+  document.getElementById("finSalaryClose").onclick = close;
+  document.getElementById("finSalaryCancel").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  document.getElementById("finSalarySave").onclick = async () => {
+    try {
+      const payload = {
+        employee_name: document.getElementById("finSalaryName").value.trim(),
+        advance_amount: Number(document.getElementById("finSalaryAmount").value || 0),
+        balance: Number(document.getElementById("finSalaryBalance").value || 0),
+        advance_date: document.getElementById("finSalaryDate").value,
+        status: document.getElementById("finSalaryStatus").value
+      };
+      if (!payload.employee_name || !payload.advance_date) throw new Error("Name and date are required.");
+      await financeRequest(existing ? `/api/employee/salary/${existing.id}` : "/api/employee/salary", {
+        method: existing ? "PUT" : "POST",
+        body: JSON.stringify(payload)
+      });
+      close();
+      showToast(existing ? "Salary advancement updated." : "Salary advancement added.", "success");
+      onDone?.();
+    } catch (err) { showToast(err.message || "Save failed.", "error"); }
+  };
+}
+
+async function loadFinanceLedger(sectionKey) {
+  const meta = FINANCE_SECTION_META[sectionKey];
+  if (!meta) return;
+  mainContent.innerHTML = `
+    ${financeTopbar(meta.title, meta.subtitle)}
+    <div class="finance-hero finance-${meta.accent}">
+      <div>
+        <div class="finance-hero-title">${meta.title}</div>
+        <div class="finance-hero-sub">${meta.subtitle}</div>
+      </div>
+      <div class="finance-hero-actions">
+        <div class="search-box"><i class="ri-search-line"></i><input id="finSearchInput" type="text" placeholder="Search ${meta.title.toLowerCase()}..."></div>
+        ${financeCanManage() ? `<button class="rpt-add-btn" id="finAddRecordBtn"><i class="ri-add-line"></i> Add Record</button>` : ""}
+      </div>
+    </div>
+    <div class="table-container">
+      <div class="table-title"><i class="${meta.icon}"></i> ${meta.title} Records</div>
+      <table>
+        <thead>
+          <tr>
+            ${meta.columns.map(col => `<th>${col.label}</th>`).join("")}
+            ${financeCanManage() ? "<th style='text-align:center;'>Actions</th>" : ""}
+          </tr>
+        </thead>
+        <tbody id="finLedgerBody"><tr><td colspan="${meta.columns.length + (financeCanManage() ? 1 : 0)}" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  `;
+
+  let records = [];
+  const body = document.getElementById("finLedgerBody");
+  const render = () => {
+    const q = (document.getElementById("finSearchInput")?.value || "").trim().toLowerCase();
+    const filtered = !q ? records : records.filter(row => JSON.stringify(row).toLowerCase().includes(q));
+    body.innerHTML = filtered.length
+      ? filtered.map(row => `
+          <tr>
+            ${meta.columns.map(col => `<td>${col.format ? col.format(row[col.key]) : escHtml(row[col.key] ?? "—")}</td>`).join("")}
+            ${financeCanManage() ? `
+              <td style="text-align:center; white-space:nowrap;">
+                <button class="acc-upload-btn fin-edit-btn" data-id="${row.id}" title="Edit"><i class="ri-edit-line" style="color:#2f4b85;"></i></button>
+                <button class="acc-upload-btn fin-del-btn" data-id="${row.id}" title="Delete"><i class="ri-delete-bin-line" style="color:#ef4444;"></i></button>
+              </td>` : ""}
+          </tr>
+        `).join("")
+      : `<tr><td colspan="${meta.columns.length + (financeCanManage() ? 1 : 0)}" class="rpt-empty-cell"><i class="ri-inbox-line"></i> ${meta.empty}</td></tr>`;
+
+    body.querySelectorAll(".fin-edit-btn").forEach(btn => {
+      btn.addEventListener("click", () => openFinanceRecordModal(sectionKey, records.find(r => String(r.id) === btn.dataset.id), () => loadFinanceLedger(sectionKey)));
+    });
+    body.querySelectorAll(".fin-del-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this record?")) return;
+        try {
+          await financeRequest(`/api/finance/records/${sectionKey}/${btn.dataset.id}`, { method: "DELETE" });
+          showToast("Record deleted.", "success");
+          loadFinanceLedger(sectionKey);
+        } catch (err) {
+          showToast(err.message || "Delete failed.", "error");
+        }
+      });
+    });
+  };
+
+  document.getElementById("finSearchInput")?.addEventListener("input", render);
+  document.getElementById("finAddRecordBtn")?.addEventListener("click", () => openFinanceRecordModal(sectionKey, null, () => loadFinanceLedger(sectionKey)));
+
+  try {
+    records = await financeRequest(`/api/finance/records/${sectionKey}`);
+    render();
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="${meta.columns.length + (financeCanManage() ? 1 : 0)}" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> ${escHtml(err.message || "Failed to load records.")}</td></tr>`;
+  }
+}
+
+function openFinanceRecordModal(sectionKey, existing, onSave) {
+  const meta = FINANCE_SECTION_META[sectionKey];
+  if (!meta) return;
+  const modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.id = "finRecordModal";
+  modal.innerHTML = `
+    <div class="fin-modal">
+      <div class="fin-modal-head">
+        <div>
+          <h3>${existing ? "Edit" : "Add"} ${meta.title} Record</h3>
+          <p>${meta.subtitle}</p>
+        </div>
+        <button class="modal-close-btn" id="finModalClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="fin-modal-body">
+        <div class="fin-form-grid">
+          ${meta.fields.map(field => financeFieldHtml(field, existing?.[field.key])).join("")}
+        </div>
+      </div>
+      <div class="fin-modal-actions">
+        <button class="tool-btn" id="finModalCancel">Cancel</button>
+        <button class="tool-btn apply-btn" id="finModalSave"><i class="ri-save-line"></i> Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  document.getElementById("finModalClose").onclick = close;
+  document.getElementById("finModalCancel").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  document.getElementById("finModalSave").onclick = async () => {
+    try {
+      const payload = {};
+      for (const field of meta.fields) {
+        const el = document.getElementById(`finField_${field.key}`);
+        const raw = el ? el.value : "";
+        if (field.required && !String(raw || "").trim()) throw new Error(`${field.label} is required.`);
+        payload[field.key] = field.type === "number" ? (raw === "" ? null : Number(raw)) : (raw || null);
+      }
+      const url = existing ? `/api/finance/records/${sectionKey}/${existing.id}` : `/api/finance/records/${sectionKey}`;
+      await financeRequest(url, { method: existing ? "PUT" : "POST", body: JSON.stringify(payload) });
+      close();
+      showToast(existing ? "Record updated." : "Record created.", "success");
+      onSave?.();
+    } catch (err) {
+      showToast(err.message || "Save failed.", "error");
+    }
+  };
+}
+
+function financeFieldHtml(field, value) {
+  const safeValue = value == null ? "" : String(value);
+  if (field.type === "textarea") {
+    return `
+      <label class="fin-field fin-field-span">
+        <span>${field.label}${field.required ? " *" : ""}</span>
+        <textarea id="finField_${field.key}" placeholder="${field.placeholder || ""}">${escHtml(safeValue)}</textarea>
+      </label>
+    `;
+  }
+  if (field.type === "select") {
+    return `
+      <label class="fin-field">
+        <span>${field.label}${field.required ? " *" : ""}</span>
+        <select id="finField_${field.key}">
+          <option value="">Select ${field.label}</option>
+          ${field.options.map(opt => `<option value="${opt}" ${safeValue.toLowerCase() === opt.toLowerCase() ? "selected" : ""}>${opt}</option>`).join("")}
+        </select>
+      </label>
+    `;
+  }
+  return `
+    <label class="fin-field">
+      <span>${field.label}${field.required ? " *" : ""}</span>
+      <input
+        id="finField_${field.key}"
+        type="${field.type || "text"}"
+        value="${escHtml(safeValue)}"
+        placeholder="${field.placeholder || ""}"
+        ${field.step ? `step="${field.step}"` : ""}
+        ${field.min ? `min="${field.min}"` : ""}
+      >
+    </label>
+  `;
+}
+
+function loadFinanceEmployees() {
+  mainContent.innerHTML = `
+    ${financeTopbar("Employee", "Visible employee records for finance coordination and follow-up.")}
+    <div class="table-container">
+      <div class="table-title"><i class="ri-team-line"></i> Employees</div>
+      <table>
+        <thead><tr><th>ID No.</th><th>Name</th><th>Email</th><th>Role</th><th>Created</th></tr></thead>
+        <tbody id="finEmployeeBody"><tr><td colspan="5" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  `;
+  financeRequest("/api/finance/employees")
+    .then(rows => {
+      const body = document.getElementById("finEmployeeBody");
+      body.innerHTML = rows.length
+        ? rows.map(row => `
+            <tr>
+              <td>${escHtml(row.id_no || "—")}</td>
+              <td>${escHtml(row.full_name || "—")}</td>
+              <td>${escHtml(row.email || "—")}</td>
+              <td><span class="stg-role-badge">${escHtml(row.role || "—")}</span></td>
+              <td>${formatFinanceDate(row.created_at)}</td>
+            </tr>
+          `).join("")
+        : `<tr><td colspan="5" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No employees found.</td></tr>`;
+    })
+    .catch(err => showToast(err.message || "Failed to load employees.", "error"));
+}
+
+function loadFinanceReport() {
+  mainContent.innerHTML = `
+    ${financeTopbar("Financial Report", "Monthly rollup of income, expenses, collections, and balance trends.")}
+    <div class="cards" id="finReportCards">
+      <div class="card"><div class="card-top"><div class="icon-box green"><i class="ri-line-chart-line"></i></div><div class="stat"><h1 id="finRptIncome">—</h1><span class="trend up">total income</span></div></div><p>Income</p></div>
+      <div class="card"><div class="card-top"><div class="icon-box red"><i class="ri-shopping-cart-line"></i></div><div class="stat"><h1 id="finRptExpenses">—</h1><span class="trend down">combined spend</span></div></div><p>Expenses</p></div>
+      <div class="card"><div class="card-top"><div class="icon-box blue"><i class="ri-hand-coin-line"></i></div><div class="stat"><h1 id="finRptCollected">—</h1><span class="trend up">collected</span></div></div><p>Collections</p></div>
+      <div class="card"><div class="card-top"><div class="icon-box orange"><i class="ri-funds-box-line"></i></div><div class="stat"><h1 id="finRptOutstanding">—</h1><span class="trend down">remaining</span></div></div><p>Outstanding</p></div>
+    </div>
+    <div class="table-container">
+      <div class="table-title"><i class="ri-calendar-line"></i> Monthly Summary</div>
+      <table>
+        <thead><tr><th>Month</th><th>Income</th><th>Company Expenses</th><th>Project Expenses</th><th>Collections</th><th>Net</th></tr></thead>
+        <tbody id="finReportBody"><tr><td colspan="6" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading…</td></tr></tbody>
+      </table>
+    </div>
+  `;
+  financeRequest("/api/finance/report")
+    .then(data => {
+      const totals = data.totals || {};
+      const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = formatFinanceCurrency(val); };
+      setVal("finRptIncome", totals.total_income);
+      setVal("finRptExpenses", Number(totals.company_expenses || 0) + Number(totals.project_expenses || 0));
+      setVal("finRptCollected", totals.total_collections);
+      setVal("finRptOutstanding", totals.outstanding_collections);
+      const body = document.getElementById("finReportBody");
+      body.innerHTML = (data.monthly || []).length
+        ? data.monthly.map(row => `
+            <tr>
+              <td>${escHtml(row.month_label)}</td>
+              <td>${formatFinanceCurrency(row.income)}</td>
+              <td>${formatFinanceCurrency(row.company_expenses)}</td>
+              <td>${formatFinanceCurrency(row.project_expenses)}</td>
+              <td>${formatFinanceCurrency(row.collections)}</td>
+              <td>${formatFinanceCurrency(row.net)}</td>
+            </tr>
+          `).join("")
+        : `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No report data yet.</td></tr>`;
+    })
+    .catch(err => showToast(err.message || "Failed to load report.", "error"));
+}
+
 /* ================= DASHBOARD ================= */
 
 // Dashboard state — declared before loadDashboard so they exist on first call
@@ -2559,14 +3995,25 @@ let _chartTickets    = null;
 function loadDashboard() {
   mainContent.innerHTML = `
     <div class="topbar">
-      <div class="left"><h2>Welcome back, ${user.full_name || user.email}</h2></div>
+      <div class="left">
+        <div class="dash-greeting">
+          <span class="dash-greeting-hi">Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'},</span>
+          <h2>${escHtml(user.full_name?.split(' ')[0] || 'there')} 👋</h2>
+        </div>
+      </div>
       <div class="right">
         <div class="search-box">
           <i class="ri-search-line"></i>
-          <input type="text" placeholder="Search here">
+          <input type="text" placeholder="Search here…">
         </div>
-        <button id="darkToggle" class="icon-btn" title="Toggle Dark Mode"><i class="ri-moon-line"></i></button>
         <button id="dashRefreshBtn" class="icon-btn" title="Refresh dashboard"><i class="ri-refresh-line"></i></button>
+        <div class="dash-user-chip">
+          <div class="dash-user-avatar">${user.full_name ? user.full_name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() : 'U'}</div>
+          <div class="dash-user-info">
+            <div class="dash-user-name">${escHtml(user.full_name || '—')}</div>
+            <div class="dash-user-role">${escHtml(user.role || '—')}</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2668,21 +4115,6 @@ function loadDashboard() {
     </div>
   `;
 
-  // Dark toggle
-  // Sync icon with current theme on load
-  (() => {
-    const icon = document.querySelector('#darkToggle i');
-    if (icon) icon.className = document.body.classList.contains('dark') ? 'ri-sun-line' : 'ri-moon-line';
-  })();
-
-  document.getElementById('darkToggle').addEventListener('click', () => {
-    document.body.classList.toggle('dark');
-    const icon = document.querySelector('#darkToggle i');
-    if (icon) icon.className = document.body.classList.contains('dark') ? 'ri-sun-line' : 'ri-moon-line';
-    // Persist theme
-    localStorage.setItem('theme', document.body.classList.contains('dark') ? 'dark' : 'light');
-  });
-
   // Manual refresh button
   document.getElementById('dashRefreshBtn').addEventListener('click', () => {
     document.getElementById('dashRefreshBtn').querySelector('i').style.animation = 'spin 0.5s linear';
@@ -2694,11 +4126,7 @@ function loadDashboard() {
   });
 
   // Navigate to tickets on "View all"
-  document.getElementById('dashViewAllTickets').addEventListener('click', () => {
-    document.querySelectorAll('.menu li').forEach(li => li.classList.remove('active'));
-    document.querySelector('.menu li:nth-child(4)')?.classList.add('active');
-    loadTickets();
-  });
+  document.getElementById('dashViewAllTickets').addEventListener('click', () => openPage('ticket'));
 
   // Reset chart instances so they are recreated on each visit
   if (_chartProbStatus) { try { _chartProbStatus.destroy(); } catch(e) {} _chartProbStatus = null; }
@@ -5650,17 +7078,16 @@ function runCounters() {
 
 // Apply saved display settings on startup
 (function() {
-  const brightness = localStorage.getItem('brightness');
   const fontSize   = localStorage.getItem('fontSize');
   const theme      = localStorage.getItem('theme');
-  const nightLight = localStorage.getItem('nightLight') === 'true';
-  if (brightness) document.body.style.opacity = (parseInt(brightness) / 100).toFixed(2);
-  if (fontSize)   document.documentElement.style.fontSize = fontSize + 'px';
   if (theme === 'dark') document.body.classList.add('dark');
-  if (nightLight) document.body.style.filter = 'sepia(0.3) brightness(0.96)';
+  if (theme === 'light') document.body.classList.remove('dark');
+  applyDisplayVisualSettings();
+  applyTypographySettings(fontSize || '14');
 })();
 
-loadDashboard();
+renderSidebarMenu();
+openPage(getHomePageKey());
 
 /* ================= SETTINGS ================= */
 
@@ -6165,37 +7592,41 @@ function loadSettings() {
   // ── Display: Night Light ───────────────────────────────────────────────────
   const nightLight = localStorage.getItem('nightLight') === 'true';
   document.getElementById('stgNightLight').checked = nightLight;
-  if (nightLight) document.body.style.filter = 'sepia(0.25) brightness(0.97)';
+  applyDisplayVisualSettings();
 
   document.getElementById('stgNightLight').addEventListener('change', function() {
-    document.body.style.filter = this.checked ? 'sepia(0.25) brightness(0.97)' : '';
     localStorage.setItem('nightLight', this.checked);
+    applyDisplayVisualSettings();
   });
 
   // ── Display: Brightness ────────────────────────────────────────────────────
   const savedBright = localStorage.getItem('brightness') || '100';
   document.getElementById('stgBrightness').value = savedBright;
   document.getElementById('stgBrightnessVal').textContent = savedBright + '%';
-  document.body.style.opacity = (parseInt(savedBright) / 100).toFixed(2);
+  applyDisplayVisualSettings();
 
   document.getElementById('stgBrightness').addEventListener('input', function() {
-    document.body.style.opacity = (parseInt(this.value) / 100).toFixed(2);
     document.getElementById('stgBrightnessVal').textContent = this.value + '%';
+    localStorage.setItem('brightness', this.value);
+    applyDisplayVisualSettings();
   });
 
   // ── Display: Font size ─────────────────────────────────────────────────────
   const savedFont = localStorage.getItem('fontSize') || '14';
   document.getElementById('stgFontSize').value = savedFont;
   document.getElementById('stgFontVal').textContent = savedFont + 'px';
+  applyTypographySettings(savedFont);
 
   document.getElementById('stgFontSize').addEventListener('input', function () {
     document.getElementById('stgFontVal').textContent = this.value + 'px';
+    localStorage.setItem('fontSize', this.value);
+    applyTypographySettings(this.value);
   });
 
   document.getElementById('stgFontApply').onclick = () => {
     const size = document.getElementById('stgFontSize').value;
-    document.documentElement.style.fontSize = size + 'px';
     localStorage.setItem('fontSize', size);
+    applyTypographySettings(size);
     showToast('Font size applied.', 'success');
   };
 
@@ -6471,14 +7902,33 @@ function openLeaveModal(user) {
 }
 
 function _stgApplyDisplaySettings() {
-  const brightness = localStorage.getItem('brightness');
   const fontSize   = localStorage.getItem('fontSize');
   const theme      = localStorage.getItem('theme');
-  const nightLight = localStorage.getItem('nightLight') === 'true';
-  if (brightness) document.body.style.opacity = (parseInt(brightness) / 100).toFixed(2);
-  if (fontSize)   document.documentElement.style.fontSize = fontSize + 'px';
   if (theme === 'dark') document.body.classList.add('dark');
-  if (nightLight) document.body.style.filter = 'sepia(0.3) brightness(0.96)';
+  if (theme === 'light') document.body.classList.remove('dark');
+  applyDisplayVisualSettings();
+  applyTypographySettings(fontSize || '14');
+}
+
+function applyDisplayVisualSettings() {
+  const brightnessRaw = parseInt(localStorage.getItem('brightness') || '100', 10);
+  const brightness = Number.isFinite(brightnessRaw) ? Math.min(100, Math.max(20, brightnessRaw)) : 100;
+  const nightLight = localStorage.getItem('nightLight') === 'true';
+  const filterParts = [`brightness(${(brightness / 100).toFixed(2)})`];
+
+  if (nightLight) filterParts.push('sepia(0.25)');
+
+  document.body.style.opacity = '';
+  document.body.style.filter = filterParts.join(' ');
+}
+
+function applyTypographySettings(sizeValue) {
+  const sizeRaw = parseInt(sizeValue || localStorage.getItem('fontSize') || '14', 10);
+  const size = Number.isFinite(sizeRaw) ? Math.min(20, Math.max(12, sizeRaw)) : 14;
+  const zoom = (size / 14).toFixed(2);
+
+  document.documentElement.style.fontSize = size + 'px';
+  document.body.style.zoom = zoom;
 }
 
 /* ================= ACCEPTANCE PAGE ================= */
@@ -6494,18 +7944,14 @@ function loadAcceptance() {
 
   mainContent.innerHTML = `
     <div class="acc-page" id="accPage">
-
-      <div class="acc-page-header">
-        <div class="acc-page-header-left">
-          <h2 class="acc-title"><i class="ri-checkbox-circle-line"></i> Acceptance</h2>
-          <p class="acc-subtitle">Track project site acceptance and upload evidence</p>
-        </div>
-        <div class="acc-page-header-right">
+      <div class="acc-topbar">
+        <h2 class="acc-title"><i class="ri-checkbox-circle-line"></i> Acceptance</h2>
+        <div class="acc-topbar-right">
           <div class="acc-search-box">
             <i class="ri-search-line"></i>
-            <input type="text" id="accSearch" placeholder="Search projects…">
+            <input type="text" id="accSearch" placeholder="Search here…">
           </div>
-          <button class="acc-primary-btn" id="accAddProjectBtn">
+          <button class="acc-btn acc-btn-primary" id="accAddProjectBtn">
             <i class="ri-add-line"></i> Add Project
           </button>
         </div>
@@ -6522,7 +7968,6 @@ function loadAcceptance() {
           <span>Loading projects…</span>
         </div>
       </div>
-
     </div>
   `;
 
@@ -6602,19 +8047,17 @@ function accProjectCardHTML(p) {
   const done    = parseInt(p.done_sites    || 0);
   const pending = parseInt(p.pending_sites || 0);
   const total   = parseInt(p.total_sites   || 0);
-  const tier    = pct >= 80 ? 'high' : pct >= 40 ? 'mid' : 'low';
   return `
-    <div class="acc-project-card ${tier}" data-project="${escHtml(p.project_name)}">
+    <div class="acc-project-card" data-project="${escHtml(p.project_name)}">
       <div class="acc-project-header">
-        <div class="acc-project-meta">
-          <div class="acc-project-icon"><i class="ri-folder-3-line"></i></div>
-          <div class="acc-project-info">
-            <div class="acc-project-name">${escHtml(p.project_name)}</div>
-            <div class="acc-project-chips">
-              <span class="acc-chip acc-chip-done"><i class="ri-checkbox-circle-fill"></i> ${done} Done</span>
-              <span class="acc-chip acc-chip-pending"><i class="ri-time-line"></i> ${pending} Pending</span>
-              <span class="acc-chip acc-chip-total"><i class="ri-stack-line"></i> ${total} Total</span>
-            </div>
+        <div class="acc-project-info">
+          <div class="acc-project-name">${escHtml(p.project_name)}</div>
+          <div class="acc-project-counts">
+            <span class="acc-count-done"><i class="ri-checkbox-circle-fill"></i> ${done} Done</span>
+            <span class="acc-count-sep">·</span>
+            <span class="acc-count-pending"><i class="ri-time-line"></i> ${pending} Pending</span>
+            <span class="acc-count-sep">·</span>
+            <span>${total} Total</span>
           </div>
         </div>
         <div class="acc-project-right">
@@ -6623,7 +8066,7 @@ function accProjectCardHTML(p) {
         </div>
       </div>
       <div class="acc-project-body">
-        <div class="acc-loading">
+        <div class="acc-loading" id="accSiteLoader-${CSS.escape(p.project_name)}">
           <i class="ri-loader-4-line spin"></i><span>Loading sites…</span>
         </div>
       </div>
@@ -6685,12 +8128,12 @@ function accRenderSitesTable(projectName, card, sites) {
   body.innerHTML = `
     <div class="acc-table-toolbar">
       <div class="acc-filter-row">
-        <button class="acc-filter-chip active" data-filter="all">All <span class="acc-chip-count">${sites.length}</span></button>
-        <button class="acc-filter-chip" data-filter="done"><i class="ri-checkbox-circle-fill"></i> Done <span class="acc-chip-count">${sites.filter(s=>(s.status||'').toLowerCase()==='done').length}</span></button>
-        <button class="acc-filter-chip" data-filter="pending"><i class="ri-time-line"></i> Pending <span class="acc-chip-count">${sites.filter(s=>(s.status||'').toLowerCase()!=='done').length}</span></button>
+        <button class="acc-filter-chip active" data-filter="all">All</button>
+        <button class="acc-filter-chip"        data-filter="done"><i class="ri-checkbox-circle-fill" style="color:#22c55e"></i> Done</button>
+        <button class="acc-filter-chip"        data-filter="pending"><i class="ri-time-line" style="color:#f59e0b"></i> Pending</button>
       </div>
       <div class="acc-table-actions">
-        ${isAdmin ? `<button class="acc-add-site-btn"><i class="ri-add-line"></i> Add Site</button>` : ''}
+        ${isAdmin ? `<button class="acc-btn acc-btn-primary acc-add-site-btn" style="font-size:12px;padding:7px 14px;border-radius:8px;"><i class="ri-add-line"></i> Add Site</button>` : ''}
       </div>
     </div>
     <div class="acc-sites-subtable">
@@ -6699,8 +8142,8 @@ function accRenderSitesTable(projectName, card, sites) {
           <tr>
             <th>Site Name</th>
             <th>Status</th>
-            <th>Uploaded By</th>
-            <th style="text-align:center;">Files</th>
+            <th>By</th>
+            <th style="text-align:center;">Upload</th>
             ${isAdmin ? '<th style="text-align:center;">Actions</th>' : ''}
           </tr>
         </thead>
@@ -6708,12 +8151,7 @@ function accRenderSitesTable(projectName, card, sites) {
           ${accSiteRows(sites, projectName, isAdmin)}
         </tbody>
       </table>
-      ${!sites.length ? `
-        <div class="acc-empty-state">
-          <div class="acc-empty-icon"><i class="ri-map-pin-add-line"></i></div>
-          <div class="acc-empty-title">No sites yet</div>
-          <div class="acc-empty-desc">Add your first site to start tracking acceptance progress.</div>
-        </div>` : ''}
+      ${!sites.length ? `<div class="acc-empty" style="padding:28px 16px;"><i class="ri-inbox-line"></i><span>No sites yet.</span></div>` : ''}
     </div>`;
 
   // Re-attach projectName after innerHTML wipe
@@ -6761,44 +8199,37 @@ function accSiteRows(sites, projectName, isAdmin) {
     const fileCount = parseInt(s.file_count  || 0);
     const imgCount  = parseInt(s.image_count || 0);
     const vidCount  = parseInt(s.video_count || 0);
+    const safeP     = escHtml(projectName);
     const safeName  = escHtml(s.site_name);
     return `
       <tr class="acc-site-row" data-status="${isDone ? 'done' : 'pending'}" data-id="${s.id}">
-        <td>
-          <div class="acc-site-name-cell">
-            <div class="acc-site-dot ${isDone ? 'done' : 'pending'}"></div>
-            <span class="acc-site-name">${safeName}</span>
-          </div>
-        </td>
+        <td class="acc-site-name">${safeName}</td>
         <td>
           <span class="acc-status-badge ${isDone ? 'done' : 'pending'}">
             ${isDone ? '<i class="ri-checkbox-circle-fill"></i> Done' : '<i class="ri-time-line"></i> Pending'}
           </span>
         </td>
-        <td class="acc-by-cell">${escHtml(s.uploader_name || '—')}</td>
+        <td style="color:#64748b;font-size:13px;">${escHtml(s.uploader_name || '—')}</td>
         <td class="acc-upload-cell">
-          <div class="acc-upload-group">
-            <button class="acc-file-btn acc-media-open-btn" title="Files" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="files">
-              <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-file-badge">${fileCount}</span>` : ''}
-            </button>
-            <button class="acc-file-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="images">
-              <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-file-badge">${imgCount}</span>` : ''}
-            </button>
-            <button class="acc-file-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="videos">
-              <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-file-badge">${vidCount}</span>` : ''}
-            </button>
-          </div>
+          <button class="acc-upload-btn acc-media-open-btn" title="Files"  data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="files">
+            <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-media-count">${fileCount}</span>` : ''}
+          </button>
+          <button class="acc-upload-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="images">
+            <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-media-count">${imgCount}</span>` : ''}
+          </button>
+          <button class="acc-upload-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="videos">
+            <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-media-count">${vidCount}</span>` : ''}
+          </button>
         </td>
         ${isAdmin ? `
-        <td class="acc-actions-cell">
-          <button class="acc-action-icon-btn acc-toggle-status-btn ${isDone ? 'warn' : 'success'}"
-            title="${isDone ? 'Mark Pending' : 'Mark Done'}"
-            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}">
-            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}"></i>
+        <td style="text-align:center;white-space:nowrap;">
+          <button class="acc-upload-btn acc-toggle-status-btn" title="${isDone ? 'Mark Pending' : 'Mark Done'}"
+            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}" data-project="${safeP}">
+            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}" style="color:${isDone ? '#f59e0b' : '#22c55e'}"></i>
           </button>
-          <button class="acc-action-icon-btn danger acc-delete-site-btn" title="Delete"
-            data-site-id="${s.id}">
-            <i class="ri-delete-bin-line"></i>
+          <button class="acc-upload-btn acc-delete-site-btn" title="Delete"
+            data-site-id="${s.id}" data-project="${safeP}">
+            <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
           </button>
         </td>` : ''}
       </tr>`;

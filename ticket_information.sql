@@ -11,4 +11,7 @@ CREATE TABLE ticket_information (
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE ticket_information
+ADD COLUMN IF NOT EXISTS file_path  TEXT;   -- path for uploaded file
+
 SELECT * FROM ticket_information;

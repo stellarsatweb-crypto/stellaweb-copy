@@ -103,6 +103,174 @@ pool.query(createTicketTable)
   .then(() => console.log('Ticket table ready ✅'))
   .catch(err => console.error('Ticket table creation error:', err));
 
+const financeTableStatements = [
+  `
+    CREATE TABLE IF NOT EXISTS finance_company_income (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'completed',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_company_expenses (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'completed',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_project_expenses (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      project_name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'completed',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_collections (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      client_name TEXT NOT NULL,
+      project_name TEXT,
+      due_date DATE NOT NULL,
+      amount_due NUMERIC(12,2) NOT NULL DEFAULT 0,
+      amount_collected NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `
+];
+
+(async () => {
+  try {
+    for (const sql of financeTableStatements) await pool.query(sql);
+    await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS lot TEXT`);
+    await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS source TEXT`);
+    await pool.query(`ALTER TABLE finance_company_expenses ADD COLUMN IF NOT EXISTS expense_group TEXT DEFAULT 'expenses'`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_reimburse_requests (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        role TEXT,
+        request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        description TEXT NOT NULL,
+        amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_budget_requests (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        role TEXT,
+        request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        description TEXT NOT NULL,
+        amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_salary_advances (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        advance_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+        advance_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('Finance tables ready âœ…');
+  } catch (err) {
+    console.error('Finance setup error:', err.message);
+  }
+})();
+
+const FINANCE_RESOURCES = {
+  company_income: {
+    table: 'finance_company_income',
+    fields: ['date', 'lot', 'source', 'description', 'category', 'amount', 'status', 'notes'],
+    required: ['date', 'source', 'description', 'amount', 'status']
+  },
+  company_expenses: {
+    table: 'finance_company_expenses',
+    fields: ['date', 'expense_group', 'description', 'category', 'amount', 'status', 'notes'],
+    required: ['date', 'expense_group', 'description', 'category', 'amount', 'status']
+  },
+  project_expenses: {
+    table: 'finance_project_expenses',
+    fields: ['date', 'project_name', 'description', 'amount', 'status', 'notes'],
+    required: ['date', 'project_name', 'description', 'amount', 'status']
+  },
+  collections: {
+    table: 'finance_collections',
+    fields: ['date', 'client_name', 'project_name', 'due_date', 'amount_due', 'amount_collected', 'status', 'notes'],
+    required: ['date', 'client_name', 'due_date', 'amount_due', 'amount_collected', 'status']
+  }
+};
+
+function financeRole(req) {
+  return String(req.headers['x-user-role'] || '').trim().toLowerCase();
+}
+
+function financeUserId(req) {
+  const id = Number(req.headers['x-user-id']);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function ensureFinanceAccess(req, res, next) {
+  const role = financeRole(req);
+  if (!['finance', 'admin', 'executive'].includes(role)) {
+    return res.status(403).json({ error: 'Finance access required' });
+  }
+  next();
+}
+
+function getFinanceResource(key) {
+  return FINANCE_RESOURCES[key] || null;
+}
+
+function sanitizeFinancePayload(resource, body = {}) {
+  const payload = {};
+  for (const field of resource.fields) {
+    const raw = body[field];
+    payload[field] = raw === undefined ? null : raw;
+  }
+  for (const field of resource.required) {
+    if (payload[field] === null || payload[field] === '') {
+      throw new Error(`${field} is required`);
+    }
+  }
+  return payload;
+}
+
 /* ================= AUTH ROUTE ================= */
 
 app.post('/api/auth', async (req, res) => {
@@ -144,6 +312,320 @@ app.post('/api/auth', async (req, res) => {
     console.error('API error:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
   }
+});
+
+/* ================= FINANCE ROUTES ================= */
+
+app.get('/api/finance/summary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const [income, companyExpenses, projectExpenses, collections, recentTx, recentCollections] = await Promise.all([
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM finance_company_income WHERE LOWER(status) <> 'cancelled'`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM finance_company_expenses WHERE LOWER(status) <> 'cancelled'`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM finance_project_expenses WHERE LOWER(status) <> 'cancelled'`),
+      pool.query(`
+        SELECT
+          COALESCE(SUM(amount_collected),0) AS collected,
+          COALESCE(SUM(GREATEST(amount_due - amount_collected, 0)),0) AS outstanding
+        FROM finance_collections
+        WHERE LOWER(status) <> 'cancelled'
+      `),
+      pool.query(`
+        SELECT * FROM (
+          SELECT id, date, description, category, amount, status, 'income' AS record_type FROM finance_company_income
+          UNION ALL
+          SELECT id, date, description, category, amount, status, 'company_expense' AS record_type FROM finance_company_expenses
+          UNION ALL
+          SELECT id, date, description, project_name AS category, amount, status, 'project_expense' AS record_type FROM finance_project_expenses
+        ) t
+        ORDER BY date DESC, id DESC
+        LIMIT 8
+      `),
+      pool.query(`
+        SELECT id, date, client_name, project_name, due_date, amount_due, amount_collected, status
+        FROM finance_collections
+        ORDER BY due_date ASC, id DESC
+        LIMIT 8
+      `)
+    ]);
+
+    const totalIncome = Number(income.rows[0]?.total || 0);
+    const companyTotal = Number(companyExpenses.rows[0]?.total || 0);
+    const projectTotal = Number(projectExpenses.rows[0]?.total || 0);
+    const collectionsTotal = Number(collections.rows[0]?.collected || 0);
+    const outstandingTotal = Number(collections.rows[0]?.outstanding || 0);
+
+    res.json({
+      total_income: totalIncome,
+      company_expenses: companyTotal,
+      project_expenses: projectTotal,
+      total_collections: collectionsTotal,
+      outstanding_collections: outstandingTotal,
+      net_cashflow: totalIncome - companyTotal - projectTotal + collectionsTotal,
+      recent_transactions: recentTx.rows,
+      collection_rows: recentCollections.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/report', ensureFinanceAccess, async (req, res) => {
+  try {
+    const totalsPromise = pool.query(`
+      SELECT
+        (SELECT COALESCE(SUM(amount),0) FROM finance_company_income WHERE LOWER(status) <> 'cancelled') AS total_income,
+        (SELECT COALESCE(SUM(amount),0) FROM finance_company_expenses WHERE LOWER(status) <> 'cancelled') AS company_expenses,
+        (SELECT COALESCE(SUM(amount),0) FROM finance_project_expenses WHERE LOWER(status) <> 'cancelled') AS project_expenses,
+        (SELECT COALESCE(SUM(amount_collected),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled') AS total_collections,
+        (SELECT COALESCE(SUM(GREATEST(amount_due - amount_collected, 0)),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled') AS outstanding_collections
+    `);
+
+    const monthlyPromise = pool.query(`
+      WITH monthly AS (
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'income' AS kind
+        FROM finance_company_income
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'company_expenses' AS kind
+        FROM finance_company_expenses
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'project_expenses' AS kind
+        FROM finance_project_expenses
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount_collected) AS amount, 'collections' AS kind
+        FROM finance_collections
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+      )
+      SELECT
+        month_bucket,
+        TO_CHAR(month_bucket, 'Mon YYYY') AS month_label,
+        COALESCE(SUM(CASE WHEN kind='income' THEN amount END),0) AS income,
+        COALESCE(SUM(CASE WHEN kind='company_expenses' THEN amount END),0) AS company_expenses,
+        COALESCE(SUM(CASE WHEN kind='project_expenses' THEN amount END),0) AS project_expenses,
+        COALESCE(SUM(CASE WHEN kind='collections' THEN amount END),0) AS collections
+      FROM monthly
+      GROUP BY month_bucket
+      ORDER BY month_bucket DESC
+      LIMIT 12
+    `);
+
+    const [totalsRes, monthlyRes] = await Promise.all([totalsPromise, monthlyPromise]);
+    const totals = totalsRes.rows[0] || {};
+    const monthly = monthlyRes.rows.map(row => ({
+      ...row,
+      income: Number(row.income || 0),
+      company_expenses: Number(row.company_expenses || 0),
+      project_expenses: Number(row.project_expenses || 0),
+      collections: Number(row.collections || 0),
+      net: Number(row.income || 0) - Number(row.company_expenses || 0) - Number(row.project_expenses || 0) + Number(row.collections || 0)
+    }));
+
+    res.json({
+      totals: {
+        total_income: Number(totals.total_income || 0),
+        company_expenses: Number(totals.company_expenses || 0),
+        project_expenses: Number(totals.project_expenses || 0),
+        total_collections: Number(totals.total_collections || 0),
+        outstanding_collections: Number(totals.outstanding_collections || 0)
+      },
+      monthly
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/employees', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, id_no, full_name, email, role, created_at
+      FROM users
+      ORDER BY full_name ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/records/:resource', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const result = await pool.query(`SELECT * FROM ${resource.table} ORDER BY date DESC, id DESC`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/finance/records/:resource', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const payload = sanitizeFinancePayload(resource, req.body || {});
+    const fields = [...resource.fields, 'created_by'];
+    const values = [...resource.fields.map(field => payload[field]), financeUserId(req)];
+    const placeholders = fields.map((_, idx) => `$${idx + 1}`).join(', ');
+    const result = await pool.query(
+      `INSERT INTO ${resource.table} (${fields.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+      values
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/finance/records/:resource/:id', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const payload = sanitizeFinancePayload(resource, req.body || {});
+    const setClause = [...resource.fields.map((field, idx) => `${field}=$${idx + 1}`), `updated_at=NOW()`].join(', ');
+    const values = [...resource.fields.map(field => payload[field]), req.params.id];
+    const result = await pool.query(
+      `UPDATE ${resource.table} SET ${setClause} WHERE id=$${resource.fields.length + 1} RETURNING *`,
+      values
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Record not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/finance/records/:resource/:id', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const result = await pool.query(`DELETE FROM ${resource.table} WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Record not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/employee/reimburse', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, role, request_date, description, amount, status, comment
+      FROM employee_reimburse_requests
+      WHERE employee_name ILIKE $1 OR role ILIKE $1 OR description ILIKE $1
+      ORDER BY request_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/budget', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, role, request_date, description, amount, status, comment
+      FROM employee_budget_requests
+      WHERE employee_name ILIKE $1 OR role ILIKE $1 OR description ILIKE $1
+      ORDER BY request_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/employee/:type/:id/action', ensureFinanceAccess, async (req, res) => {
+  const table = req.params.type === 'reimburse'
+    ? 'employee_reimburse_requests'
+    : req.params.type === 'budget'
+      ? 'employee_budget_requests'
+      : null;
+  if (!table) return res.status(404).json({ error: 'Employee request type not found' });
+  try {
+    const { status, comment } = req.body || {};
+    if (!status) return res.status(400).json({ error: 'status is required' });
+    const result = await pool.query(
+      `UPDATE ${table} SET status=$1, comment=$2 WHERE id=$3 RETURNING *`,
+      [status, comment || null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, advance_amount, balance, advance_date, status
+      FROM employee_salary_advances
+      WHERE employee_name ILIKE $1
+      ORDER BY advance_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM employee_salary_advances WHERE id=$1`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_name, advance_amount, balance, advance_date, status } = req.body || {};
+    if (!employee_name?.trim()) return res.status(400).json({ error: 'employee_name is required' });
+    const result = await pool.query(`
+      INSERT INTO employee_salary_advances (employee_name, advance_amount, balance, advance_date, status)
+      VALUES ($1,$2,$3,$4,$5)
+      RETURNING *
+    `, [
+      employee_name.trim(),
+      Number(advance_amount || 0),
+      Number(balance || 0),
+      advance_date || new Date().toISOString().slice(0, 10),
+      status || 'Pending'
+    ]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_name, advance_amount, balance, advance_date, status } = req.body || {};
+    if (!employee_name?.trim()) return res.status(400).json({ error: 'employee_name is required' });
+    const result = await pool.query(`
+      UPDATE employee_salary_advances
+      SET employee_name=$1, advance_amount=$2, balance=$3, advance_date=$4, status=$5
+      WHERE id=$6
+      RETURNING *
+    `, [
+      employee_name.trim(),
+      Number(advance_amount || 0),
+      Number(balance || 0),
+      advance_date || new Date().toISOString().slice(0, 10),
+      status || 'Pending',
+      req.params.id
+    ]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM employee_salary_advances WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 /* ================= TERMINALS TABLE MAP ================= */
