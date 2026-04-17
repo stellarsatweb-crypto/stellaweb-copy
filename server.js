@@ -103,6 +103,66 @@ pool.query(createTicketTable)
   .then(() => console.log('Ticket table ready ✅'))
   .catch(err => console.error('Ticket table creation error:', err));
 
+/* ================= IN-APP MESSAGING TABLE ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS in_app_messages (
+        id SERIAL PRIMARY KEY,
+        sender_id INT REFERENCES users(id) ON DELETE SET NULL,
+        recipient_id INT REFERENCES users(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_sender BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_recipient BOOLEAN NOT NULL DEFAULT FALSE,
+        parent_message_id INT REFERENCES in_app_messages(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_recipient
+      ON in_app_messages (recipient_id, created_at DESC)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_sender
+      ON in_app_messages (sender_id, created_at DESC)
+    `);
+
+    console.log('In-app messages table ready ✅');
+
+try {
+  const usersRes = await pool.query(`SELECT id FROM users ORDER BY id ASC LIMIT 2`);
+  if (usersRes.rows.length >= 2) {
+    const userA = usersRes.rows[0].id;
+    const userB = usersRes.rows[1].id;
+
+    const existingMsg = await pool.query(`SELECT id FROM in_app_messages LIMIT 1`);
+    if (!existingMsg.rowCount) {
+      await pool.query(
+        `
+        INSERT INTO in_app_messages (sender_id, recipient_id, subject, body)
+        VALUES
+          ($1, $2, 'Welcome to In-App Messaging', 'This is a sample inbox message.'),
+          ($2, $1, 'Re: Welcome to In-App Messaging', 'Reply message sample for testing.')
+        `,
+        [userA, userB]
+      );
+      console.log('Seeded sample in-app messages ✅');
+    }
+  }
+} catch (seedErr) {
+  console.error('In-app messages seed error:', seedErr.message);
+}
+  } catch (err) {
+    console.error('In-app messages table setup error:', err.message);
+  }
+})();
+
 const financeTableStatements = [
   `
     CREATE TABLE IF NOT EXISTS finance_company_income (
@@ -1623,6 +1683,7 @@ app.get('/api/terminals/all-sites', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
 /* ================= REPORTS API ================= */
 
 const reportEvidenceUpload = multer({
@@ -1645,8 +1706,6 @@ const reportEvidenceUpload = multer({
   }
 });
 
-// ── Regional Progress Reports ───────────────────────────────────────────────
-
 (async () => {
   try {
     await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
@@ -1658,7 +1717,17 @@ const reportEvidenceUpload = multer({
         mir         NUMERIC(5,2),
         ticket      NUMERIC(5,2),
         sla         NUMERIC(5,2),
+        extra_data  JSONB,
         created_by  INT REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_projects (
+        id         SERIAL PRIMARY KEY,
+        name       CITEXT NOT NULL UNIQUE,
+        columns    JSONB  NOT NULL DEFAULT '[{"key":"mir","label":"MIR","enabled":true},{"key":"ticket","label":"Ticket","enabled":true},{"key":"sla","label":"SLA","enabled":true}]'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -1666,50 +1735,24 @@ const reportEvidenceUpload = multer({
       CREATE TABLE IF NOT EXISTS regional_progress_reports (
         id          SERIAL PRIMARY KEY,
         region      CITEXT NOT NULL,
-        deadline    DATE,
         date_start  DATE,
         date_end    DATE,
+        project_id  INT REFERENCES report_projects(id) ON DELETE CASCADE,
         report_id   INT REFERENCES other_data(id) ON DELETE CASCADE
       )
     `);
 
-    // Safe migrations for existing DBs
     const safeAlter = [
-      `ALTER TABLE other_data DROP COLUMN IF EXISTS site_name`,
+      `ALTER TABLE other_data ADD COLUMN IF NOT EXISTS extra_data JSONB`,
       `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS date_start DATE`,
       `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS date_end DATE`,
+      `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS project_id INT REFERENCES report_projects(id) ON DELETE CASCADE`,
       `ALTER TABLE regional_progress_reports DROP COLUMN IF EXISTS deadline`,
     ];
     for (const sql of safeAlter) {
       try { await pool.query(sql); } catch(e) {}
     }
 
-    // Recreate view matching new schema
-    await pool.query(`DROP VIEW IF EXISTS regional_progress_view CASCADE`);
-    await pool.query(`
-      CREATE VIEW regional_progress_view AS
-      SELECT
-        r.id,
-        r.region,
-        r.date_start,
-        r.date_end,
-        o.mir,
-        o.ticket,
-        o.sla,
-        (
-          (COALESCE(o.mir, 0) +
-           COALESCE(o.ticket, 0) +
-           COALESCE(o.sla, 0))
-          / 3.0
-        )::NUMERIC(5,2) AS progress,
-        u.full_name AS created_by,
-        o.date
-      FROM regional_progress_reports r
-      LEFT JOIN other_data o ON r.report_id = o.id
-      LEFT JOIN users u ON o.created_by = u.id
-    `);
-
-    // report_history table for update log
     await pool.query(`
       CREATE TABLE IF NOT EXISTS report_history (
         id            SERIAL PRIMARY KEY,
@@ -1719,81 +1762,104 @@ const reportEvidenceUpload = multer({
       )
     `);
 
+    await pool.query(`DROP VIEW IF EXISTS regional_progress_view CASCADE`);
+    await pool.query(`
+      CREATE VIEW regional_progress_view AS
+      SELECT r.id, r.region, r.date_start, r.date_end, r.project_id,
+             p.name AS project_name, p.columns AS project_columns,
+             o.mir, o.ticket, o.sla, o.extra_data,
+             ((COALESCE(o.mir,0)+COALESCE(o.ticket,0)+COALESCE(o.sla,0))/3.0)::NUMERIC(5,2) AS progress,
+             u.full_name AS created_by, o.date
+      FROM regional_progress_reports r
+      LEFT JOIN report_projects p ON r.project_id = p.id
+      LEFT JOIN other_data o      ON r.report_id  = o.id
+      LEFT JOIN users u           ON o.created_by = u.id
+    `);
+
     console.log('Reports schema ready ✅');
   } catch (err) {
     console.error('Reports schema error:', err.message);
   }
 })();
 
-// GET all reports
-app.get('/api/reports', async (req, res) => {
+// GET all projects
+app.get('/api/reports/projects', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT
-        r.id,
-        r.region,
-        r.date_start,
-        r.date_end,
-        r.report_id,
-        o.mir,
-        o.ticket,
-        o.sla,
-        (
-          (COALESCE(o.mir, 0) +
-           COALESCE(o.ticket, 0) +
-           COALESCE(o.sla, 0))
-          / 3.0
-        )::NUMERIC(5,2) AS progress,
-        u.full_name AS created_by,
-        o.date AS last_updated
-      FROM regional_progress_reports r
-      LEFT JOIN other_data o ON r.report_id = o.id
-      LEFT JOIN users u ON o.created_by = u.id
-      ORDER BY r.id
-    `);
+    const result = await pool.query(`SELECT * FROM report_projects ORDER BY id ASC`);
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET all other_data (history) for a region
-app.get('/api/reports/:regionId/reminders', async (req, res) => {
+// POST create project
+app.post('/api/reports/projects', async (req, res) => {
+  const { name, columns } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
   try {
-    const result = await pool.query(`
-      SELECT o.*, u.full_name AS created_by_name
-      FROM other_data o
-      LEFT JOIN users u ON o.created_by = u.id
-      WHERE o.id IN (
-        SELECT unnest(ARRAY(
-          SELECT od.id FROM other_data od
-          WHERE od.id = (SELECT report_id FROM regional_progress_reports WHERE id = $1)
-          UNION
-          SELECT od2.id FROM other_data od2
-          WHERE od2.id IN (
-            SELECT h.other_data_id FROM report_history h WHERE h.region_id = $1
-          )
-        ))
-      )
-      ORDER BY o.date DESC
-    `, [req.params.regionId]);
-    res.json(result.rows);
-  } catch {
-    // Fallback: just return the single linked record
-    try {
-      const r2 = await pool.query(`
-        SELECT o.*, u.full_name AS created_by_name
-        FROM other_data o
-        LEFT JOIN users u ON o.created_by = u.id
-        WHERE o.id = (SELECT report_id FROM regional_progress_reports WHERE id = $1)
-      `, [req.params.regionId]);
-      res.json(r2.rows);
-    } catch(e2) { res.json([]); }
+    const defaultCols = [
+      { key: 'mir',    label: 'MIR',    enabled: true },
+      { key: 'ticket', label: 'Ticket', enabled: true },
+      { key: 'sla',    label: 'SLA',    enabled: true },
+    ];
+    const result = await pool.query(
+      `INSERT INTO report_projects (name, columns) VALUES ($1, $2) RETURNING *`,
+      [name.trim(), JSON.stringify(columns || defaultCols)]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Project name already exists' });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// GET history for a region (all other_data records ever linked)
+// PUT update project
+app.put('/api/reports/projects/:id', async (req, res) => {
+  const { name, columns } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE report_projects SET name=$1, columns=$2 WHERE id=$3 RETURNING *`,
+      [name.trim(), JSON.stringify(columns || []), req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Project not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Project name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE project
+app.delete('/api/reports/projects/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM report_projects WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET all reports (filtered by project_id if provided)
+app.get('/api/reports', async (req, res) => {
+  try {
+    const projectId = req.query.project_id ? parseInt(req.query.project_id) : null;
+    const params    = projectId ? [projectId] : [];
+    const where     = projectId ? 'WHERE r.project_id = $1' : '';
+    const result = await pool.query(`
+      SELECT r.id, r.region, r.date_start, r.date_end, r.project_id, r.report_id,
+             o.mir, o.ticket, o.sla, o.extra_data,
+             ((COALESCE(o.mir,0)+COALESCE(o.ticket,0)+COALESCE(o.sla,0))/3.0)::NUMERIC(5,2) AS progress,
+             u.full_name AS created_by, o.date AS last_updated
+      FROM regional_progress_reports r
+      LEFT JOIN other_data o ON r.report_id = o.id
+      LEFT JOIN users u      ON o.created_by = u.id
+      ${where}
+      ORDER BY r.id
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET history for a region
 app.get('/api/reports/:regionId/history', async (req, res) => {
   try {
-    // Use report_history if it exists, otherwise fallback to single record
     const result = await pool.query(`
       SELECT o.*, u.full_name AS created_by_name
       FROM other_data o
@@ -1806,20 +1872,36 @@ app.get('/api/reports/:regionId/history', async (req, res) => {
       ORDER BY o.date DESC
     `, [req.params.regionId]);
     res.json(result.rows);
-  } catch {
-    res.json([]);
-  }
+  } catch { res.json([]); }
+});
+
+// GET reminders (kept for backward compatibility)
+app.get('/api/reports/:regionId/reminders', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT o.*, u.full_name AS created_by_name
+      FROM other_data o
+      LEFT JOIN users u ON o.created_by = u.id
+      WHERE o.id IN (
+        SELECT other_data_id FROM report_history WHERE region_id = $1
+        UNION
+        SELECT report_id FROM regional_progress_reports WHERE id = $1
+      )
+      ORDER BY o.date DESC
+    `, [req.params.regionId]);
+    res.json(result.rows);
+  } catch { res.json([]); }
 });
 
 // POST new region
 app.post('/api/reports', async (req, res) => {
-  const { region, date_start, date_end } = req.body;
+  const { region, date_start, date_end, project_id } = req.body || {};
   if (!region?.trim()) return res.status(400).json({ error: 'region is required' });
   try {
     const result = await pool.query(
-      `INSERT INTO regional_progress_reports (region, date_start, date_end)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [region.trim(), date_start || null, date_end || null]
+      `INSERT INTO regional_progress_reports (region, date_start, date_end, project_id)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [region.trim(), date_start || null, date_end || null, project_id || null]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -1827,12 +1909,10 @@ app.post('/api/reports', async (req, res) => {
 
 // PUT update region
 app.put('/api/reports/:id', async (req, res) => {
-  const { region, date_start, date_end } = req.body;
+  const { region, date_start, date_end } = req.body || {};
   try {
     const result = await pool.query(
-      `UPDATE regional_progress_reports
-       SET region=$1, date_start=$2, date_end=$3
-       WHERE id=$4 RETURNING *`,
+      `UPDATE regional_progress_reports SET region=$1, date_start=$2, date_end=$3 WHERE id=$4 RETURNING *`,
       [region, date_start || null, date_end || null, req.params.id]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
@@ -1848,26 +1928,30 @@ app.delete('/api/reports/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST new update (other_data record) and link it as the latest for the region
+// POST new update (other_data) — supports dynamic columns via extra_data
 app.post('/api/reminders', async (req, res) => {
-  const { report_id, mir, ticket, sla, created_by } = req.body;
+  const { report_id, created_by, mir, ticket, sla, ...rest } = req.body || {};
   if (!report_id) return res.status(400).json({ error: 'report_id is required' });
+  const extraData = Object.keys(rest).length ? rest : null;
   try {
-    // 1. Insert into other_data (no site_name)
     const odResult = await pool.query(
-      `INSERT INTO other_data (mir, ticket, sla, created_by, date)
-       VALUES ($1, $2, $3, $4, NOW()) RETURNING *`,
-      [mir || null, ticket || null, sla || null, created_by || null]
+      `INSERT INTO other_data (mir, ticket, sla, extra_data, created_by, date)
+       VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING *`,
+      [
+        mir    != null ? mir    : null,
+        ticket != null ? ticket : null,
+        sla    != null ? sla    : null,
+        extraData ? JSON.stringify(extraData) : null,
+        created_by || null,
+      ]
     );
     const newOd = odResult.rows[0];
 
-    // 2. Log to report_history
     await pool.query(
       `INSERT INTO report_history (region_id, other_data_id) VALUES ($1, $2)`,
       [report_id, newOd.id]
     ).catch(() => {});
 
-    // 3. Update region's report_id to this latest record
     await pool.query(
       `UPDATE regional_progress_reports SET report_id=$1 WHERE id=$2`,
       [newOd.id, report_id]
@@ -1877,14 +1961,42 @@ app.post('/api/reminders', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+
 // ── User Settings ────────────────────────────────────────────────────────────
 
-// Safe migration: add photo column to users table
+// Safe migration: in-app messaging tables
 (async () => {
   try {
-    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS photo TEXT`);
-    console.log('users.photo column ready ✅');
-  } catch(e) { console.error('photo migration:', e.message); }
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS in_app_messages (
+        id SERIAL PRIMARY KEY,
+        sender_id INT REFERENCES users(id) ON DELETE SET NULL,
+        recipient_id INT REFERENCES users(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_sender BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_recipient BOOLEAN NOT NULL DEFAULT FALSE,
+        parent_message_id INT REFERENCES in_app_messages(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_recipient
+      ON in_app_messages (recipient_id, created_at DESC)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_sender
+      ON in_app_messages (sender_id, created_at DESC)
+    `);
+
+    console.log('In-app messaging table ready ✅');
+  } catch (e) {
+    console.error('in-app messaging migration:', e.message);
+  }
 })();
 
 // Multer for profile photos
@@ -1927,6 +2039,27 @@ app.post('/api/users/:id/photo', profilePhotoUpload.single('photo'), async (req,
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET users list (for recipient picker)
+app.get('/api/users', async (req, res) => {
+  try {
+    const currentUserId = Number(req.query.exclude || 0);
+
+    const result = await pool.query(
+      `
+      SELECT id, full_name, email, role
+      FROM users
+      WHERE ($1 = 0 OR id <> $1)
+      ORDER BY full_name ASC, email ASC
+      `,
+      [currentUserId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET user by id
 app.get('/api/users/:id', async (req, res) => {
   try {
@@ -1955,6 +2088,234 @@ app.put('/api/users/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+/* ================= IN-APP MESSAGING ================= */
+
+// GET inbox / sent folders
+app.get('/api/messages', async (req, res) => {
+  const userId = Number(req.query.user_id);
+  const folder = String(req.query.folder || 'inbox').trim().toLowerCase();
+
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    let query = '';
+    let params = [userId];
+
+    if (folder === 'sent') {
+      query = `
+        SELECT
+          m.id,
+          m.subject,
+          m.body,
+          m.is_read,
+          m.parent_message_id,
+          m.created_at,
+          sender.id AS sender_id,
+          sender.full_name AS sender_name,
+          sender.email AS sender_email,
+          recipient.id AS recipient_id,
+          recipient.full_name AS recipient_name,
+          recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.sender_id = $1
+          AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE
+        ORDER BY m.created_at DESC, m.id DESC
+      `;
+    } else {
+      query = `
+        SELECT
+          m.id,
+          m.subject,
+          m.body,
+          m.is_read,
+          m.parent_message_id,
+          m.created_at,
+          sender.id AS sender_id,
+          sender.full_name AS sender_name,
+          sender.email AS sender_email,
+          recipient.id AS recipient_id,
+          recipient.full_name AS recipient_name,
+          recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.recipient_id = $1
+          AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE
+        ORDER BY m.created_at DESC, m.id DESC
+      `;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET single message
+app.get('/api/messages/:id', async (req, res) => {
+  const userId = Number(req.query.user_id);
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        m.*,
+        sender.full_name AS sender_name,
+        sender.email AS sender_email,
+        recipient.full_name AS recipient_name,
+        recipient.email AS recipient_email
+      FROM in_app_messages m
+      LEFT JOIN users sender ON sender.id = m.sender_id
+      LEFT JOIN users recipient ON recipient.id = m.recipient_id
+      WHERE m.id = $1
+        AND (
+          (m.sender_id = $2 AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE)
+          OR
+          (m.recipient_id = $2 AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE)
+        )
+      `,
+      [req.params.id, userId]
+    );
+
+    if (!result.rowCount) return res.status(404).json({ error: 'Message not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST send message
+app.post('/api/messages', async (req, res) => {
+  const {
+    sender_id,
+    recipient_id,
+    subject,
+    body,
+    parent_message_id
+  } = req.body || {};
+
+  if (!sender_id || !recipient_id || !String(subject || '').trim() || !String(body || '').trim()) {
+    return res.status(400).json({ error: 'sender_id, recipient_id, subject, and body are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO in_app_messages (
+        sender_id, recipient_id, subject, body, parent_message_id
+      )
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+      `,
+      [
+        Number(sender_id),
+        Number(recipient_id),
+        String(subject).trim(),
+        String(body).trim(),
+        parent_message_id ? Number(parent_message_id) : null
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT mark read/unread
+app.put('/api/messages/:id/read', async (req, res) => {
+  const { user_id, is_read } = req.body || {};
+  if (!user_id || typeof is_read !== 'boolean') {
+    return res.status(400).json({ error: 'user_id and is_read are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE in_app_messages
+      SET is_read = $1, updated_at = NOW()
+      WHERE id = $2 AND recipient_id = $3
+      RETURNING *
+      `,
+      [is_read, req.params.id, Number(user_id)]
+    );
+
+    if (!result.rowCount) return res.status(404).json({ error: 'Message not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE soft delete message
+app.delete('/api/messages/:id', async (req, res) => {
+  const userId = Number(req.query.user_id);
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    const existing = await pool.query(
+      `SELECT sender_id, recipient_id FROM in_app_messages WHERE id = $1`,
+      [req.params.id]
+    );
+
+    if (!existing.rowCount) return res.status(404).json({ error: 'Message not found' });
+
+    const row = existing.rows[0];
+
+    if (Number(row.sender_id) === userId) {
+      await pool.query(
+        `
+        UPDATE in_app_messages
+        SET is_deleted_by_sender = TRUE, updated_at = NOW()
+        WHERE id = $1
+        `,
+        [req.params.id]
+      );
+    } else if (Number(row.recipient_id) === userId) {
+      await pool.query(
+        `
+        UPDATE in_app_messages
+        SET is_deleted_by_recipient = TRUE, updated_at = NOW()
+        WHERE id = $1
+        `,
+        [req.params.id]
+      );
+    } else {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT change password
+// GET users list (for messaging recipient picker)
+app.get('/api/users', async (req, res) => {
+  try {
+    const currentUserId = Number(req.query.exclude || 0);
+
+    const result = await pool.query(
+      `
+      SELECT id, full_name, email, role
+      FROM users
+      WHERE ($1 = 0 OR id <> $1)
+      ORDER BY full_name ASC, email ASC
+      `,
+      [currentUserId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT change password
 app.put('/api/users/:id/password', async (req, res) => {
   const { current_password, new_password } = req.body;
@@ -1967,7 +2328,7 @@ app.put('/api/users/:id/password', async (req, res) => {
     if (!match) return res.status(401).json({ error: 'Current password is incorrect' });
     const hash = await bcrypt.hash(new_password, 10);
     await pool.query(`UPDATE users SET password_hash=$1 WHERE id=$2`, [hash, req.params.id]);
-    res.json({ success: true });
+    res.json({ success: true });  
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2099,8 +2460,100 @@ app.put('/api/users/:id/password', async (req, res) => {
       FOR EACH ROW EXECUTE FUNCTION fn_save_leave_history()
     `);
 
-    console.log('leave_requests schema ready ✅');
-  } catch(e) { console.error('leave_requests error:', e.message); }
+        await pool.query(`
+      CREATE TABLE IF NOT EXISTS id_requests (
+        id            SERIAL PRIMARY KEY,
+        requested_by  INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date  DATE NOT NULL DEFAULT CURRENT_DATE,
+        department    CITEXT,
+        id_type       CITEXT NOT NULL CHECK (
+                        LOWER(id_type) IN ('company id','access card','visitor id','temporary id','other')
+                      ),
+        purpose       TEXT NOT NULL,
+        status        CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                        LOWER(status) IN ('pending','approved','processing','released','rejected','cancelled')
+                      ),
+        remarks       TEXT,
+        created_at    TIMESTAMP DEFAULT NOW(),
+        updated_at    TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS salary_increase_requests (
+        id               SERIAL PRIMARY KEY,
+        requested_by     INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date     DATE NOT NULL DEFAULT CURRENT_DATE,
+        department       CITEXT,
+        current_salary   NUMERIC(12,2),
+        requested_salary NUMERIC(12,2) NOT NULL,
+        effective_date   DATE NOT NULL,
+        justification    TEXT NOT NULL,
+        status           CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                           LOWER(status) IN ('pending','approved','rejected','cancelled')
+                         ),
+        remarks          TEXT,
+        created_at       TIMESTAMP DEFAULT NOW(),
+        updated_at       TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+  CREATE TABLE IF NOT EXISTS files_requests (
+    id               SERIAL PRIMARY KEY,
+    requested_by     INT REFERENCES users(id) ON DELETE SET NULL,
+    request_date     DATE NOT NULL DEFAULT CURRENT_DATE,
+    department       CITEXT,
+    document_name    TEXT NOT NULL,
+    purpose          TEXT NOT NULL,
+    request_action   CITEXT NOT NULL CHECK (
+                       LOWER(request_action) IN ('pickup','return')
+                     ),
+    copy_type        CITEXT NOT NULL CHECK (
+                       LOWER(copy_type) IN ('original','copy')
+                     ),
+    proof_of_return  TEXT,
+    status           CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                       LOWER(status) IN ('pending','approved','released','returned','rejected','cancelled')
+                     ),
+    created_at       TIMESTAMP DEFAULT NOW(),
+    updated_at       TIMESTAMP DEFAULT NOW()
+  )
+`);
+
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION fn_touch_request_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at := NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+
+    await pool.query(`DROP TRIGGER IF EXISTS trg_touch_id_requests ON id_requests`);
+    await pool.query(`
+      CREATE TRIGGER trg_touch_id_requests
+      BEFORE UPDATE ON id_requests
+      FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+    `);
+
+    await pool.query(`DROP TRIGGER IF EXISTS trg_touch_salary_increase_requests ON salary_increase_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_salary_increase_requests
+  BEFORE UPDATE ON salary_increase_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+await pool.query(`DROP TRIGGER IF EXISTS trg_touch_files_requests ON files_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_files_requests
+  BEFORE UPDATE ON files_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+    console.log('leave_requests + extra request schemas ready ✅');
+} catch(e) { console.error('leave_requests error:', e.message); }
 })();
 
 // Multer for leave attachments
@@ -2139,6 +2592,7 @@ app.get('/api/leaves', async (req, res) => {
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
 
 // POST new leave request
 app.post('/api/users/:id/leaves', leaveUpload.single('attachment'), async (req, res) => {
@@ -2186,6 +2640,189 @@ app.delete('/api/leaves/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.post('/api/users/:id/id-requests', async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    id_type,
+    purpose,
+    remarks
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (!String(id_type || '').trim()) {
+    return res.status(400).json({ error: 'id_type is required' });
+  }
+  if (!String(purpose || '').trim()) {
+    return res.status(400).json({ error: 'purpose is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO id_requests
+       (requested_by, request_date, department, id_type, purpose, remarks)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        String(id_type).trim().toLowerCase(),
+        String(purpose).trim(),
+        String(remarks || '').trim() || null
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/id-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/:id/salary-increase-requests', async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    current_salary,
+    requested_salary,
+    effective_date,
+    justification,
+    remarks
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (requested_salary === undefined || requested_salary === null || requested_salary === '') {
+    return res.status(400).json({ error: 'requested_salary is required' });
+  }
+  if (!effective_date) {
+    return res.status(400).json({ error: 'effective_date is required' });
+  }
+  if (!String(justification || '').trim()) {
+    return res.status(400).json({ error: 'justification is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO salary_increase_requests
+       (requested_by, request_date, department, current_salary, requested_salary, effective_date, justification, remarks)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        current_salary === '' || current_salary == null ? null : Number(current_salary),
+        Number(requested_salary),
+        effective_date,
+        String(justification).trim(),
+        String(remarks || '').trim() || null
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/salary-increase-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const filesRequestProofUpload = multer({
+  storage: multer.diskStorage({
+    destination: function (req, file, cb) {
+      cb(null, path.join(__dirname, 'public', 'uploads', 'files-requests'));
+    },
+    filename: function (req, file, cb) {
+      const safe = String(file.originalname || 'proof')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '');
+      cb(null, `${Date.now()}-${safe}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+app.post('/api/users/:id/files-requests', filesRequestProofUpload.single('proof_of_return'), async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    document_name,
+    purpose,
+    request_action,
+    copy_type
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (!String(document_name || '').trim()) {
+    return res.status(400).json({ error: 'document_name is required' });
+  }
+  if (!String(purpose || '').trim()) {
+    return res.status(400).json({ error: 'purpose is required' });
+  }
+  if (!String(request_action || '').trim()) {
+    return res.status(400).json({ error: 'request_action is required' });
+  }
+  if (!String(copy_type || '').trim()) {
+    return res.status(400).json({ error: 'copy_type is required' });
+  }
+
+  const normalizedAction = String(request_action).trim().toLowerCase();
+  const normalizedCopyType = String(copy_type).trim().toLowerCase();
+
+  if (!['pickup', 'return'].includes(normalizedAction)) {
+    return res.status(400).json({ error: 'Invalid request_action' });
+  }
+  if (!['original', 'copy'].includes(normalizedCopyType)) {
+    return res.status(400).json({ error: 'Invalid copy_type' });
+  }
+  if (normalizedAction === 'return' && !req.file) {
+    return res.status(400).json({ error: 'proof_of_return is required for return action' });
+  }
+
+  try {
+    const proofPath = req.file ? `/uploads/files-requests/${req.file.filename}` : null;
+
+    const result = await pool.query(
+      `INSERT INTO files_requests
+       (requested_by, request_date, department, document_name, purpose, request_action, copy_type, proof_of_return)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        String(document_name).trim(),
+        String(purpose).trim(),
+        normalizedAction,
+        normalizedCopyType,
+        proofPath
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/files-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── Dashboard Stats ─────────────────────────────────────────────────────────
 
@@ -2267,8 +2904,24 @@ app.get('/api/dashboard/stats', async (req, res) => {
       `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS transceiver  TEXT`,
       `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS dish         TEXT`,
       `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS province     CITEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS created_by_name  TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS installed_by     TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS repaired_by      TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS date_installed   DATE`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS acceptance_date  DATE`,
     ];
     for (const sql of siteAlters) { try { await pool.query(sql); } catch(e) {} }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS network_site_history (
+        id SERIAL PRIMARY KEY,
+        site_name CITEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        actor_name TEXT,
+        notes TEXT,
+        action_date TIMESTAMP DEFAULT NOW()
+      )
+    `);
 
     // network_devices table
     await pool.query(`
@@ -2298,6 +2951,18 @@ app.get('/api/dashboard/stats', async (req, res) => {
   } catch(e) { console.error('Map migration error:', e.message); }
 })();
 
+async function logNetworkSiteHistory(siteName, actionType, actorName = null, notes = null) {
+  try {
+    await pool.query(
+      `INSERT INTO network_site_history (site_name, action_type, actor_name, notes)
+       VALUES ($1, $2, $3, $4)`,
+      [siteName, actionType, actorName, notes]
+    );
+  } catch (err) {
+    console.error('Map history log error:', err.message);
+  }
+}
+
 // GET all network_sites with full details + joined devices + terminal row
 app.get('/api/map/sites', async (req, res) => {
   try {
@@ -2307,6 +2972,7 @@ app.get('/api/map/sites', async (req, res) => {
         ns.lat, ns.long, ns.ip, ns.mac, ns.contacts, ns.email,
         ns.is_active, ns.project_name,
         ns.modem, ns.transceiver, ns.dish,
+        ns.created_by_name, ns.installed_by, ns.repaired_by, ns.date_installed, ns.acceptance_date,
         COALESCE(
           json_agg(
             json_build_object(
@@ -2328,6 +2994,18 @@ app.get('/api/map/sites', async (req, res) => {
       GROUP BY ns.id
       ORDER BY ns.province, ns.site_name
     `);
+
+    const historyResult = await pool.query(`
+      SELECT site_name, action_type, actor_name, notes, action_date
+      FROM network_site_history
+      ORDER BY action_date DESC
+    `);
+    const historyMap = new Map();
+    for (const row of historyResult.rows) {
+      const key = String(row.site_name || '').toLowerCase();
+      if (!historyMap.has(key)) historyMap.set(key, []);
+      if (historyMap.get(key).length < 12) historyMap.get(key).push(row);
+    }
 
     // For each site, fetch its matching terminal row from site_inventory
     // Try both the raw site_name and with the VSTG2- prefix stripped
@@ -2352,11 +3030,126 @@ app.get('/api/map/sites', async (req, res) => {
       const key = r.site_name.toLowerCase();
       const strippedKey = r.site_name.replace(/^VSTG2-/i, '').toLowerCase();
       const terminal = terminalMap[key] || terminalMap[strippedKey] || null;
-      return { ...r, terminal };
+      return { ...r, terminal, history: historyMap.get(key) || historyMap.get(strippedKey) || [] };
     });
 
     res.json(rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/map/sites', async (req, res) => {
+  const {
+    site_name, municipality, province, lat, long: lng, ip, mac, contacts, email,
+    is_active, project_name, modem, transceiver, dish,
+    created_by_name, installed_by, repaired_by, date_installed, acceptance_date
+  } = req.body || {};
+
+  if (!String(site_name || '').trim()) {
+    return res.status(400).json({ error: 'site_name is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO network_sites
+        (site_name, municipality, province, lat, long, ip, mac, contacts, email, is_active, project_name, modem, transceiver, dish,
+         created_by_name, installed_by, repaired_by, date_installed, acceptance_date)
+       VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+       RETURNING *`,
+      [
+        String(site_name).trim(),
+        municipality || null,
+        province || null,
+        lat ?? null,
+        lng ?? null,
+        ip || null,
+        mac || null,
+        contacts || null,
+        email || null,
+        typeof is_active === 'boolean' ? is_active : false,
+        project_name || 'DICT438',
+        modem || null,
+        transceiver || null,
+        dish || null,
+        created_by_name || null,
+        installed_by || null,
+        repaired_by || null,
+        date_installed || null,
+        acceptance_date || null
+      ]
+    );
+    await logNetworkSiteHistory(
+      String(site_name).trim(),
+      'created',
+      created_by_name || installed_by || null,
+      `Project: ${project_name || 'DICT438'}`
+    );
+    res.status(201).json({ ...result.rows[0], devices: [], history: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/map/sites/import', async (req, res) => {
+  const sites = Array.isArray(req.body?.sites) ? req.body.sites : [];
+  if (!sites.length) return res.status(400).json({ error: 'No sites provided' });
+
+  let inserted = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const raw of sites) {
+    const siteName = String(raw.site_name || '').trim();
+    if (!siteName) {
+      skipped++;
+      errors.push('A row was skipped because site_name is missing.');
+      continue;
+    }
+
+    try {
+      const exists = await pool.query(`SELECT 1 FROM network_sites WHERE LOWER(site_name)=LOWER($1)`, [siteName]);
+      if (exists.rowCount) {
+        skipped++;
+        continue;
+      }
+
+      await pool.query(
+        `INSERT INTO network_sites
+          (site_name, municipality, province, lat, long, ip, mac, contacts, email, is_active, project_name, modem, transceiver, dish,
+           created_by_name, installed_by, repaired_by, date_installed, acceptance_date)
+         VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        [
+          siteName,
+          raw.municipality || null,
+          raw.province || null,
+          raw.lat ? Number(raw.lat) : null,
+          raw.long ? Number(raw.long) : null,
+          raw.ip || null,
+          raw.mac || null,
+          raw.contacts || null,
+          raw.email || null,
+          String(raw.is_active || '').toLowerCase() === 'true' || raw.is_active === true,
+          raw.project_name || 'DICT438',
+          raw.modem || null,
+          raw.transceiver || null,
+          raw.dish || null,
+          raw.created_by_name || null,
+          raw.installed_by || null,
+          raw.repaired_by || null,
+          raw.date_installed || null,
+          raw.acceptance_date || null
+        ]
+      );
+      await logNetworkSiteHistory(siteName, 'imported', raw.created_by_name || raw.installed_by || null, 'Imported from bulk upload');
+      inserted++;
+    } catch (err) {
+      skipped++;
+      errors.push(`${siteName}: ${err.message}`);
+    }
+  }
+
+  res.json({ inserted, skipped, errors: errors.slice(0, 10) });
 });
 
 // PUT activate/deactivate a site
@@ -2368,6 +3161,7 @@ app.put('/api/map/sites/:siteName/status', async (req, res) => {
       [is_active, req.params.siteName]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    await logNetworkSiteHistory(req.params.siteName, is_active ? 'activated' : 'deactivated', null, null);
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2388,14 +3182,24 @@ app.put('/api/map/sites/:siteName/coords', async (req, res) => {
 
 // PUT edit site details
 app.put('/api/map/sites/:siteName/edit', async (req, res) => {
-  const { ip, mac, lat, long: lng, contacts, email } = req.body;
+  const {
+    ip, mac, lat, long: lng, contacts, email, modem, transceiver, dish,
+    municipality, province, project_name, created_by_name, installed_by, repaired_by, date_installed, acceptance_date
+  } = req.body;
   try {
     const result = await pool.query(
-      `UPDATE network_sites SET ip=$1, mac=$2, lat=$3, long=$4, contacts=$5, email=$6
-       WHERE site_name=$7 RETURNING *`,
-      [ip||null, mac||null, lat||null, lng||null, contacts||null, email||null, req.params.siteName]
+      `UPDATE network_sites
+       SET ip=$1, mac=$2, lat=$3, long=$4, contacts=$5, email=$6, modem=$7, transceiver=$8, dish=$9,
+           municipality=$10, province=$11, project_name=$12, created_by_name=$13, installed_by=$14, repaired_by=$15, date_installed=$16, acceptance_date=$17
+       WHERE site_name=$18 RETURNING *`,
+      [
+        ip||null, mac||null, lat||null, lng||null, contacts||null, email||null, modem||null, transceiver||null, dish||null,
+        municipality || null, province || null, project_name || 'DICT438', created_by_name || null, installed_by || null, repaired_by || null, date_installed || null, acceptance_date || null,
+        req.params.siteName
+      ]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    await logNetworkSiteHistory(req.params.siteName, 'updated', repaired_by || created_by_name || null, 'Site details updated');
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2544,7 +3348,28 @@ const acceptanceUpload = multer({
       cb(null, `${Date.now()}_${base}${ext}`);
     }
   }),
-  limits: { fileSize: 500 * 1024 * 1024 }
+  limits: { fileSize: 500 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = require('path').extname(file.originalname).toLowerCase();
+    const mime = String(file.mimetype || '').toLowerCase();
+
+    const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+    const videoExts = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
+    const docExts   = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.zip', '.rar'];
+
+    if (req.path.includes('/images')) {
+      if (mime.startsWith('image/') || imageExts.includes(ext)) return cb(null, true);
+      return cb(new Error('Invalid file type'));
+    }
+
+    if (req.path.includes('/videos')) {
+      if (mime.startsWith('video/') || videoExts.includes(ext)) return cb(null, true);
+      return cb(new Error('Invalid file type'));
+    }
+
+    if (docExts.includes(ext)) return cb(null, true);
+    return cb(new Error('Invalid file type'));
+  }
 });
 
 // Setup tables
@@ -2650,14 +3475,21 @@ app.get('/api/acceptance/sites', async (req, res) => {
 
 // POST add site
 app.post('/api/acceptance/sites', async (req, res) => {
-  const { site_name, status, uploaded_by, project_name } = req.body || {};
+  const { site_name, status, uploaded_by, project_name, installer_name } = req.body || {};
   if (!site_name?.trim())    return res.status(400).json({ error: 'site_name required' });
   if (!project_name?.trim()) return res.status(400).json({ error: 'project_name required' });
   try {
     const result = await pool.query(
-      `INSERT INTO project_sites (project_name, site_name, status, uploaded_by)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [project_name.trim(), site_name.trim(), status||'Pending', uploaded_by||null]
+      `INSERT INTO project_sites (project_name, site_name, status, uploaded_by, installer_name, acceptance_date)
+ VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+[
+  project_name.trim(),
+  site_name.trim(),
+  status || 'Pending',
+  uploaded_by || null,
+  installer_name || null,
+  null
+]
     );
     // Ensure project_progress entry exists
     await pool.query(
@@ -2670,15 +3502,95 @@ app.post('/api/acceptance/sites', async (req, res) => {
 
 // PUT update site status
 app.put('/api/acceptance/sites/:id', async (req, res) => {
-  const { status } = req.body || {};
+  const { status, installer_name } = req.body || {};
   try {
     const result = await pool.query(
-      `UPDATE project_sites SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *`,
-      [status, req.params.id]
+      `UPDATE project_sites
+       SET status=$1,
+           installer_name=COALESCE($2, installer_name),
+           acceptance_date=$3,
+           updated_at=NOW()
+       WHERE id=$4
+       RETURNING *`,
+      [
+  status,
+  installer_name || null,
+  ((status || '').toLowerCase() === 'done' ? new Date().toISOString().slice(0, 10) : null),
+  req.params.id
+]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
     res.json(result.rows[0]);
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/acceptance/sites/import-json', async (req, res) => {
+  const projectName = String(req.body?.project_name || '').trim();
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const uploadedBy = req.body?.uploaded_by || null;
+
+  if (!projectName) return res.status(400).json({ error: 'project_name required' });
+  if (!rows.length) return res.status(400).json({ error: 'No rows provided' });
+
+  let inserted = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const row of rows) {
+    const siteName = String(row.site_name || '').trim();
+    if (!siteName) {
+      skipped++;
+      errors.push('A row was skipped because site_name is missing.');
+      continue;
+    }
+    try {
+      const exists = await pool.query(
+        `SELECT 1 FROM project_sites WHERE project_name = $1 AND LOWER(site_name) = LOWER($2)`,
+        [projectName, siteName]
+      );
+      if (exists.rowCount) {
+        skipped++;
+        continue;
+      }
+
+      const normalizedStatus = String(row.status || 'Pending').toLowerCase() === 'done' ? 'Done' : 'Pending';
+      await pool.query(
+        `INSERT INTO project_sites (project_name, site_name, status, uploaded_by, installer_name, acceptance_date)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          projectName,
+          siteName,
+          normalizedStatus,
+          uploadedBy,
+          row.installer_name || null,
+          row.acceptance_date || (normalizedStatus === 'Done' ? new Date().toISOString().slice(0, 10) : null)
+        ]
+      );
+      inserted++;
+    } catch (err) {
+      skipped++;
+      errors.push(`${siteName}: ${err.message}`);
+    }
+  }
+
+  await pool.query(
+    `INSERT INTO project_progress (project_name) VALUES ($1) ON CONFLICT DO NOTHING`,
+    [projectName]
+  );
+
+  res.json({ inserted, skipped, errors: errors.slice(0, 10) });
+});
+
+app.delete('/api/acceptance/sites/bulk-delete', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'ids required' });
+  try {
+    const placeholders = ids.map((_, idx) => `$${idx + 1}`).join(',');
+    const result = await pool.query(`DELETE FROM project_sites WHERE id IN (${placeholders})`, ids);
+    res.json({ deleted: result.rowCount });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // DELETE site
@@ -2702,54 +3614,90 @@ app.get('/api/acceptance/sites/:id/media', async (req, res) => {
 });
 
 // POST upload file
-app.post('/api/acceptance/sites/:id/files', acceptanceUpload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const { uploaded_by } = req.body || {};
-  try {
-    const result = await pool.query(
-      `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [req.params.id, req.file.originalname, '/uploads/acceptance/files/'+req.file.filename,
-       (req.file.size/1024).toFixed(2), uploaded_by||null]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch(e) { res.status(500).json({ error: e.message }); }
+app.post('/api/acceptance/sites/:id/files', (req, res) => {
+  acceptanceUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+
+    const { uploaded_by } = req.body || {};
+    try {
+      const result = await pool.query(
+        `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, req.file.originalname, '/uploads/acceptance/files/'+req.file.filename,
+         (req.file.size/1024).toFixed(2), uploaded_by||null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
 });
 
 // POST upload image
-app.post('/api/acceptance/sites/:id/images', acceptanceUpload.single('image'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const { uploaded_by } = req.body || {};
-  try {
-    const result = await pool.query(
-      `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [req.params.id, req.file.originalname, '/uploads/acceptance/images/'+req.file.filename,
-       (req.file.size/1024).toFixed(2), uploaded_by||null]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch(e) { res.status(500).json({ error: e.message }); }
+app.post('/api/acceptance/sites/:id/images', (req, res) => {
+  acceptanceUpload.single('image')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+
+    const { uploaded_by } = req.body || {};
+    try {
+      const result = await pool.query(
+        `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, req.file.originalname, '/uploads/acceptance/images/'+req.file.filename,
+         (req.file.size/1024).toFixed(2), uploaded_by||null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
 });
 
 // POST upload video
-app.post('/api/acceptance/sites/:id/videos', acceptanceUpload.single('video'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const { uploaded_by } = req.body || {};
-  try {
-    const result = await pool.query(
-      `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [req.params.id, req.file.originalname, '/uploads/acceptance/videos/'+req.file.filename,
-       (req.file.size/1024).toFixed(2), uploaded_by||null]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch(e) { res.status(500).json({ error: e.message }); }
+app.post('/api/acceptance/sites/:id/videos', (req, res) => {
+  acceptanceUpload.single('video')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+
+    const { uploaded_by } = req.body || {};
+    try {
+      const result = await pool.query(
+        `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, req.file.originalname, '/uploads/acceptance/videos/'+req.file.filename,
+         (req.file.size/1024).toFixed(2), uploaded_by||null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
 });
 
 // DELETE media
 app.delete('/api/acceptance/files/:id',  async (req, res) => { try { await pool.query(`DELETE FROM project_files  WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
 app.delete('/api/acceptance/images/:id', async (req, res) => { try { await pool.query(`DELETE FROM project_images WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
 app.delete('/api/acceptance/videos/:id', async (req, res) => { try { await pool.query(`DELETE FROM project_videos WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+
+app.delete('/api/acceptance/media/bulk-delete', async (req, res) => {
+  const type = String(req.body?.type || '').trim().toLowerCase();
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+
+  if (!ids.length) return res.status(400).json({ error: 'ids required' });
+
+  const tableMap = {
+    files: 'project_files',
+    images: 'project_images',
+    videos: 'project_videos'
+  };
+
+  const table = tableMap[type];
+  if (!table) return res.status(400).json({ error: 'Invalid media type' });
+
+  try {
+    const placeholders = ids.map((_, idx) => `$${idx + 1}`).join(',');
+    const result = await pool.query(`DELETE FROM ${table} WHERE id IN (${placeholders})`, ids);
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // GET all project_progress for progress view
 app.get('/api/acceptance/progress', async (req, res) => {
@@ -2843,49 +3791,103 @@ const multerAcc = multer({
 
 // (duplicate routes removed — canonical versions defined above)
 
-// POST upload file
-app.post('/api/acceptance/files', multerAcc.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const { site_id, uploaded_by } = req.body;
+(async () => {
   try {
-    const result = await pool.query(
-      `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [site_id, req.file.originalname, '/uploads/acceptance/' + req.file.filename,
-       (req.file.size / 1024).toFixed(2), uploaded_by || null]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    await pool.query(`ALTER TABLE project_sites ADD COLUMN IF NOT EXISTS installer_name TEXT`);
+    await pool.query(`ALTER TABLE project_sites ADD COLUMN IF NOT EXISTS acceptance_date DATE`);
+  } catch (e) {
+    console.error('Acceptance column migration error:', e.message);
+  }
+})();
+
+// POST upload file
+app.post('/api/acceptance/files', multerAcc.array('file'), async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+
+  const { site_id, uploaded_by } = req.body;
+
+  try {
+    const inserted = [];
+    for (const file of files) {
+      const result = await pool.query(
+        `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [
+          site_id,
+          file.originalname,
+          '/uploads/acceptance/' + file.filename,
+          (file.size / 1024).toFixed(2),
+          uploaded_by || null
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    res.status(201).json({ uploaded: inserted.length, items: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST upload image
-app.post('/api/acceptance/images', multerAcc.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+app.post('/api/acceptance/images', multerAcc.array('image'), async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+
   const { site_id, uploaded_by } = req.body;
+
   try {
-    const result = await pool.query(
-      `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [site_id, req.file.originalname, '/uploads/acceptance/' + req.file.filename,
-       (req.file.size / 1024).toFixed(2), uploaded_by || null]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const inserted = [];
+    for (const file of files) {
+      const result = await pool.query(
+        `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [
+          site_id,
+          file.originalname,
+          '/uploads/acceptance/' + file.filename,
+          (file.size / 1024).toFixed(2),
+          uploaded_by || null
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    res.status(201).json({ uploaded: inserted.length, items: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST upload video
-app.post('/api/acceptance/videos', multerAcc.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
+app.post('/api/acceptance/videos', multerAcc.array('video'), async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+
   const { site_id, uploaded_by } = req.body;
+
   try {
-    const result = await pool.query(
-      `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [site_id, req.file.originalname, '/uploads/acceptance/' + req.file.filename,
-       (req.file.size / 1024).toFixed(2), uploaded_by || null]
-    );
-    res.status(201).json(result.rows[0]);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const inserted = [];
+    for (const file of files) {
+      const result = await pool.query(
+        `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [
+          site_id,
+          file.originalname,
+          '/uploads/acceptance/' + file.filename,
+          (file.size / 1024).toFixed(2),
+          uploaded_by || null
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    res.status(201).json({ uploaded: inserted.length, items: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET files for a site

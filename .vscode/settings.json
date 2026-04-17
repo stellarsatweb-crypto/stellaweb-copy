@@ -20,5 +20,6 @@
             "database": "demo",
             "username": "postgres"
         }
-    ]
+    ],
+    "claudeCodeChat.permissions.yoloMode": true
 }

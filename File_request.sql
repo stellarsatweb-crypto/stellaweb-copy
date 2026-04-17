@@ -13,6 +13,8 @@ DROP TABLE IF EXISTS file_requests CASCADE;
 -- FILE REQUESTS TABLE
 -- ============================================================
 
+select * from file_requests;
+
 CREATE TABLE file_requests (
     id               SERIAL PRIMARY KEY,
 

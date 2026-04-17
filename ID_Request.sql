@@ -11,6 +11,7 @@ DROP TABLE IF EXISTS id_requests CASCADE;
 -- ============================================================
 -- ID REQUESTS TABLE
 -- ============================================================
+select * from id_requests;
 
 CREATE TABLE id_requests (
     id              SERIAL PRIMARY KEY,

@@ -46,6 +46,14 @@ let currentPage = 1;
 const rowsPerPage = 7;
 let leafletMap = null;  // holds the Leaflet map instance for invalidateSize on sidebar toggle
 
+/* ================= SETTINGS: IN-APP MESSAGING STATE ================= */
+let stgMessageFolder = 'inbox';
+let stgMessages = [];
+let stgUsers = [];
+let stgSelectedMessage = null;
+let stgMessagingView = 'list'; // list | read | compose
+let stgReplyToMessage = null;
+
 /* ================= SIDEBAR ================= */
 const PAGE_DEFS = {
   dashboard:          { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => loadDashboard() },
@@ -118,17 +126,58 @@ function renderSidebarMenu() {
   });
 }
 
+
 /* ================= REPORTS ================= */
 
-let expandedReportId = null;
-let allReportData    = [];
+// ── State ──────────────────────────────────────────────────────────────────
+let expandedReportId  = null;
+let allReportData     = [];
+let rptCurrentProject = null;
+let rptAllProjects    = [];
 
+const RPT_DEFAULT_COLUMNS = [
+  { key: 'mir',    label: 'MIR',    enabled: true },
+  { key: 'ticket', label: 'Ticket', enabled: true },
+  { key: 'sla',    label: 'SLA',    enabled: true },
+];
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+// Read a column value — checks top-level row first, then extra_data JSONB
+function rptColValue(row, key) {
+  if (row[key] != null && row[key] !== '') return row[key];
+  if (row.extra_data && typeof row.extra_data === 'object' && row.extra_data[key] != null) {
+    return row.extra_data[key];
+  }
+  // extra_data may be a JSON string
+  if (typeof row.extra_data === 'string') {
+    try {
+      const parsed = JSON.parse(row.extra_data);
+      if (parsed && parsed[key] != null) return parsed[key];
+    } catch {}
+  }
+  return null;
+}
+
+function getProjectColumns(project) {
+  const src = project || rptCurrentProject;
+  let cols = src?.columns;
+  // columns may arrive as a JSON string from postgres
+  if (typeof cols === 'string') { try { cols = JSON.parse(cols); } catch { cols = null; } }
+  if (!Array.isArray(cols) || !cols.length) cols = RPT_DEFAULT_COLUMNS.map(c => ({ ...c }));
+  return cols.filter(c => c.enabled !== false);
+}
+
+// ── Entry point ────────────────────────────────────────────────────────────
 function loadReports() {
-  expandedReportId = null;
-  allReportData    = [];
+  expandedReportId  = null;
+  allReportData     = [];
+  rptCurrentProject = null;
 
   mainContent.innerHTML = `
-    <div class="rpt-page">
+    <div class="rpt-page" id="rptPage">
+
+      <!-- TOP BAR -->
       <div class="rpt-topbar">
         <h2 class="rpt-title"><i class="ri-bar-chart-2-line"></i> Reports</h2>
         <div class="rpt-topbar-right">
@@ -136,45 +185,77 @@ function loadReports() {
             <i class="ri-search-line"></i>
             <input type="text" id="rptSearch" placeholder="Search region…">
           </div>
-          <button class="rpt-center-btn">
-            <i class="ri-file-chart-line"></i> Regional Progress Report
+          <button class="rpt-center-btn" id="rptExportBtn">
+            <i class="ri-file-chart-line"></i> Progress Report
           </button>
-          <button class="rpt-add-btn" id="rptAddBtn">
-            <i class="ri-add-line"></i> Add Region
+          <button class="rpt-add-btn" id="rptAddProjectBtn">
+            <i class="ri-add-line"></i> New Project
           </button>
         </div>
       </div>
 
+      <!-- DATE BAR -->
       <div class="rpt-date-bar">
         <i class="ri-calendar-2-line"></i>
         <span id="rptDateBarLabel">Loading…</span>
       </div>
 
-      <div class="rpt-card">
-        <table class="rpt-table" id="rptTable">
-          <thead>
-            <tr class="rpt-thead-row">
-              <th>Region</th>
-              <th>MIR</th>
-              <th>Deadline</th>
-              <th>Ticket</th>
-              <th>SLA</th>
-              <th>Progress</th>
-            </tr>
-          </thead>
-          <tbody id="rptTbody">
-            <tr><td colspan="6" class="rpt-empty-cell">
-              <i class="ri-loader-4-line spin"></i> Loading…
-            </td></tr>
-          </tbody>
-        </table>
+      <!-- PROJECT TAB BAR -->
+      <div class="rpt-project-shell" id="rptProjectShell">
+        <div class="rpt-project-tabs" id="rptProjectTabs">
+          <span class="rpt-proj-loading"><i class="ri-loader-4-line spin"></i> Loading…</span>
+        </div>
+        <div class="rpt-project-actions" id="rptProjectActions" style="display:none;">
+          <button class="rpt-col-config-btn" id="rptColConfigBtn">
+            <i class="ri-settings-3-line"></i> Columns
+          </button>
+          <button class="rpt-proj-edit-btn" id="rptProjEditBtn" title="Edit project">
+            <i class="ri-edit-line"></i>
+          </button>
+          <button class="rpt-proj-delete-btn" id="rptProjDeleteBtn" title="Delete project">
+            <i class="ri-delete-bin-line"></i>
+          </button>
+        </div>
       </div>
+
+      <!-- TABLE CARD -->
+      <div class="rpt-card hidden" id="rptTableCard">
+        <div class="rpt-card-toolbar">
+          <div class="rpt-card-toolbar-left">
+            <i class="ri-map-2-line" style="color:#2f4b85;font-size:16px;"></i>
+            <span class="rpt-card-title" id="rptCardTitle">—</span>
+            <span class="rpt-region-count" id="rptRegionCount"></span>
+          </div>
+          <button class="rpt-add-region-btn" id="rptAddRegionBtn">
+            <i class="ri-add-line"></i> Add Region
+          </button>
+        </div>
+        <div class="rpt-table-wrap">
+          <table class="rpt-table" id="rptTable">
+            <thead><tr class="rpt-thead-row" id="rptThead"></tr></thead>
+            <tbody id="rptTbody">
+              <tr><td colspan="8" class="rpt-empty-cell">
+                <i class="ri-loader-4-line spin"></i> Loading…
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- EMPTY STATE -->
+      <div class="rpt-empty-projects hidden" id="rptEmptyProjects">
+        <div class="rpt-empty-icon"><i class="ri-folder-chart-line"></i></div>
+        <h3>No projects yet</h3>
+        <p>Create your first report project to start tracking regional progress.</p>
+        <button class="rpt-add-btn" id="rptEmptyNewBtn">
+          <i class="ri-add-line"></i> Create First Project
+        </button>
+      </div>
+
     </div>
   `;
 
-  fetchReports();
-
-  // Dynamic date bar — show current month range
+  // Date bar
   (() => {
     const now   = new Date();
     const first = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -186,23 +267,162 @@ function loadReports() {
 
   document.getElementById('rptSearch').addEventListener('input', function () {
     const q = this.value.toLowerCase();
-    renderReportRows(allReportData.filter(r =>
-      (r.region||'').toLowerCase().includes(q)
-    ));
+    renderReportRows(allReportData.filter(r => (r.region || '').toLowerCase().includes(q)));
   });
 
-  document.getElementById('rptAddBtn').addEventListener('click', () => openReportModal());
+  document.getElementById('rptAddProjectBtn').addEventListener('click', () => openProjectModal());
+  document.getElementById('rptEmptyNewBtn')?.addEventListener('click', () => openProjectModal());
+
+  document.getElementById('rptColConfigBtn').addEventListener('click', () => {
+    if (rptCurrentProject) openProjectModal(rptCurrentProject);
+  });
+  document.getElementById('rptProjEditBtn').addEventListener('click', () => {
+    if (rptCurrentProject) openProjectModal(rptCurrentProject);
+  });
+  document.getElementById('rptProjDeleteBtn').addEventListener('click', () => {
+  if (!rptCurrentProject) return;
+
+  showConfirmDeleteModal(1, async () => {
+    try {
+      const res = await fetch(`/api/reports/projects/${rptCurrentProject.id}`, {
+        method: 'DELETE'
+      });
+
+      const result = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        showToast('Delete failed: ' + (result.error || 'Unknown'), 'error');
+        return;
+      }
+
+      rptCurrentProject = null;
+      await fetchProjects();
+      showToast('Project deleted.', 'success');
+    } catch (err) {
+      showToast('Network error.', 'error');
+    }
+  });
+});
+
+  fetchProjects();
 }
 
-async function fetchReports() {
+// ── Projects ───────────────────────────────────────────────────────────────
+async function fetchProjects() {
   try {
-    const res  = await fetch('/api/reports');
+    const res  = await fetch('/api/reports/projects');
+    const data = await res.json();
+    rptAllProjects = data;
+    renderProjectTabs(data);
+  } catch {
+    const tabs = document.getElementById('rptProjectTabs');
+    if (tabs) tabs.innerHTML = `<span style="color:#ef4444;font-size:13px;">
+      <i class="ri-error-warning-line"></i> Failed to load projects</span>`;
+  }
+}
+
+function renderProjectTabs(projects) {
+  const tabs    = document.getElementById('rptProjectTabs');
+  const empty   = document.getElementById('rptEmptyProjects');
+  const card    = document.getElementById('rptTableCard');
+  const actions = document.getElementById('rptProjectActions');
+  if (!tabs) return;
+
+  if (!projects.length) {
+    tabs.innerHTML = '';
+    empty.classList.remove('hidden');
+    card.classList.add('hidden');
+    actions.style.display = 'none';
+    return;
+  }
+
+  // Hide empty state when we have projects
+  empty.classList.add('hidden');
+
+  tabs.innerHTML = projects.map(p => `
+    <button class="rpt-proj-tab ${rptCurrentProject?.id === p.id ? 'active' : ''}"
+            data-id="${p.id}">
+      <i class="ri-folder-chart-line"></i>
+      <span>${escHtml(p.name)}</span>
+    </button>
+  `).join('');
+
+  tabs.querySelectorAll('.rpt-proj-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      selectProject(rptAllProjects.find(p => p.id === parseInt(btn.dataset.id)));
+    });
+  });
+
+  const toSelect = rptCurrentProject
+    ? (rptAllProjects.find(p => p.id === rptCurrentProject.id) || projects[0])
+    : projects[0];
+  selectProject(toSelect);
+}
+
+function selectProject(project) {
+  if (!project) return;
+  rptCurrentProject = project;
+  expandedReportId  = null;
+  allReportData     = [];
+
+  document.querySelectorAll('.rpt-proj-tab').forEach(btn => {
+    btn.classList.toggle('active', parseInt(btn.dataset.id) === project.id);
+  });
+
+  document.getElementById('rptTableCard').classList.remove('hidden');
+  document.getElementById('rptEmptyProjects').classList.add('hidden');
+  document.getElementById('rptProjectActions').style.display = 'flex';
+
+  const titleEl = document.getElementById('rptCardTitle');
+  if (titleEl) titleEl.textContent = project.name;
+
+  renderReportHeader(project);
+
+  // Re-bind Add Region (clone to remove old listeners)
+  const addBtn = document.getElementById('rptAddRegionBtn');
+  if (addBtn) {
+    const newBtn = addBtn.cloneNode(true);
+    addBtn.replaceWith(newBtn);
+    newBtn.addEventListener('click', () => openRegionModal(null, project));
+  }
+
+  fetchReports(project.id);
+}
+
+function renderReportHeader(project) {
+  const thead = document.getElementById('rptThead');
+  if (!thead) return;
+  const cols = getProjectColumns(project);
+  thead.innerHTML = `
+    <th class="rpt-th-region">Region</th>
+    <th class="rpt-th-deadline">Deadline</th>
+    ${cols.map(c => `<th>${escHtml(c.label)}</th>`).join('')}
+    <th class="rpt-th-progress">Progress</th>
+  `;
+}
+
+// ── Fetch & Render ─────────────────────────────────────────────────────────
+async function fetchReports(projectId) {
+  const tbody = document.getElementById('rptTbody');
+  if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="rpt-empty-cell">
+    <i class="ri-loader-4-line spin"></i> Loading…
+  </td></tr>`;
+
+  try {
+    const url  = projectId ? `/api/reports?project_id=${projectId}` : '/api/reports';
+    const res  = await fetch(url);
     const data = await res.json();
     allReportData = data;
+
+    // Update count badge
+    const countEl = document.getElementById('rptRegionCount');
+    if (countEl) countEl.textContent = data.length ? `${data.length} region${data.length !== 1 ? 's' : ''}` : '';
+
     renderReportRows(data);
   } catch {
-    const tb = document.getElementById('rptTbody');
-    if (tb) tb.innerHTML = `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load reports</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="10" class="rpt-empty-cell">
+      <i class="ri-error-warning-line"></i> Failed to load reports
+    </td></tr>`;
   }
 }
 
@@ -212,7 +432,7 @@ function rptBar(pct) {
   return `
     <div class="rpt-bar-wrap">
       <div class="rpt-bar-track">
-        <div class="rpt-bar-fill" style="width:${v}%;background:${c};"></div>
+        <div class="rpt-bar-fill" style="width:${Math.min(v,100)}%;background:${c};"></div>
       </div>
       <span class="rpt-bar-pct" style="color:${c};">${v}%</span>
     </div>`;
@@ -223,9 +443,8 @@ function rptCircle(pct) {
   const c    = v >= 80 ? '#22c55e' : v >= 50 ? '#f59e0b' : '#ef4444';
   const R    = 22;
   const circ = 2 * Math.PI * R;
-  // At 100% use full circumference with 0 gap so circle is solid
   const dash = v >= 100 ? circ : (v / 100) * circ;
-  const gap  = v >= 100 ? 0    : circ - dash;
+  const gap  = v >= 100 ? 0 : circ - dash;
   return `
     <svg width="56" height="56" viewBox="0 0 56 56">
       <circle cx="28" cy="28" r="${R}" fill="none" stroke="#e5e7eb" stroke-width="5"/>
@@ -233,7 +452,7 @@ function rptCircle(pct) {
         stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}"
         stroke-dashoffset="${(circ * 0.25).toFixed(2)}"
         stroke-linecap="butt"/>
-      <text x="28" y="33" text-anchor="middle" font-size="10.5" font-weight="700" fill="${c}">${v}%</text>
+      <text x="28" y="33" text-anchor="middle" font-size="10.5" font-weight="700" fill="${c}">${Math.round(v)}%</text>
     </svg>`;
 }
 
@@ -241,42 +460,54 @@ function renderReportRows(data) {
   const tbody = document.getElementById('rptTbody');
   if (!tbody) return;
 
+  const project = rptCurrentProject;
+  const cols    = getProjectColumns(project);
+  const colSpan = 2 + cols.length + 1;
+
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No reports found</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${colSpan}" class="rpt-empty-cell">
+      <i class="ri-inbox-line"></i>
+      No regions yet — click <strong>Add Region</strong> to get started.
+    </td></tr>`;
     return;
   }
 
   tbody.innerHTML = '';
 
   data.forEach(row => {
-    // Schema: mir, ticket, sla come from latest linked other_data via JOIN
-    const mirPct    = parseFloat(row.mir      ?? 0);
-    const ticketPct = parseFloat(row.ticket   ?? 0);
-    const slaPct    = parseFloat(row.sla      ?? 0);
-    const progress = parseFloat(row.progress ?? ((parseFloat(row.mir||0) + parseFloat(row.ticket||0) + parseFloat(row.sla||0)) / 3));
     const isExpanded = expandedReportId === row.id;
+
+    // Compute values for enabled columns using rptColValue (handles extra_data)
+    const colValues = cols.map(c => parseFloat(rptColValue(row, c.key) ?? 0));
+    const enabledCount = colValues.filter((_, i) => rptColValue(row, cols[i].key) != null).length;
+    const progress = parseFloat(row.progress ??
+      (enabledCount > 0 ? colValues.reduce((a, b) => a + b, 0) / colValues.length : 0));
+
+    // Deadline cell
+    const deadlineCell = (() => {
+      if (!row.date_start && !row.date_end) return '<span class="rpt-no-val">—</span>';
+      const fmt   = d => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '?';
+      const dEnd  = row.date_end ? new Date(row.date_end) : null;
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (dEnd) dEnd.setHours(0, 0, 0, 0);
+      const range = fmt(row.date_start) + ' – ' + fmt(row.date_end);
+      if (dEnd && dEnd < today)
+        return `<span class="rpt-deadline-overdue"><i class="ri-error-warning-line"></i> ${range}</span>`;
+      if (dEnd && dEnd.getTime() === today.getTime())
+        return `<span class="rpt-deadline-today"><i class="ri-alarm-line"></i> ${range}</span>`;
+      return `<span class="rpt-deadline-ok"><i class="ri-calendar-check-line"></i> ${range}</span>`;
+    })();
 
     const tr = document.createElement('tr');
     tr.className = 'rpt-row' + (isExpanded ? ' rpt-row-open' : '');
     tr.dataset.id = row.id;
     tr.innerHTML = `
-      <td><span class="rpt-region-badge">${row.region || '—'}</span></td>
-      <td>${rptBar(mirPct)}</td>
-      <td>${(() => {
-        if (!row.date_start && !row.date_end) return '<span class="rpt-no-val">—</span>';
-        const fmt = d => d ? new Date(d).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '?';
-        const dEnd  = row.date_end ? new Date(row.date_end) : null;
-        const today = new Date(); today.setHours(0,0,0,0);
-        if (dEnd) dEnd.setHours(0,0,0,0);
-        const range = fmt(row.date_start) + ' – ' + fmt(row.date_end);
-        if (dEnd && dEnd < today)
-          return '<span class="rpt-deadline-overdue"><i class="ri-error-warning-line"></i> ' + range + '</span>';
-        if (dEnd && dEnd.getTime() === today.getTime())
-          return '<span class="rpt-deadline-today"><i class="ri-alarm-line"></i> ' + range + '</span>';
-        return '<span class="rpt-deadline-ok"><i class="ri-calendar-check-line"></i> ' + range + '</span>';
-      })()}</td>
-      <td>${rptBar(ticketPct)}</td>
-      <td>${rptBar(slaPct)}</td>
+      <td><span class="rpt-region-badge">${escHtml(row.region || '—')}</span></td>
+      <td class="rpt-deadline-cell">${deadlineCell}</td>
+      ${cols.map(c => {
+        const val = rptColValue(row, c.key);
+        return `<td>${rptBar(parseFloat(val ?? 0))}</td>`;
+      }).join('')}
       <td>
         <div class="rpt-progress-cell">
           ${rptCircle(progress)}
@@ -293,15 +524,15 @@ function renderReportRows(data) {
     expandTr.className = 'rpt-expand-row' + (isExpanded ? ' open' : '');
     expandTr.dataset.id = row.id;
     expandTr.innerHTML = `
-      <td colspan="6" class="rpt-expand-cell">
+      <td colspan="${colSpan}" class="rpt-expand-cell">
         <div class="rpt-panel ${isExpanded ? 'open' : ''}" id="rpt-panel-${row.id}">
           <div class="rpt-panel-header">
             <div class="rpt-panel-title">
               <i class="ri-history-line"></i>
-              Reminder &mdash; <strong>${row.region || ''}</strong>
+              History — <strong>${escHtml(row.region || '')}</strong>
             </div>
             <div class="rpt-panel-actions">
-              <button class="rpt-panel-add-btn" data-report-id="${row.id}" data-region="${row.region || ''}">
+              <button class="rpt-panel-add-btn" data-report-id="${row.id}" data-region="${escHtml(row.region || '')}">
                 <i class="ri-add-line"></i> Add Update
               </button>
               <button class="rpt-edit-report-btn" data-id="${row.id}" title="Edit region">
@@ -317,14 +548,12 @@ function renderReportRows(data) {
               <thead>
                 <tr>
                   <th>Date</th>
-                  <th>MIR</th>
-                  <th>Ticket</th>
-                  <th>SLA</th>
+                  ${cols.map(c => `<th>${escHtml(c.label)}</th>`).join('')}
                   <th>By</th>
                 </tr>
               </thead>
               <tbody id="rpt-rem-tbody-${row.id}">
-                <tr><td colspan="5" class="rpt-empty-cell">
+                <tr><td colspan="${cols.length + 2}" class="rpt-empty-cell">
                   <i class="ri-loader-4-line spin"></i> Loading…
                 </td></tr>
               </tbody>
@@ -335,7 +564,7 @@ function renderReportRows(data) {
     `;
     tbody.appendChild(expandTr);
 
-    if (isExpanded) fetchReminders(row.id);
+    if (isExpanded) fetchReminders(row.id, cols);
   });
 
   // Expand / collapse
@@ -344,74 +573,84 @@ function renderReportRows(data) {
       const id = parseInt(this.dataset.id);
       expandedReportId = (expandedReportId === id) ? null : id;
       const q = document.getElementById('rptSearch')?.value.toLowerCase() || '';
-      renderReportRows(allReportData.filter(r =>
-        !q || (r.region||'').toLowerCase().includes(q)
-      ));
+      renderReportRows(allReportData.filter(r => !q || (r.region || '').toLowerCase().includes(q)));
       if (expandedReportId) {
-        setTimeout(() => {
-          document.querySelector('.rpt-expand-row.open')
-            ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }, 80);
+        setTimeout(() => document.querySelector('.rpt-expand-row.open')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 80);
       }
     });
   });
 
-  // Edit region
   tbody.querySelectorAll('.rpt-edit-report-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const row = allReportData.find(r => r.id === parseInt(btn.dataset.id));
-      if (row) openReportModal(row);
+      if (row) openRegionModal(row, rptCurrentProject);
     });
   });
 
-  // Delete region
-  tbody.querySelectorAll('.rpt-del-report-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      showConfirmDeleteModal(1, async () => {
-        await fetch(`/api/reports/${btn.dataset.id}`, { method: 'DELETE' });
+tbody.querySelectorAll('.rpt-del-report-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    showConfirmDeleteModal(1, async () => {
+      try {
+        const res = await fetch(`/api/reports/${btn.dataset.id}`, {
+          method: 'DELETE'
+        });
+
+        const result = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          showToast('Failed to delete region: ' + (result.error || 'Unknown'), 'error');
+          return;
+        }
+
         expandedReportId = null;
-        await fetchReports();
+        await fetchReports(rptCurrentProject?.id);
         showToast('Region deleted.', 'success');
-      });
+      } catch (err) {
+        showToast('Error deleting region.', 'error');
+      }
     });
   });
+});
 
-  // Add update
   tbody.querySelectorAll('.rpt-panel-add-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      openReminderModal(parseInt(btn.dataset.reportId), btn.dataset.region);
+      openReminderModal(parseInt(btn.dataset.reportId), btn.dataset.region, getProjectColumns(rptCurrentProject));
     });
   });
 }
 
-async function fetchReminders(regionId) {
+// ── History ────────────────────────────────────────────────────────────────
+async function fetchReminders(regionId, cols) {
   const tbody = document.getElementById(`rpt-rem-tbody-${regionId}`);
   if (!tbody) return;
+  const activeCols = cols || getProjectColumns(rptCurrentProject);
   try {
     const res  = await fetch(`/api/reports/${regionId}/history`);
     const data = await res.json();
-    renderReminderRows(regionId, data);
+    renderReminderRows(regionId, data, activeCols);
   } catch {
-    tbody.innerHTML = `<tr><td colspan="5" class="rpt-empty-cell"><i class="ri-error-warning-line"></i> Failed to load</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${activeCols.length + 2}" class="rpt-empty-cell">
+      <i class="ri-error-warning-line"></i> Failed to load
+    </td></tr>`;
   }
 }
 
-function renderReminderRows(regionId, data) {
+function renderReminderRows(regionId, data, cols) {
   const tbody = document.getElementById(`rpt-rem-tbody-${regionId}`);
   if (!tbody) return;
+  const activeCols = cols || getProjectColumns(rptCurrentProject);
 
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="5" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No updates yet — click <strong>Add Update</strong> to log progress.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${activeCols.length + 2}" class="rpt-empty-cell">
+      <i class="ri-inbox-line"></i> No updates yet — click <strong>Add Update</strong> to log progress.
+    </td></tr>`;
     return;
   }
 
-  // Already sorted newest first from server (ORDER BY o.date DESC)
   tbody.innerHTML = data.map((r, idx) => {
-    const isLatest  = idx === 0;
-    const mirVal    = r.mir    != null ? parseFloat(r.mir).toFixed(1)    + '%' : '—';
-    const ticketVal = r.ticket != null ? parseFloat(r.ticket).toFixed(1) + '%' : '—';
-    const slaVal    = r.sla    != null ? parseFloat(r.sla).toFixed(1)    + '%' : '—';
-    const dateStr   = r.date
+    const isLatest = idx === 0;
+    const dateStr  = r.date
       ? new Date(r.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
       : '—';
     const byName = r.created_by_name || r.created_by || '<span class="rpt-no-val">—</span>';
@@ -421,53 +660,207 @@ function renderReminderRows(regionId, data) {
           ${isLatest ? '<span class="rpt-latest-badge">Latest</span>' : ''}
           ${dateStr}
         </td>
-        <td><span class="rpt-rem-val">${mirVal}</span></td>
-        <td><span class="rpt-rem-val">${ticketVal}</span></td>
-        <td><span class="rpt-rem-val">${slaVal}</span></td>
+        ${activeCols.map(c => {
+          const val = rptColValue(r, c.key);
+          const display = val != null ? parseFloat(val).toFixed(1) + '%' : '<span class="rpt-no-val">—</span>';
+          return `<td><span class="rpt-rem-val">${display}</span></td>`;
+        }).join('')}
         <td class="rpt-rem-by">${byName}</td>
       </tr>
     `;
   }).join('');
 }
 
-// ── Add/Edit Region Modal ──────────────────────────────────────────────────────
-function openReportModal(existing = null) {
+// ── Project Modal ──────────────────────────────────────────────────────────
+function openProjectModal(existing = null) {
   const isEdit = !!existing;
   const m = document.createElement('div');
-  m.id = 'rptReportModal';
   m.className = 'modal-overlay';
   m.innerHTML = `
-    <div class="modal-box add-modal-box" style="max-width:440px;">
+    <div class="modal-box add-modal-box" style="max-width:500px;">
       <div class="add-modal-header">
-        <div class="add-modal-icon"><i class="ri-bar-chart-2-line"></i></div>
+        <div class="add-modal-icon"><i class="ri-folder-chart-line"></i></div>
         <div class="add-modal-title">
-          <h3>${isEdit ? 'Edit Region' : 'Add Region'}</h3>
-          <p>${isEdit ? 'Update the regional entry.' : 'Create a new regional progress entry.'}</p>
+          <h3>${isEdit ? 'Edit Project' : 'New Project'}</h3>
+          <p>${isEdit ? 'Update project name and column configuration.' : 'Create a new report project with custom columns.'}</p>
         </div>
-        <button class="modal-close-btn" id="rptModalClose"><i class="ri-close-line"></i></button>
+        <button class="modal-close-btn" id="projModalClose"><i class="ri-close-line"></i></button>
       </div>
       <div class="add-modal-body">
         <div class="add-fields-grid" style="grid-template-columns:1fr;">
           <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-map-pin-line"></i> Region *</label>
-            <input type="text" id="rpt-f-region" class="add-field-input" placeholder="e.g. BENGUET" value="${existing?.region || ''}">
+            <label class="add-field-label"><i class="ri-folder-line"></i> Project Name *</label>
+            <input type="text" id="proj-f-name" class="add-field-input"
+              placeholder="e.g. DICT438 Phase 1" value="${escHtml(existing?.name || '')}">
           </div>
           <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-calendar-line"></i> Start Date</label>
-            <input type="date" id="rpt-f-date-start" class="add-field-input" value="${existing?.date_start ? existing.date_start.split('T')[0] : ''}">
+            <label class="add-field-label" style="margin-bottom:10px;">
+              <i class="ri-table-line"></i> Report Columns
+              <span style="font-weight:400;text-transform:none;font-size:11px;color:#94a3b8;margin-left:6px;">
+                Toggle, rename, or add columns
+              </span>
+            </label>
+            <div id="projColsList" class="rpt-cols-config-list">
+              ${rptBuildColumnConfigRows(
+                (() => {
+                  let c = existing?.columns;
+                  if (typeof c === 'string') { try { c = JSON.parse(c); } catch { c = null; } }
+                  return c || RPT_DEFAULT_COLUMNS.map(x => ({ ...x }));
+                })()
+              )}
+            </div>
+            <button type="button" class="rpt-add-col-btn" id="projAddColBtn">
+              <i class="ri-add-line"></i> Add Column
+            </button>
           </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-calendar-check-line"></i> End Date</label>
-            <input type="date" id="rpt-f-date-end" class="add-field-input" value="${existing?.date_end ? existing.date_end.split('T')[0] : ''}">
-          </div>
-
         </div>
       </div>
       <div class="add-modal-footer">
         <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
         <div class="modal-actions">
-          <button class="tool-btn" id="rptModalCancel">Cancel</button>
-          <button class="tool-btn apply-btn" id="rptModalSave">
+          <button class="tool-btn" id="projModalCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="projModalSave">
+            <i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Create Project'}
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('projModalClose').onclick  = close;
+  document.getElementById('projModalCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  document.getElementById('projAddColBtn').addEventListener('click', () => {
+    const list   = document.getElementById('projColsList');
+    const newKey = 'col_' + Date.now();
+    const row    = document.createElement('div');
+    row.className   = 'rpt-col-config-row';
+    row.dataset.key = newKey;
+    row.innerHTML   = rptColRowHTML({ key: newKey, label: '', enabled: true });
+    list.appendChild(row);
+    rptBindColRow(row);
+    row.querySelector('.rpt-col-label-input')?.focus();
+  });
+
+  m.querySelectorAll('.rpt-col-config-row').forEach(row => rptBindColRow(row));
+
+  document.getElementById('projModalSave').onclick = async () => {
+    const name = document.getElementById('proj-f-name').value.trim();
+    if (!name) { showToast('Project name is required.', 'error'); return; }
+
+    const columns = [];
+    m.querySelectorAll('.rpt-col-config-row').forEach(row => {
+      const key   = row.dataset.key;
+      const label = row.querySelector('.rpt-col-label-input')?.value.trim() || '';
+      const enabled = row.querySelector('.rpt-col-toggle')?.checked !== false;
+      if (label) columns.push({ key, label, enabled });
+    });
+
+    if (!columns.length) { showToast('Add at least one column.', 'error'); return; }
+
+    const btn = document.getElementById('projModalSave');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+
+    try {
+      const url    = isEdit ? `/api/reports/projects/${existing.id}` : '/api/reports/projects';
+      const method = isEdit ? 'PUT' : 'POST';
+      const res    = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, columns })
+      });
+      const result = await res.json();
+      if (!res.ok) { showToast('Save failed: ' + (result.error || 'Unknown'), 'error'); return; }
+
+      // Store columns locally so selectProject has them immediately
+      result.columns = columns;
+      close();
+      await fetchProjects();
+
+      if (isEdit) {
+        const updated = rptAllProjects.find(p => p.id === existing.id);
+        if (updated) { updated.columns = columns; selectProject(updated); }
+      } else {
+        const created = rptAllProjects.find(p => p.id === result.id) || result;
+        if (created) { created.columns = columns; selectProject(created); }
+      }
+
+      showToast(isEdit ? 'Project updated.' : 'Project created.', 'success');
+    } catch { showToast('Network error.', 'error'); }
+    finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Create Project'}`; }
+  };
+}
+
+function rptBuildColumnConfigRows(columns) {
+  return (columns || RPT_DEFAULT_COLUMNS).map(col =>
+    `<div class="rpt-col-config-row" data-key="${escHtml(col.key)}">
+      ${rptColRowHTML(col)}
+    </div>`
+  ).join('');
+}
+
+function rptColRowHTML(col) {
+  return `
+    <label class="rpt-col-toggle-wrap" title="Enable/disable">
+      <input type="checkbox" class="rpt-col-toggle" ${col.enabled !== false ? 'checked' : ''}>
+      <span class="rpt-col-toggle-track"><span class="rpt-col-toggle-thumb"></span></span>
+    </label>
+    <input type="text" class="add-field-input rpt-col-label-input"
+      placeholder="Column label" value="${escHtml(col.label || '')}"
+      style="flex:1;min-width:0;">
+    <button type="button" class="rpt-col-remove-btn" title="Remove">
+      <i class="ri-delete-bin-line"></i>
+    </button>
+  `;
+}
+
+function rptBindColRow(row) {
+  row.querySelector('.rpt-col-remove-btn')?.addEventListener('click', () => row.remove());
+}
+
+// ── Region Modal ───────────────────────────────────────────────────────────
+function openRegionModal(existing = null, project = null) {
+  const isEdit = !!existing;
+  const proj   = project || rptCurrentProject;
+  const m = document.createElement('div');
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="modal-box add-modal-box" style="max-width:460px;">
+      <div class="add-modal-header">
+        <div class="add-modal-icon"><i class="ri-map-pin-line"></i></div>
+        <div class="add-modal-title">
+          <h3>${isEdit ? 'Edit Region' : 'Add Region'}</h3>
+          <p>${proj ? escHtml(proj.name) : 'Regional progress entry'}</p>
+        </div>
+        <button class="modal-close-btn" id="rptRegModalClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="add-modal-body">
+        <div class="add-fields-grid" style="grid-template-columns:1fr;">
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-map-pin-line"></i> Region Name *</label>
+            <input type="text" id="rpt-f-region" class="add-field-input"
+              placeholder="e.g. BENGUET" value="${escHtml(existing?.region || '')}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-calendar-line"></i> Start Date</label>
+            <input type="date" id="rpt-f-date-start" class="add-field-input"
+              value="${existing?.date_start ? existing.date_start.split('T')[0] : ''}">
+          </div>
+          <div class="add-field-item">
+            <label class="add-field-label"><i class="ri-calendar-check-line"></i> End Date</label>
+            <input type="date" id="rpt-f-date-end" class="add-field-input"
+              value="${existing?.date_end ? existing.date_end.split('T')[0] : ''}">
+          </div>
+        </div>
+      </div>
+      <div class="add-modal-footer">
+        <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
+        <div class="modal-actions">
+          <button class="tool-btn" id="rptRegModalCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="rptRegModalSave">
             <i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Region'}
           </button>
         </div>
@@ -477,71 +870,72 @@ function openReportModal(existing = null) {
   document.body.appendChild(m);
 
   const close = () => m.remove();
-  document.getElementById('rptModalClose').onclick  = close;
-  document.getElementById('rptModalCancel').onclick = close;
+  document.getElementById('rptRegModalClose').onclick  = close;
+  document.getElementById('rptRegModalCancel').onclick = close;
   m.onclick = e => { if (e.target === m) close(); };
 
-  document.getElementById('rptModalSave').onclick = async () => {
+  document.getElementById('rptRegModalSave').onclick = async () => {
     const region = document.getElementById('rpt-f-region').value.trim();
-    if (!region) { showToast('Region is required.', 'error'); return; }
+    if (!region) { showToast('Region name is required.', 'error'); return; }
     const payload = {
       region,
+      project_id: proj?.id || null,
       date_start: document.getElementById('rpt-f-date-start').value || null,
       date_end:   document.getElementById('rpt-f-date-end').value   || null,
     };
-    const btn = document.getElementById('rptModalSave');
+    const btn = document.getElementById('rptRegModalSave');
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
     try {
-      const url    = isEdit ? `/api/reports/${existing.id}` : '/api/reports';
-      const method = isEdit ? 'PUT' : 'POST';
-      const res    = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const res = await fetch(isEdit ? `/api/reports/${existing.id}` : '/api/reports', {
+        method: isEdit ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
       const result = await res.json();
       if (!res.ok) { showToast('Save failed: ' + (result.error || 'Unknown'), 'error'); return; }
       close();
-      await fetchReports();
+      await fetchReports(proj?.id);
       showToast(isEdit ? 'Region updated.' : 'Region added.', 'success');
     } catch { showToast('Network error.', 'error'); }
     finally { btn.disabled = false; btn.innerHTML = `<i class="ri-save-line"></i> ${isEdit ? 'Save Changes' : 'Add Region'}`; }
   };
 }
 
-// ── Add Update Modal ───────────────────────────────────────────────────────────
-function openReminderModal(regionId, region) {
-  // Get logged-in user id and name from session
+// ── Add Update Modal ───────────────────────────────────────────────────────
+function openReminderModal(regionId, region, cols) {
+  const activeCols = cols || getProjectColumns(rptCurrentProject);
   const loggedUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
-  const fullName   = loggedUser.full_name || loggedUser.name || loggedUser.username || 'Unknown';
+  const fullName   = loggedUser.full_name || loggedUser.name || 'Unknown';
   const userId     = loggedUser.id || null;
 
   const m = document.createElement('div');
-  m.id = 'rptReminderModal';
   m.className = 'modal-overlay';
   m.innerHTML = `
-    <div class="modal-box add-modal-box" style="max-width:440px;">
+    <div class="modal-box add-modal-box" style="max-width:460px;">
       <div class="add-modal-header">
-        <div class="add-modal-icon" style="background:rgba(255,255,255,0.15)"><i class="ri-history-line"></i></div>
+        <div class="add-modal-icon" style="background:rgba(255,255,255,0.15)">
+          <i class="ri-history-line"></i>
+        </div>
         <div class="add-modal-title">
           <h3>Add Update</h3>
-          <p>Region: <strong>${region || ''}</strong></p>
+          <p>Region: <strong>${escHtml(region || '')}</strong></p>
         </div>
         <button class="modal-close-btn" id="remModalClose"><i class="ri-close-line"></i></button>
       </div>
       <div class="add-modal-body">
-        <div class="add-fields-grid" style="grid-template-columns:1fr;">
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-signal-wifi-line"></i> MIR (%)</label>
-            <input type="number" id="rem-f-mir" class="add-field-input" placeholder="0–100" min="0" max="100" step="0.01">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-ticket-2-line"></i> Ticket (%)</label>
-            <input type="number" id="rem-f-ticket" class="add-field-input" placeholder="0–100" min="0" max="100" step="0.01">
-          </div>
-          <div class="add-field-item">
-            <label class="add-field-label"><i class="ri-shield-check-line"></i> SLA (%)</label>
-            <input type="number" id="rem-f-sla" class="add-field-input" placeholder="0–100" min="0" max="100" step="0.01">
-          </div>
-          <div class="add-field-item">
+        <div class="add-fields-grid" style="grid-template-columns:1fr 1fr;">
+          ${activeCols.map(c => `
+            <div class="add-field-item">
+              <label class="add-field-label">
+                <i class="ri-percent-line"></i> ${escHtml(c.label)}
+              </label>
+              <input type="number" id="rem-f-${escHtml(c.key)}" class="add-field-input"
+                placeholder="0 – 100" min="0" max="100" step="0.01">
+            </div>
+          `).join('')}
+          <div class="add-field-item" style="grid-column:1/-1;">
             <label class="add-field-label"><i class="ri-user-line"></i> Updated By</label>
-            <input type="text" class="add-field-input" value="${fullName}" readonly
+            <input type="text" class="add-field-input" value="${escHtml(fullName)}" readonly
               style="background:#f8faff;color:#64748b;cursor:default;">
           </div>
         </div>
@@ -565,27 +959,46 @@ function openReminderModal(regionId, region) {
   m.onclick = e => { if (e.target === m) close(); };
 
   document.getElementById('remModalSave').onclick = async () => {
-    const payload = {
-      report_id:  regionId,
-      mir:        document.getElementById('rem-f-mir').value    || null,
-      ticket:     document.getElementById('rem-f-ticket').value || null,
-      sla:        document.getElementById('rem-f-sla').value    || null,
-      created_by: userId,
-    };
+    // Separate known cols (mir/ticket/sla) from custom extra cols
+    const knownKeys  = ['mir', 'ticket', 'sla'];
+    const payload    = { report_id: regionId, created_by: userId };
+    const extraData  = {};
+
+    activeCols.forEach(c => {
+      const val = document.getElementById(`rem-f-${c.key}`)?.value;
+      const num = val !== '' && val != null ? parseFloat(val) : null;
+      if (knownKeys.includes(c.key)) {
+        payload[c.key] = num;
+      } else {
+        extraData[c.key] = num;
+      }
+    });
+
+    // Merge extra_data into payload so server's spread picks it up
+    if (Object.keys(extraData).length) {
+      Object.assign(payload, extraData);
+    }
+
     const btn = document.getElementById('remModalSave');
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+
     try {
-      const res    = await fetch('/api/reminders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const res    = await fetch('/api/reminders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
       const result = await res.json();
       if (!res.ok) { showToast('Save failed: ' + (result.error || 'Unknown'), 'error'); return; }
       close();
-      fetchReminders(regionId);
-      await fetchReports();
-      showToast('Update saved — main table refreshed.', 'success');
+      fetchReminders(regionId, activeCols);
+      await fetchReports(rptCurrentProject?.id);
+      showToast('Update saved.', 'success');
     } catch { showToast('Network error.', 'error'); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save Update'; }
   };
 }
+
 
 
 /* ================= MAP ================= */
@@ -685,16 +1098,55 @@ function initMap() {
   const container = document.getElementById('mapContainer');
   if (!container) return;
 
+  if (leafletMap && typeof leafletMap.remove === 'function') {
+    leafletMap.remove();
+    leafletMap = null;
+  }
+  if (container._leaflet_id) {
+    container._leaflet_id = null;
+  }
+
   const map = L.map('mapContainer', { zoomControl: false }).setView([16.5, 121.0], 7);
   leafletMap = map;  // expose globally so sidebar toggle can call invalidateSize
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  const baseLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
     maxZoom: 19
   }).addTo(map);
 
-  // Force Leaflet to recalculate container size after the DOM has settled
-  setTimeout(() => map.invalidateSize(), 0);
+  let tileErrorShown = false;
+  function scheduleMapResize(delay = 0) {
+    window.setTimeout(() => {
+      if (leafletMap === map) map.invalidateSize();
+    }, delay);
+  }
+  function refreshMapLayout() {
+    scheduleMapResize(0);
+    scheduleMapResize(120);
+    scheduleMapResize(320);
+  }
+  requestAnimationFrame(() => refreshMapLayout());
+  map.whenReady(() => refreshMapLayout());
+  baseLayer.on('load', () => { tileErrorShown = false; refreshMapLayout(); });
+  baseLayer.on('tileerror', () => {
+    refreshMapLayout();
+    if (!tileErrorShown) {
+      tileErrorShown = true;
+      showToast('Map tiles failed to load. Please check your internet connection and try refreshing.', 'error');
+    }
+  });
+
+  const handleWindowResize = () => refreshMapLayout();
+  window.addEventListener('resize', handleWindowResize);
+  map.on('unload', () => window.removeEventListener('resize', handleWindowResize));
+
+  const bodyRow = document.querySelector('.map-body-row');
+  let mapResizeObserver = null;
+  if (typeof ResizeObserver !== 'undefined' && bodyRow) {
+    mapResizeObserver = new ResizeObserver(() => refreshMapLayout());
+    mapResizeObserver.observe(bodyRow);
+    map.on('unload', () => mapResizeObserver?.disconnect());
+  }
 
   // ── Icons ─────────────────────────────────────────────────────────────────
   function makeIcon(color, size = 30, pulse = false) {
@@ -717,6 +1169,7 @@ function initMap() {
   let allSites     = [];
   let allMarkers   = {};     // site_name → L.marker
   let selectedSite = null;
+  let panelEditMode = false;
 
   function isActive(site) {
     return site.is_active === true || site.is_active === 't' || site.is_active === 'true' || site.is_active === 1;
@@ -824,6 +1277,7 @@ function initMap() {
     }
 
     selectedSite = site;
+    panelEditMode = false;
 
     // Highlight marker
     if (marker) {
@@ -991,6 +1445,11 @@ function initMap() {
           <div class="map-details-row"><span class="map-details-label">Coords</span>
             <span>${site.lat?parseFloat(site.lat).toFixed(5):'—'}, ${site.long?parseFloat(site.long).toFixed(5):'—'}</span>
           </div>
+          <div class="map-details-row"><span class="map-details-label">Installed</span><span>${escHtml(site.installed_by||'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Repaired</span><span>${escHtml(site.repaired_by||'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Installed On</span><span>${site.date_installed ? new Date(site.date_installed).toLocaleDateString() : 'â€”'}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Accepted</span><span>${site.acceptance_date ? new Date(site.acceptance_date).toLocaleDateString() : 'â€”'}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Created By</span><span>${escHtml(site.created_by_name||'â€”')}</span></div>
         </div>
 
         <div class="map-exp-divider"><span>Equipment</span></div>
@@ -1011,6 +1470,18 @@ function initMap() {
         </div>
         <div class="map-devices-list" id="mapDevicesList">
           ${devices.length ? devices.map(d=>buildDeviceCard(d,site)).join('') : '<div class="map-dev-empty"><i class="ri-cpu-line"></i> No devices linked.</div>'}
+        </div>
+
+        <div class="map-exp-divider"><span>History</span></div>
+        <div class="map-details-section">
+          ${(Array.isArray(site.history) && site.history.length)
+            ? site.history.map(item => `
+                <div class="map-details-row">
+                  <span class="map-details-label">${escHtml(item.action_type || 'update')}</span>
+                  <span>${escHtml(item.actor_name || 'System')} • ${item.action_date ? new Date(item.action_date).toLocaleString() : 'â€”'}${item.notes ? ` • ${escHtml(item.notes)}` : ''}</span>
+                </div>
+              `).join('')
+            : '<div class="map-details-row"><span class="map-details-label">Track</span><span>No history yet.</span></div>'}
         </div>
 
       </div>
@@ -1069,6 +1540,263 @@ function initMap() {
   }
 
   // ── Device Edit Modal ─────────────────────────────────────────────────────
+  function showDetailsPanel(site) {
+    const panel = document.getElementById('mapDetailsPanel');
+    if (!panel) return;
+
+    const active = isActive(site);
+    const devices = Array.isArray(site.devices) ? site.devices : [];
+    const hasIssue = devices.some(d => d.is_active === false || isExpired(d.license_due));
+    const body = document.getElementById('mapDetailsBody');
+
+    panel.classList.remove('hidden');
+    document.querySelector('.map-page-wrap')?.classList.add('details-open');
+    refreshMapLayout();
+
+    document.getElementById('mapDetailsName').textContent =
+      site.site_name.replace(/^VSTG2-/, '') || 'â€”';
+    document.getElementById('mapDetailsSub').textContent =
+      `${site.project_name || 'DICT438'} | ${site.province || 'â€”'} | ${site.municipality || 'â€”'}`;
+
+    function renderHistory() {
+      if (!Array.isArray(site.history) || !site.history.length) {
+        return '<div class="map-details-row"><span class="map-details-label">Track</span><span>No history yet.</span></div>';
+      }
+      return `<div class="map-history-list">${
+        site.history.map(item => `
+          <div class="map-history-item">
+            <div class="map-history-meta">${escHtml(item.action_type || 'update')} • ${item.action_date ? new Date(item.action_date).toLocaleString() : 'â€”'}</div>
+            <div class="map-history-note">${escHtml(item.actor_name || 'System')}${item.notes ? ` • ${escHtml(item.notes)}` : ''}</div>
+          </div>
+        `).join('')
+      }</div>`;
+    }
+
+    function bindDeviceActions() {
+      document.querySelectorAll('.map-dev-toggle-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = parseInt(btn.dataset.id);
+          const cur = btn.dataset.active === 'true';
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/map/devices/${id}/status`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ is_active: !cur })
+            });
+            if (!r.ok) throw new Error();
+            const dev = site.devices.find(d => d.id === id);
+            if (dev) dev.is_active = !cur;
+            const marker = allMarkers[site.site_name];
+            if (marker) marker.setIcon(selectedSite?.site_name === site.site_name ? siteIcon(site, true) : siteIcon(site));
+            showDetailsPanel(site);
+            showToast(`Device ${!cur ? 'activated' : 'deactivated'}.`, 'success');
+          } catch {
+            showToast('Device update failed.', 'error');
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+
+      document.querySelectorAll('.map-dev-edit-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = parseInt(btn.dataset.id);
+          const dev = site.devices.find(d => d.id === id);
+          if (dev) openDeviceEditModal(dev, site);
+        });
+      });
+    }
+
+    function renderReadView() {
+      body.innerHTML = `
+        <div class="map-details-status-row">
+          <span class="map-details-status-badge ${active ? 'active' : 'inactive'}">
+            <i class="ri-record-circle-${active ? 'fill' : 'line'}"></i> ${active ? 'Active' : 'Inactive'}
+          </span>
+        </div>
+
+        <div class="map-panel-actions">
+          <button class="map-panel-btn primary" id="mapPanelInlineEditBtn"><i class="ri-edit-line"></i> Edit Details</button>
+        </div>
+
+        <div class="map-overview-grid">
+          <div class="map-ov-item">
+            <span class="map-ov-label"><i class="ri-server-line"></i> IP Address</span>
+            <span class="map-ov-value">${escHtml(site.ip || 'â€”')}</span>
+          </div>
+          <div class="map-ov-item">
+            <span class="map-ov-label"><i class="ri-building-line"></i> Municipality</span>
+            <span class="map-ov-value">${escHtml(site.municipality || 'â€”')}</span>
+          </div>
+          <div class="map-ov-item">
+            <span class="map-ov-label"><i class="ri-map-pin-2-line"></i> Province</span>
+            <span class="map-ov-value">${escHtml(site.province || 'â€”')}</span>
+          </div>
+          <div class="map-ov-item">
+            <span class="map-ov-label"><i class="ri-cpu-line"></i> Devices</span>
+            <span class="map-ov-value">${devices.length} linked${hasIssue ? ' <span class="map-ov-issue"><i class="ri-error-warning-line"></i></span>' : ''}</span>
+          </div>
+        </div>
+
+        <div class="map-exp-divider"><span>Site Status</span></div>
+        <div class="map-details-section">
+          <div class="map-details-row"><span class="map-details-label">Coordinates</span><span>${site.lat ? parseFloat(site.lat).toFixed(5) : 'â€”'}, ${site.long ? parseFloat(site.long).toFixed(5) : 'â€”'}</span></div>
+        </div>
+
+        <div class="map-exp-divider"><span>Details</span></div>
+        <div class="map-details-section">
+          <div class="map-details-row"><span class="map-details-label">Project</span><span>${escHtml(site.project_name || 'DICT438')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Installed</span><span>${escHtml(site.installed_by || 'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Repaired</span><span>${escHtml(site.repaired_by || 'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Installed On</span><span>${site.date_installed ? new Date(site.date_installed).toLocaleDateString() : 'â€”'}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Accepted</span><span>${site.acceptance_date ? new Date(site.acceptance_date).toLocaleDateString() : 'â€”'}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Contacts</span><span>${escHtml(site.contacts || 'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Email</span><span>${escHtml(site.email || 'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Created By</span><span>${escHtml(site.created_by_name || 'â€”')}</span></div>
+        </div>
+
+        <div class="map-exp-divider"><span>Equipment</span></div>
+        <div class="map-details-section">
+          <div class="map-details-row"><span class="map-details-label">Modem</span><span>${escHtml(site.modem || 'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Transceiver</span><span>${escHtml(site.transceiver || 'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Dish</span><span>${escHtml(site.dish || 'â€”')}</span></div>
+        </div>
+
+        <div class="map-exp-divider"><span>Network Devices ${hasIssue ? '<span class="map-dev-warn-badge"><i class="ri-error-warning-line"></i> Issue</span>' : ''}</span></div>
+        <div class="map-devices-list" id="mapDevicesList">
+          ${devices.length ? devices.map(d => buildDeviceCard(d, site)).join('') : '<div class="map-dev-empty"><i class="ri-cpu-line"></i> No devices linked.</div>'}
+        </div>
+
+        <div class="map-exp-divider"><span>History</span></div>
+        ${renderHistory()}
+      `;
+
+      document.getElementById('mapPanelInlineEditBtn').onclick = () => {
+        panelEditMode = true;
+        renderEditView();
+      };
+
+      bindDeviceActions();
+    }
+
+    function renderEditView() {
+      body.innerHTML = `
+        <div class="map-details-status-row">
+          <span class="map-details-status-badge ${active ? 'active' : 'inactive'}">
+            <i class="ri-record-circle-${active ? 'fill' : 'line'}"></i> ${active ? 'Active' : 'Inactive'}
+          </span>
+        </div>
+
+        <div class="map-panel-actions">
+          <button class="map-panel-btn primary" id="mapPanelSaveBtn"><i class="ri-save-line"></i> Save</button>
+          <button class="map-panel-btn ghost" id="mapPanelCancelBtn">Cancel</button>
+        </div>
+
+        <div class="map-exp-divider"><span>Details</span></div>
+        <div class="map-edit-grid">
+          <div class="map-edit-field"><label for="mapPanelProject">Project</label><input id="mapPanelProject" class="map-edit-input" value="${escHtml(site.project_name || 'DICT438')}"></div>
+          <div class="map-edit-field"><label for="mapPanelIp">IP Address</label><input id="mapPanelIp" class="map-edit-input" value="${escHtml(site.ip || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelMunicipality">Municipality</label><input id="mapPanelMunicipality" class="map-edit-input" value="${escHtml(site.municipality || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelProvince">Province</label><input id="mapPanelProvince" class="map-edit-input" value="${escHtml(site.province || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelInstalledBy">Installed By</label><input id="mapPanelInstalledBy" class="map-edit-input" value="${escHtml(site.installed_by || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelRepairedBy">Repaired By</label><input id="mapPanelRepairedBy" class="map-edit-input" value="${escHtml(site.repaired_by || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelDateInstalled">Date Installed</label><input id="mapPanelDateInstalled" type="date" class="map-edit-input" value="${site.date_installed ? new Date(site.date_installed).toISOString().slice(0, 10) : ''}"></div>
+          <div class="map-edit-field"><label for="mapPanelAcceptanceDate">Acceptance Date</label><input id="mapPanelAcceptanceDate" type="date" class="map-edit-input" value="${site.acceptance_date ? new Date(site.acceptance_date).toISOString().slice(0, 10) : ''}"></div>
+          <div class="map-edit-field"><label for="mapPanelContacts">Contacts</label><textarea id="mapPanelContacts" class="map-edit-textarea">${escHtml(site.contacts || '')}</textarea></div>
+          <div class="map-edit-field"><label for="mapPanelEmail">Email / Social</label><input id="mapPanelEmail" class="map-edit-input" value="${escHtml(site.email || '')}"></div>
+        </div>
+
+        <div class="map-exp-divider"><span>Equipment</span></div>
+        <div class="map-edit-grid">
+          <div class="map-edit-field"><label for="mapPanelModem">Modem</label><input id="mapPanelModem" class="map-edit-input" value="${escHtml(site.modem || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelTransceiver">Transceiver</label><input id="mapPanelTransceiver" class="map-edit-input" value="${escHtml(site.transceiver || '')}"></div>
+          <div class="map-edit-field"><label for="mapPanelDish">Dish</label><input id="mapPanelDish" class="map-edit-input" value="${escHtml(site.dish || '')}"></div>
+        </div>
+      `;
+
+      document.getElementById('mapPanelCancelBtn').onclick = () => {
+        panelEditMode = false;
+        renderReadView();
+      };
+
+      document.getElementById('mapPanelSaveBtn').onclick = async () => {
+        const payload = {
+          project_name: document.getElementById('mapPanelProject').value.trim() || 'DICT438',
+          ip: document.getElementById('mapPanelIp').value.trim(),
+          municipality: document.getElementById('mapPanelMunicipality').value.trim(),
+          province: document.getElementById('mapPanelProvince').value.trim(),
+          installed_by: document.getElementById('mapPanelInstalledBy').value.trim(),
+          repaired_by: document.getElementById('mapPanelRepairedBy').value.trim(),
+          date_installed: document.getElementById('mapPanelDateInstalled').value || null,
+          acceptance_date: document.getElementById('mapPanelAcceptanceDate').value || null,
+          contacts: document.getElementById('mapPanelContacts').value.trim(),
+          email: document.getElementById('mapPanelEmail').value.trim(),
+          modem: document.getElementById('mapPanelModem').value.trim(),
+          transceiver: document.getElementById('mapPanelTransceiver').value.trim(),
+          dish: document.getElementById('mapPanelDish').value.trim(),
+          created_by_name: site.created_by_name || user?.full_name || null,
+        };
+
+        if (!payload.project_name) {
+          showToast('Project is required.', 'error');
+          return;
+        }
+
+        const btn = document.getElementById('mapPanelSaveBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Savingâ€¦';
+
+        try {
+          const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/edit`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
+
+          Object.assign(site, payload);
+          const idx = allSites.findIndex(s => s.site_name === site.site_name);
+          if (idx !== -1) Object.assign(allSites[idx], payload);
+          panelEditMode = false;
+          const filtered = getFiltered();
+          renderSiteList(filtered);
+          updateMapStats(filtered);
+          updateSidebarCount(filtered);
+          renderReadView();
+          showToast('Site details updated.', 'success');
+        } catch (e) {
+          showToast('Save failed: ' + e.message, 'error');
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = '<i class="ri-save-line"></i> Save';
+        }
+      };
+    }
+
+    document.getElementById('mapDetailsPanelClose').onclick = () => {
+      panel.classList.add('hidden');
+      document.querySelector('.map-page-wrap')?.classList.remove('details-open');
+      panelEditMode = false;
+      refreshMapLayout();
+      if (selectedSite) {
+        const m = allMarkers[selectedSite.site_name];
+        if (m) m.setIcon(siteIcon(selectedSite));
+      }
+      document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
+      selectedSite = null;
+    };
+
+    document.getElementById('mapDetailsEditBtn').onclick = () => {
+      panelEditMode = !panelEditMode;
+      if (panelEditMode) renderEditView();
+      else renderReadView();
+    };
+
+    if (panelEditMode) renderEditView();
+    else renderReadView();
+  }
+
   function openDeviceEditModal(dev, site) {
     const m = document.createElement('div');
     m.className = 'modal-overlay';
@@ -1222,6 +1950,26 @@ function initMap() {
               <input type="text" id="mapEditDish" class="add-field-input" value="${escHtml(site.dish || '')}">
             </div>
             <div class="add-field-item" style="grid-column:1/-1;">
+              <label class="add-field-label"><i class="ri-briefcase-line"></i> Project</label>
+              <input type="text" id="mapEditProject" class="add-field-input" value="${escHtml(site.project_name || 'DICT438')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-user-star-line"></i> Installed By</label>
+              <input type="text" id="mapEditInstalledBy" class="add-field-input" value="${escHtml(site.installed_by || '')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-tools-line"></i> Repaired By</label>
+              <input type="text" id="mapEditRepairedBy" class="add-field-input" value="${escHtml(site.repaired_by || '')}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-calendar-check-line"></i> Date Installed</label>
+              <input type="date" id="mapEditDateInstalled" class="add-field-input" value="${site.date_installed ? new Date(site.date_installed).toISOString().slice(0,10) : ''}">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-checkbox-circle-line"></i> Acceptance Date</label>
+              <input type="date" id="mapEditAcceptanceDate" class="add-field-input" value="${site.acceptance_date ? new Date(site.acceptance_date).toISOString().slice(0,10) : ''}">
+            </div>
+            <div class="add-field-item" style="grid-column:1/-1;">
               <label class="add-field-label"><i class="ri-phone-line"></i> Contacts</label>
               <textarea id="mapEditContacts" class="add-field-input" style="resize:vertical;min-height:54px;">${escHtml(site.contacts || '')}</textarea>
             </div>
@@ -1255,6 +2003,12 @@ function initMap() {
         modem:       document.getElementById('mapEditModem').value.trim(),
         transceiver: document.getElementById('mapEditTransceiver').value.trim(),
         dish:        document.getElementById('mapEditDish').value.trim(),
+        project_name: document.getElementById('mapEditProject').value.trim() || 'DICT438',
+        installed_by: document.getElementById('mapEditInstalledBy').value.trim(),
+        repaired_by: document.getElementById('mapEditRepairedBy').value.trim(),
+        date_installed: document.getElementById('mapEditDateInstalled').value || null,
+        acceptance_date: document.getElementById('mapEditAcceptanceDate').value || null,
+        created_by_name: site.created_by_name || user?.full_name || null,
         contacts:    document.getElementById('mapEditContacts').value.trim(),
         email:       document.getElementById('mapEditEmail').value.trim(),
       };
@@ -1415,6 +2169,22 @@ function initMap() {
               <input type="text" id="asProject" class="add-field-input" placeholder="DICT438" value="DICT438">
             </div>
             <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-user-star-line"></i> Installed By</label>
+              <input type="text" id="asInstalledBy" class="add-field-input" placeholder="Installer name">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-tools-line"></i> Repaired By</label>
+              <input type="text" id="asRepairedBy" class="add-field-input" placeholder="Technician name">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-calendar-check-line"></i> Date Installed</label>
+              <input type="date" id="asDateInstalled" class="add-field-input">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-checkbox-circle-line"></i> Acceptance Date</label>
+              <input type="date" id="asAcceptanceDate" class="add-field-input">
+            </div>
+            <div class="add-field-item">
               <label class="add-field-label"><i class="ri-cpu-line"></i> Modem</label>
               <input type="text" id="asModem" class="add-field-input" placeholder="MDM2010">
             </div>
@@ -1460,6 +2230,11 @@ function initMap() {
         long:          parseFloat(document.getElementById('asLng').value)    || null,
         ip:            document.getElementById('asIp').value.trim()          || null,
         project_name:  document.getElementById('asProject').value.trim()     || 'DICT438',
+        installed_by:  document.getElementById('asInstalledBy').value.trim() || null,
+        repaired_by:   document.getElementById('asRepairedBy').value.trim()  || null,
+        date_installed: document.getElementById('asDateInstalled').value || null,
+        acceptance_date: document.getElementById('asAcceptanceDate').value || null,
+        created_by_name: user?.full_name || null,
         modem:         document.getElementById('asModem').value.trim()       || null,
         transceiver:   document.getElementById('asTransceiver').value.trim() || null,
         dish:          document.getElementById('asDish').value.trim()        || null,
@@ -1554,7 +2329,7 @@ function initMap() {
       parsedRows = [];
       confirm.disabled = true;
       try {
-        const COLS = ['site_name','municipality','province','lat','long','ip','project_name','modem','transceiver','dish','contacts','email'];
+        const COLS = ['site_name','municipality','province','lat','long','ip','project_name','installed_by','repaired_by','date_installed','acceptance_date','modem','transceiver','dish','contacts','email'];
         const norm = s => String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
         if (file.name.endsWith('.csv')) {
           const text = await file.text();
@@ -2423,19 +3198,50 @@ function renderTerminalTable() {
   });
 }
 
+function ensureConfirmDeleteModal() {
+  if (document.getElementById("confirmDeleteModal")) return;
+
+  const modal = document.createElement("div");
+  modal.id = "confirmDeleteModal";
+  modal.className = "modal-overlay hidden";
+  modal.innerHTML = `
+    <div class="modal-box confirm-modal-box">
+      <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
+      <h3 class="confirm-modal-title">Delete Records</h3>
+      <p class="confirm-modal-msg" id="confirmDeleteMsg">Are you sure?</p>
+      <div class="confirm-modal-actions">
+        <button class="tool-btn" id="cancelDeleteBtn">Cancel</button>
+        <button class="tool-btn danger-btn" id="confirmDeleteBtn"><i class="ri-delete-bin-line"></i> Yes, Delete</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
 function showConfirmDeleteModal(count, onConfirm) {
+  ensureConfirmDeleteModal();
+
   const modal = document.getElementById("confirmDeleteModal");
   document.getElementById("confirmDeleteMsg").innerHTML =
     `You are about to permanently delete <strong>${count} record${count > 1 ? 's' : ''}</strong>.<br>This action <strong>cannot be undone</strong>.`;
-  modal.classList.remove("hidden");
+
   const confirmBtn = document.getElementById("confirmDeleteBtn");
   const cancelBtn = document.getElementById("cancelDeleteBtn");
-  const newConfirm = confirmBtn.cloneNode(true); confirmBtn.replaceWith(newConfirm);
-  const newCancel = cancelBtn.cloneNode(true); cancelBtn.replaceWith(newCancel);
+  const newConfirm = confirmBtn.cloneNode(true);
+  const newCancel = cancelBtn.cloneNode(true);
+
+  confirmBtn.replaceWith(newConfirm);
+  cancelBtn.replaceWith(newCancel);
+
   const close = () => modal.classList.add("hidden");
+
+  modal.classList.remove("hidden");
   document.getElementById("cancelDeleteBtn").onclick = close;
   modal.onclick = (e) => { if (e.target === modal) close(); };
-  document.getElementById("confirmDeleteBtn").onclick = async () => { close(); await onConfirm(); };
+  document.getElementById("confirmDeleteBtn").onclick = async () => {
+    close();
+    await onConfirm();
+  };
 }
 
 function openEditModal(idx) {
@@ -7140,7 +7946,16 @@ function loadSettings() {
           </button>
 
           <!-- Compact user card -->
-          <div class="stg-nav-usercard">
+          <button class="stg-navitem" data-tab="messaging">
+  <span class="stg-navitem-icon"><i class="ri-mail-line"></i></span>
+  <span class="stg-navitem-text">
+    <span class="stg-navitem-label">In-App Messaging</span>
+    <span class="stg-navitem-sub">Inbox, sent, compose</span>
+  </span>
+  <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+</button>
+
+<div class="stg-nav-usercard">
             <div class="stg-nav-avatar">
               ${user.photo
                 ? `<img src="${user.photo}" class="stg-nav-avatar-img" alt="avatar">`
@@ -7217,14 +8032,14 @@ function loadSettings() {
                   </div>
                   <i class="ri-arrow-right-s-line stg-tile-arrow"></i>
                 </button>
-                <button class="stg-action-tile" id="stgLeaveBtn">
-                  <div class="stg-tile-icon stg-tile-green"><i class="ri-calendar-todo-line"></i></div>
-                  <div class="stg-tile-body">
-                    <div class="stg-tile-label">Request Leave</div>
-                    <div class="stg-tile-desc">Submit a leave request to admin</div>
-                  </div>
-                  <i class="ri-arrow-right-s-line stg-tile-arrow"></i>
-                </button>
+                <button class="stg-action-tile" id="stgRequestBtn">
+  <div class="stg-tile-icon stg-tile-green"><i class="ri-file-list-3-line"></i></div>
+  <div class="stg-tile-body">
+    <div class="stg-tile-label">Request</div>
+    <div class="stg-tile-desc">Choose and submit a request type</div>
+  </div>
+  <i class="ri-arrow-right-s-line stg-tile-arrow"></i>
+</button>
               </div>
             </div>
 
@@ -7389,6 +8204,20 @@ function loadSettings() {
             </div>
 
           </div>
+
+              <div class="stg-panel" id="stg-tab-messaging">
+  <div class="stg-card2">
+    <div class="stg-card2-header">
+      <div class="stg-card2-title">
+        <i class="ri-mail-line"></i> In-App Messaging
+      </div>
+      <button class="stg-outline-btn" id="stgComposeBtn">
+        <i class="ri-quill-pen-line"></i> Compose
+      </button>
+    </div>
+    <div id="stgMessagingMount"></div>
+  </div>
+</div>
 
         </div><!-- /stg-panels -->
       </div><!-- /stg-layout -->
@@ -7660,11 +8489,707 @@ function loadSettings() {
     } catch { showToast('Export failed.', 'error'); }
   };
 
-  // ── Request Leave ──────────────────────────────────────────────────────────
-  document.getElementById('stgLeaveBtn').onclick = () => openLeaveModal(user);
+  // ── Request Center ─────────────────────────────────────────────────────────
+document.getElementById('stgRequestBtn').onclick = () => openRequestSelectorModal(user);
 
 }
 
+function getSettingsDeptDefault(user) {
+  return {
+    noc: 'NOC Department',
+    finance: 'Finance Department',
+    executive: 'Executive',
+    admin: 'Admin',
+    bidder: 'Bidder'
+  }[String(user?.role || '').toLowerCase()] || '';
+}
+
+function buildRequestUserBanner(user, deptDefault) {
+  return `
+    <div class="lv-emp-banner">
+      <div class="lv-emp-avatar">${
+        user.full_name
+          ? user.full_name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+          : 'U'
+      }</div>
+      <div class="lv-emp-info">
+        <div class="lv-emp-name">${escHtml(user.full_name || '—')}</div>
+        <div class="lv-emp-meta">
+          <span><i class="ri-id-card-line"></i> ${escHtml(user.id_no || '—')}</span>
+          <span><i class="ri-building-4-line"></i> ${escHtml(deptDefault || user.role || '—')}</span>
+          <span><i class="ri-mail-line"></i> ${escHtml(user.email || '—')}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Request Type Selector Modal ─────────────────────────────────────────
+function openRequestSelectorModal(user) {
+  if (document.getElementById('requestTypeModal')) return;
+
+  const m = document.createElement('div');
+  m.id = 'requestTypeModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-file-list-3-line"></i></div>
+          <div>
+            <div class="lv-header-title">Request</div>
+            <div class="lv-header-sub">Choose the request type you want to submit</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="requestTypeClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        <div class="rq-type-grid">
+  <button type="button" class="rq-type-card" data-type="leave">
+    <div class="rq-type-icon"><i class="ri-calendar-todo-line"></i></div>
+    <div class="rq-type-title">Leave Request</div>
+    <div class="rq-type-desc">Use the existing leave request form</div>
+  </button>
+
+  <button type="button" class="rq-type-card" data-type="id">
+    <div class="rq-type-icon"><i class="ri-id-card-line"></i></div>
+    <div class="rq-type-title">ID Request</div>
+    <div class="rq-type-desc">Request company ID or access-related identification</div>
+  </button>
+
+  <button type="button" class="rq-type-card" data-type="salary">
+    <div class="rq-type-icon"><i class="ri-money-dollar-circle-line"></i></div>
+    <div class="rq-type-title">Salary Increase</div>
+    <div class="rq-type-desc">Submit a salary increase request for review</div>
+  </button>
+
+  <button type="button" class="rq-type-card" data-type="files">
+    <div class="rq-type-icon"><i class="ri-folder-transfer-line"></i></div>
+    <div class="rq-type-title">Files Request</div>
+    <div class="rq-type-desc">Request file pickup, return, or document copy</div>
+  </button>
+</div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note">
+          <i class="ri-information-line"></i>
+          Forms will appear only after selecting a request type.
+        </div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="requestTypeCancel">
+            <i class="ri-close-line"></i> Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('requestTypeClose').onclick = close;
+  document.getElementById('requestTypeCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  m.querySelectorAll('.rq-type-card').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const type = btn.dataset.type;
+    close();
+
+    if (type === 'leave') {
+      openLeaveModal(user);
+      return;
+    }
+    if (type === 'id') {
+      openIdRequestModal(user);
+      return;
+    }
+    if (type === 'salary') {
+      openSalaryIncreaseModal(user);
+      return;
+    }
+    if (type === 'files') {
+      openFilesRequestModal(user);
+    }
+  });
+});
+}
+
+// ── Salary Increase Request Modal ─────────────────────────────────────────
+function openIdRequestModal(user) {
+  if (document.getElementById('idRequestModal')) return;
+
+  const deptDefault = getSettingsDeptDefault(user);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const m = document.createElement('div');
+  m.id = 'idRequestModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-form-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-id-card-line"></i></div>
+          <div>
+            <div class="lv-header-title">ID Request Form</div>
+            <div class="lv-header-sub">Complete the details below to submit your ID request</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="idRequestClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        ${buildRequestUserBanner(user, deptDefault)}
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-line"></i> Request Date</div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-event-line lv-input-icon"></i>
+              <input type="date" id="idReqDate" class="lv-input lv-input-icon-pad" value="${today}">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-building-4-line"></i> Department</div>
+            <div class="lv-select-wrap">
+              <select id="idReqDept" class="lv-input lv-select">
+                <option value="">Select department…</option>
+                <option value="NOC Department" ${deptDefault==='NOC Department'?'selected':''}>NOC Department</option>
+                <option value="Finance Department" ${deptDefault==='Finance Department'?'selected':''}>Finance Department</option>
+                <option value="Executive" ${deptDefault==='Executive'?'selected':''}>Executive</option>
+                <option value="Admin" ${deptDefault==='Admin'?'selected':''}>Admin</option>
+                <option value="Bidder" ${deptDefault==='Bidder'?'selected':''}>Bidder</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-profile-line"></i> ID Type <span class="lv-req">*</span></div>
+            <div class="lv-select-wrap">
+              <select id="idReqType" class="lv-input lv-select">
+                <option value="">Select ID type…</option>
+                <option value="company id">Company ID</option>
+                <option value="access card">Access Card</option>
+                <option value="visitor id">Visitor ID</option>
+                <option value="temporary id">Temporary ID</option>
+                <option value="other">Other</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Purpose <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-edit-line lv-input-icon"></i>
+              <input type="text" id="idReqPurpose" class="lv-input lv-input-icon-pad" placeholder="State the purpose of the request…">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-sticky-note-line"></i> Remarks <span class="lv-optional">(optional)</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="idReqRemarks" class="lv-input rq-textarea" placeholder="Additional remarks…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note">
+          <i class="ri-information-line"></i>
+          Your request will be reviewed before approval and release.
+        </div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="idReqCancel">
+            <i class="ri-close-line"></i> Cancel
+          </button>
+          <button class="lv-submit-btn" id="idReqSubmit">
+            <i class="ri-send-plane-fill"></i> Submit Request
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('idRequestClose').onclick = close;
+  document.getElementById('idReqCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  document.getElementById('idReqSubmit').addEventListener('click', async () => {
+    const request_date = document.getElementById('idReqDate').value;
+    const department   = document.getElementById('idReqDept').value;
+    const id_type      = document.getElementById('idReqType').value;
+    const purpose      = document.getElementById('idReqPurpose').value.trim();
+    const remarks      = document.getElementById('idReqRemarks').value.trim();
+
+    if (!request_date) { showToast('Request date is required.', 'error'); return; }
+    if (!id_type)      { showToast('Please select an ID type.', 'error'); return; }
+    if (!purpose)      { showToast('Purpose is required.', 'error'); return; }
+
+    const btn = document.getElementById('idReqSubmit');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const res = await fetch(`/api/users/${user.id}/id-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_date,
+          department,
+          id_type,
+          purpose,
+          remarks
+        })
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(result.error || 'Submission failed.', 'error');
+        return;
+      }
+
+      close();
+      showToast('ID request submitted successfully.', 'success');
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request';
+    }
+  });
+}
+
+// Similar structure to ID request modal, with fields relevant to salary increase
+function openSalaryIncreaseModal(user) {
+  if (document.getElementById('salaryIncreaseModal')) return;
+
+  const deptDefault = getSettingsDeptDefault(user);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const m = document.createElement('div');
+  m.id = 'salaryIncreaseModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-form-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-money-dollar-circle-line"></i></div>
+          <div>
+            <div class="lv-header-title">Salary Increase Request Form</div>
+            <div class="lv-header-sub">Complete the details below to submit your request</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="salaryIncreaseClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        ${buildRequestUserBanner(user, deptDefault)}
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-line"></i> Request Date</div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-event-line lv-input-icon"></i>
+              <input type="date" id="salReqDate" class="lv-input lv-input-icon-pad" value="${today}">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-building-4-line"></i> Department</div>
+            <div class="lv-select-wrap">
+              <select id="salReqDept" class="lv-input lv-select">
+                <option value="">Select department…</option>
+                <option value="NOC Department" ${deptDefault==='NOC Department'?'selected':''}>NOC Department</option>
+                <option value="Finance Department" ${deptDefault==='Finance Department'?'selected':''}>Finance Department</option>
+                <option value="Executive" ${deptDefault==='Executive'?'selected':''}>Executive</option>
+                <option value="Admin" ${deptDefault==='Admin'?'selected':''}>Admin</option>
+                <option value="Bidder" ${deptDefault==='Bidder'?'selected':''}>Bidder</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-wallet-3-line"></i> Current Salary <span class="lv-optional">(optional)</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-money-dollar-circle-line lv-input-icon"></i>
+              <input type="number" id="salCurrentSalary" class="lv-input lv-input-icon-pad" min="0" step="0.01" placeholder="Current salary">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-hand-coin-line"></i> Requested Salary <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-money-dollar-circle-line lv-input-icon"></i>
+              <input type="number" id="salRequestedSalary" class="lv-input lv-input-icon-pad" min="0" step="0.01" placeholder="Requested salary">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-check-line"></i> Effective Date <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-line lv-input-icon"></i>
+              <input type="date" id="salEffectiveDate" class="lv-input lv-input-icon-pad">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Reason / Justification <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-edit-line lv-input-icon"></i>
+              <input type="text" id="salJustification" class="lv-input lv-input-icon-pad" placeholder="State your justification…">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-sticky-note-line"></i> Remarks <span class="lv-optional">(optional)</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="salReqRemarks" class="lv-input rq-textarea" placeholder="Additional remarks…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note">
+          <i class="ri-information-line"></i>
+          Your salary increase request will be forwarded for management review.
+        </div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="salReqCancel">
+            <i class="ri-close-line"></i> Cancel
+          </button>
+          <button class="lv-submit-btn" id="salReqSubmit">
+            <i class="ri-send-plane-fill"></i> Submit Request
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('salaryIncreaseClose').onclick = close;
+  document.getElementById('salReqCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  document.getElementById('salReqSubmit').addEventListener('click', async () => {
+    const request_date      = document.getElementById('salReqDate').value;
+    const department        = document.getElementById('salReqDept').value;
+    const current_salary    = document.getElementById('salCurrentSalary').value;
+    const requested_salary  = document.getElementById('salRequestedSalary').value;
+    const effective_date    = document.getElementById('salEffectiveDate').value;
+    const justification     = document.getElementById('salJustification').value.trim();
+    const remarks           = document.getElementById('salReqRemarks').value.trim();
+
+    if (!request_date)     { showToast('Request date is required.', 'error'); return; }
+    if (!requested_salary) { showToast('Requested salary is required.', 'error'); return; }
+    if (!effective_date)   { showToast('Effective date is required.', 'error'); return; }
+    if (!justification)    { showToast('Justification is required.', 'error'); return; }
+
+    const btn = document.getElementById('salReqSubmit');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const res = await fetch(`/api/users/${user.id}/salary-increase-requests`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_date,
+          department,
+          current_salary,
+          requested_salary,
+          effective_date,
+          justification,
+          remarks
+        })
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(result.error || 'Submission failed.', 'error');
+        return;
+      }
+
+      close();
+      showToast('Salary increase request submitted successfully.', 'success');
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request';
+    }
+  });
+}
+
+function openFilesRequestModal(user) {
+  if (document.getElementById('filesRequestModal')) return;
+
+  const deptDefault = getSettingsDeptDefault(user);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const m = document.createElement('div');
+  m.id = 'filesRequestModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-form-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-folder-transfer-line"></i></div>
+          <div>
+            <div class="lv-header-title">Files Request Form</div>
+            <div class="lv-header-sub">Borrow, return, or request a copy of a file/document</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="filesRequestClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        ${buildRequestUserBanner(user, deptDefault)}
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-line"></i> Request Date</div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-event-line lv-input-icon"></i>
+              <input type="date" id="filesReqDate" class="lv-input lv-input-icon-pad" value="${today}">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-building-4-line"></i> Department</div>
+            <div class="lv-select-wrap">
+              <select id="filesReqDept" class="lv-input lv-select">
+                <option value="">Select department…</option>
+                <option value="NOC Department" ${deptDefault==='NOC Department'?'selected':''}>NOC Department</option>
+                <option value="Finance Department" ${deptDefault==='Finance Department'?'selected':''}>Finance Department</option>
+                <option value="Executive" ${deptDefault==='Executive'?'selected':''}>Executive</option>
+                <option value="Admin" ${deptDefault==='Admin'?'selected':''}>Admin</option>
+                <option value="Bidder" ${deptDefault==='Bidder'?'selected':''}>Bidder</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-file-text-line"></i> File Type / Document Name <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-folder-2-line lv-input-icon"></i>
+              <input type="text" id="filesReqDocName" class="lv-input lv-input-icon-pad" placeholder="e.g. Contract, HR File, Original Receipt">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-file-copy-line"></i> Copy Type <span class="lv-req">*</span></div>
+            <div class="lv-select-wrap">
+              <select id="filesReqCopyType" class="lv-input lv-select">
+                <option value="">Select copy type…</option>
+                <option value="original">Original</option>
+                <option value="copy">Copy</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-arrow-left-right-line"></i> Request Action <span class="lv-req">*</span></div>
+          <div class="rq-action-toggle" id="filesReqActionToggle">
+            <button type="button" class="rq-action-pill active" data-val="pickup">
+              <i class="ri-download-2-line"></i> Pickup
+            </button>
+            <button type="button" class="rq-action-pill" data-val="return">
+              <i class="ri-upload-2-line"></i> Return
+            </button>
+          </div>
+          <input type="hidden" id="filesReqAction" value="pickup">
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Purpose / Reason <span class="lv-req">*</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="filesReqPurpose" class="lv-input rq-textarea" placeholder="State the purpose or reason for this file request…"></textarea>
+          </div>
+        </div>
+
+        <div class="lv-section hidden" id="filesProofSection">
+          <div class="lv-section-label"><i class="ri-image-line"></i> Proof of Return <span class="lv-req">*</span></div>
+          <label class="lv-upload-zone rq-upload-zone" for="filesReqProofInput" id="filesReqProofZone">
+            <div class="lv-upload-content" id="filesReqProofContent">
+              <div class="lv-upload-icon"><i class="ri-image-add-line"></i></div>
+              <div class="lv-upload-text">
+                <span class="lv-upload-cta">Click to upload</span> proof of return
+              </div>
+              <div class="lv-upload-hint">JPG, PNG, JPEG — max 10MB</div>
+            </div>
+            <input type="file" id="filesReqProofInput" style="display:none;" accept=".jpg,.jpeg,.png,image/*">
+          </label>
+
+          <div class="rq-image-preview hidden" id="filesReqPreviewWrap">
+            <img id="filesReqPreviewImg" alt="Proof of Return Preview">
+          </div>
+        </div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note">
+          <i class="ri-information-line"></i>
+          Use Pickup for borrowing/releasing files. Use Return when handing them back with proof.
+        </div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="filesReqCancel">
+            <i class="ri-close-line"></i> Cancel
+          </button>
+          <button class="lv-submit-btn" id="filesReqSubmit">
+            <i class="ri-send-plane-fill"></i> Submit Request
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('filesRequestClose').onclick = close;
+  document.getElementById('filesReqCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  const actionHidden = document.getElementById('filesReqAction');
+  const proofSection = document.getElementById('filesProofSection');
+  const proofInput = document.getElementById('filesReqProofInput');
+  const proofContent = document.getElementById('filesReqProofContent');
+  const proofZone = document.getElementById('filesReqProofZone');
+  const previewWrap = document.getElementById('filesReqPreviewWrap');
+  const previewImg = document.getElementById('filesReqPreviewImg');
+
+  function updateFilesActionUI(action) {
+    actionHidden.value = action;
+    document.querySelectorAll('#filesReqActionToggle .rq-action-pill').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.val === action);
+    });
+
+    const isReturn = action === 'return';
+    proofSection.classList.toggle('hidden', !isReturn);
+
+    if (!isReturn) {
+      proofInput.value = '';
+      previewImg.removeAttribute('src');
+      previewWrap.classList.add('hidden');
+      proofZone.style.borderColor = '';
+      proofZone.style.background = '';
+      proofContent.innerHTML = `
+        <div class="lv-upload-icon"><i class="ri-image-add-line"></i></div>
+        <div class="lv-upload-text">
+          <span class="lv-upload-cta">Click to upload</span> proof of return
+        </div>
+        <div class="lv-upload-hint">JPG, PNG, JPEG — max 10MB</div>
+      `;
+    }
+  }
+
+  document.getElementById('filesReqActionToggle').addEventListener('click', e => {
+    const pill = e.target.closest('.rq-action-pill');
+    if (!pill) return;
+    updateFilesActionUI(pill.dataset.val);
+  });
+
+  proofInput.addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) {
+      previewImg.removeAttribute('src');
+      previewWrap.classList.add('hidden');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = ev => {
+      previewImg.src = ev.target.result;
+      previewWrap.classList.remove('hidden');
+    };
+    reader.readAsDataURL(file);
+
+    proofContent.innerHTML = `
+      <div class="lv-upload-icon" style="color:#22c55e;"><i class="ri-checkbox-circle-line"></i></div>
+      <div class="lv-upload-text">
+        <span class="lv-upload-cta" style="color:#16a34a;">${escHtml(file.name)}</span>
+      </div>
+      <div class="lv-upload-hint">${(file.size / 1024).toFixed(1)} KB — click to change</div>
+    `;
+    proofZone.style.borderColor = '#22c55e';
+    proofZone.style.background = '#f0fdf4';
+  });
+
+  updateFilesActionUI('pickup');
+
+  document.getElementById('filesReqSubmit').addEventListener('click', async () => {
+    const request_date = document.getElementById('filesReqDate').value;
+    const department = document.getElementById('filesReqDept').value;
+    const document_name = document.getElementById('filesReqDocName').value.trim();
+    const purpose = document.getElementById('filesReqPurpose').value.trim();
+    const request_action = document.getElementById('filesReqAction').value;
+    const copy_type = document.getElementById('filesReqCopyType').value;
+    const proof_file = proofInput.files[0];
+
+    if (!request_date)    { showToast('Request date is required.', 'error'); return; }
+    if (!document_name)   { showToast('File type / document name is required.', 'error'); return; }
+    if (!purpose)         { showToast('Purpose / reason is required.', 'error'); return; }
+    if (!request_action)  { showToast('Request action is required.', 'error'); return; }
+    if (!copy_type)       { showToast('Copy type is required.', 'error'); return; }
+    if (request_action === 'return' && !proof_file) {
+      showToast('Proof of Return is required for return action.', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('filesReqSubmit');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const formData = new FormData();
+      formData.append('request_date', request_date);
+      formData.append('department', department);
+      formData.append('document_name', document_name);
+      formData.append('purpose', purpose);
+      formData.append('request_action', request_action);
+      formData.append('copy_type', copy_type);
+      if (proof_file) formData.append('proof_of_return', proof_file);
+
+      const res = await fetch(`/api/users/${user.id}/files-requests`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(result.error || 'Submission failed.', 'error');
+        return;
+      }
+
+      close();
+      showToast('Files request submitted successfully.', 'success');
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request';
+    }
+  });
+}
+
+ // Opens a modal to select and submit different types of requests (leave, IT support, etc.)
 function openLeaveModal(user) {
   if (document.getElementById('leaveRequestModal')) return;
 
@@ -7892,13 +9417,384 @@ function openLeaveModal(user) {
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request'; }
   });
 
-  // ── Account Deletion Request ───────────────────────────────────────────────
+    // ── Account Deletion Request ───────────────────────────────────────────────
   document.getElementById('stgDeleteAccBtn').onclick = () =>
     showToast('Account deletion request sent to admin.', 'success');
+
+  // ── In-App Messaging ───────────────────────────────────────────────────────
+  document.getElementById('stgComposeBtn')?.addEventListener('click', () => {
+    stgReplyToMessage = null;
+    stgMessagingView = 'compose';
+    renderStgMessagingLayout();
+  });
+
+  loadStgMessagingData();
 
   // Apply saved display settings on load
   const fs = localStorage.getItem('fontSize');
   if (fs) document.documentElement.style.fontSize = fs + 'px';
+}
+
+async function loadStgMessagingData() {
+  try {
+    const [usersRes, msgRes] = await Promise.all([
+      fetch(`/api/users?exclude=${user.id}`),
+      fetch(`/api/messages?user_id=${user.id}&folder=${encodeURIComponent(stgMessageFolder)}`)
+    ]);
+
+    const usersData = await usersRes.json().catch(() => []);
+    const msgData = await msgRes.json().catch(() => []);
+
+    if (!usersRes.ok) {
+      throw new Error(usersData?.error || 'Failed to load users');
+    }
+
+    if (!msgRes.ok) {
+      throw new Error(msgData?.error || 'Failed to load messages');
+    }
+
+    stgUsers = Array.isArray(usersData) ? usersData : [];
+    stgMessages = Array.isArray(msgData) ? msgData : [];
+    renderStgMessagingLayout();
+  } catch (err) {
+    const mount = document.getElementById('stgMessagingMount');
+    if (mount) {
+      mount.innerHTML = `
+        <div class="stg-msg-empty">
+          <i class="ri-error-warning-line"></i>
+          <div>${escHtml(err.message || 'Failed to load messages.')}</div>
+        </div>
+      `;
+    }
+  }
+}
+
+function renderStgMessagingLayout() {
+  const mount = document.getElementById('stgMessagingMount');
+  if (!mount) return;
+
+  mount.innerHTML = `
+    <div class="stg-msg-shell">
+      <aside class="stg-msg-sidebar">
+        <button class="stg-msg-compose-main" id="stgMsgComposeMain">
+          <i class="ri-edit-box-line"></i>
+          <span>Compose</span>
+        </button>
+
+        <button class="stg-msg-folder ${stgMessageFolder === 'inbox' ? 'active' : ''}" data-folder="inbox">
+          <i class="ri-inbox-line"></i>
+          <span>Inbox</span>
+          <span class="stg-msg-folder-count">${stgMessages.filter(m => !m.is_read).length}</span>
+        </button>
+
+        <button class="stg-msg-folder ${stgMessageFolder === 'sent' ? 'active' : ''}" data-folder="sent">
+          <i class="ri-send-plane-line"></i>
+          <span>Sent</span>
+        </button>
+      </aside>
+
+      <section class="stg-msg-main" id="stgMsgMain"></section>
+    </div>
+  `;
+
+  document.getElementById('stgMsgComposeMain')?.addEventListener('click', () => {
+    stgReplyToMessage = null;
+    stgMessagingView = 'compose';
+    renderStgMessagingLayout();
+  });
+
+  mount.querySelectorAll('.stg-msg-folder').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      stgMessageFolder = btn.dataset.folder;
+      stgSelectedMessage = null;
+      stgReplyToMessage = null;
+      stgMessagingView = 'list';
+      await loadStgMessagingData();
+    });
+  });
+
+  const main = document.getElementById('stgMsgMain');
+  if (!main) return;
+
+  if (stgMessagingView === 'compose') {
+    renderStgComposeView(main);
+    return;
+  }
+
+  if (stgMessagingView === 'read' && stgSelectedMessage) {
+    renderStgMessageView(main, stgSelectedMessage);
+    return;
+  }
+
+  renderStgMessageList(main);
+}
+
+function renderStgMessageList(container) {
+  const items = stgMessages || [];
+
+  if (!items.length) {
+    container.innerHTML = `
+      <div class="stg-msg-empty">
+        <i class="ri-mail-open-line"></i>
+        <div>No messages in ${stgMessageFolder}.</div>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="stg-msg-list">
+      ${items.map(msg => {
+        const counterpartName = stgMessageFolder === 'sent'
+          ? (msg.recipient_name || msg.recipient_email || 'Unknown')
+          : (msg.sender_name || msg.sender_email || 'Unknown');
+
+        const preview = String(msg.body || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        const dateText = new Date(msg.created_at).toLocaleString();
+
+        return `
+          <div class="stg-msg-row ${!msg.is_read && stgMessageFolder === 'inbox' ? 'unread' : ''}" data-id="${msg.id}">
+            <div class="stg-msg-row-left">
+              <div class="stg-msg-avatar">${String(counterpartName).trim().charAt(0).toUpperCase()}</div>
+              <div class="stg-msg-meta">
+                <div class="stg-msg-topline">
+                  <span class="stg-msg-sender">${escHtml(counterpartName)}</span>
+                  <span class="stg-msg-date">${escHtml(dateText)}</span>
+                </div>
+                <div class="stg-msg-subject">${escHtml(msg.subject || '(No subject)')}</div>
+                <div class="stg-msg-preview">${escHtml(preview || 'No preview available')}</div>
+              </div>
+            </div>
+            <div class="stg-msg-status-dot ${!msg.is_read && stgMessageFolder === 'inbox' ? 'unread' : 'read'}"></div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  container.querySelectorAll('.stg-msg-row').forEach(row => {
+    row.addEventListener('click', async () => {
+      const msgId = row.dataset.id;
+
+      try {
+        const res = await fetch(`/api/messages/${msgId}?user_id=${user.id}`);
+        const full = await res.json();
+        if (!res.ok) {
+          showToast(full.error || 'Failed to open message.', 'error');
+          return;
+        }
+
+        stgSelectedMessage = full;
+        stgMessagingView = 'read';
+
+        if (stgMessageFolder === 'inbox' && !full.is_read) {
+          await fetch(`/api/messages/${msgId}/read`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: user.id, is_read: true })
+          }).catch(() => {});
+          full.is_read = true;
+          stgMessages = stgMessages.map(m => String(m.id) === String(msgId) ? { ...m, is_read: true } : m);
+        }
+
+        renderStgMessagingLayout();
+      } catch {
+        showToast('Network error.', 'error');
+      }
+    });
+  });
+}
+
+function renderStgMessageView(container, msg) {
+  const isInbox = Number(msg.recipient_id) === Number(user.id);
+  const otherName = isInbox
+    ? (msg.sender_name || msg.sender_email || 'Unknown')
+    : (msg.recipient_name || msg.recipient_email || 'Unknown');
+
+  container.innerHTML = `
+    <div class="stg-msg-view">
+      <div class="stg-msg-view-toolbar">
+        <div class="stg-msg-view-actions">
+          <button class="stg-outline-btn" id="stgMsgBackBtn"><i class="ri-arrow-left-line"></i> Back</button>
+          ${isInbox ? `<button class="stg-outline-btn" id="stgMsgReplyBtn"><i class="ri-reply-line"></i> Reply</button>` : ''}
+          <button class="stg-outline-btn" id="stgMsgToggleReadBtn">
+            <i class="ri-mail-${msg.is_read ? 'unread' : 'open'}-line"></i>
+            ${msg.is_read ? 'Mark unread' : 'Mark read'}
+          </button>
+          <button class="stg-delete-btn" id="stgMsgDeleteBtn"><i class="ri-delete-bin-line"></i> Delete</button>
+        </div>
+      </div>
+
+      <div class="stg-msg-read-card">
+        <div class="stg-msg-read-subject">${escHtml(msg.subject || '(No subject)')}</div>
+        <div class="stg-msg-read-meta">
+          <div><strong>${isInbox ? 'From' : 'To'}:</strong> ${escHtml(otherName)}</div>
+          <div><strong>${isInbox ? 'To' : 'From'}:</strong> ${escHtml(isInbox ? (msg.recipient_name || msg.recipient_email || user.email) : (msg.sender_name || msg.sender_email || user.email))}</div>
+          <div><strong>Date:</strong> ${escHtml(new Date(msg.created_at).toLocaleString())}</div>
+        </div>
+        <div class="stg-msg-read-body">${escHtml(msg.body || '').replace(/\n/g, '<br>')}</div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('stgMsgBackBtn')?.addEventListener('click', () => {
+    stgMessagingView = 'list';
+    renderStgMessagingLayout();
+  });
+
+  document.getElementById('stgMsgReplyBtn')?.addEventListener('click', () => {
+    stgReplyToMessage = msg;
+    stgMessagingView = 'compose';
+    renderStgMessagingLayout();
+  });
+
+  document.getElementById('stgMsgToggleReadBtn')?.addEventListener('click', async () => {
+    if (!isInbox) return;
+
+    try {
+      const nextRead = !msg.is_read;
+      const res = await fetch(`/api/messages/${msg.id}/read`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: user.id, is_read: nextRead })
+      });
+
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(result.error || 'Failed to update message.', 'error');
+        return;
+      }
+
+      msg.is_read = nextRead;
+      stgMessages = stgMessages.map(m => Number(m.id) === Number(msg.id) ? { ...m, is_read: nextRead } : m);
+      renderStgMessagingLayout();
+      showToast(`Message marked as ${nextRead ? 'read' : 'unread'}.`, 'success');
+    } catch {
+      showToast('Network error.', 'error');
+    }
+  });
+
+  document.getElementById('stgMsgDeleteBtn')?.addEventListener('click', async () => {
+    try {
+      const res = await fetch(`/api/messages/${msg.id}?user_id=${user.id}`, { method: 'DELETE' });
+      const result = await res.json();
+
+      if (!res.ok) {
+        showToast(result.error || 'Delete failed.', 'error');
+        return;
+      }
+
+      stgSelectedMessage = null;
+      stgMessagingView = 'list';
+      await loadStgMessagingData();
+      showToast('Message deleted.', 'success');
+    } catch {
+      showToast('Network error.', 'error');
+    }
+  });
+}
+
+function renderStgComposeView(container) {
+  const reply = stgReplyToMessage;
+  const defaultSubject = reply
+    ? ((reply.subject || '').startsWith('Re:') ? reply.subject : `Re: ${reply.subject || ''}`)
+    : '';
+
+  container.innerHTML = `
+    <div class="stg-msg-compose">
+      <div class="stg-msg-view-toolbar">
+        <div class="stg-msg-view-actions">
+          <button class="stg-outline-btn" id="stgComposeBackBtn"><i class="ri-arrow-left-line"></i> Back</button>
+        </div>
+      </div>
+
+      <div class="stg-msg-compose-card">
+        <div class="form-group">
+          <label>Recipient</label>
+          <select id="stgMsgRecipient">
+            <option value="">Select recipient…</option>
+            ${stgUsers.map(u => `
+              <option value="${u.id}" ${reply && Number(reply.sender_id) === Number(u.id) ? 'selected' : ''}>
+                ${escHtml(u.full_name || u.email)}${u.role ? ` (${escHtml(u.role)})` : ''}
+              </option>
+            `).join('')}
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Subject</label>
+          <input type="text" id="stgMsgSubject" value="${escHtml(defaultSubject)}" placeholder="Enter subject">
+        </div>
+
+        <div class="form-group">
+          <label>Message</label>
+          <textarea id="stgMsgBody" class="stg-msg-textarea" placeholder="Write your message here...">${reply ? `\n\n--- Original message ---\n${reply.body || ''}` : ''}</textarea>
+        </div>
+
+        <div class="modal-actions">
+          <button class="tool-btn" id="stgComposeCancelBtn">Cancel</button>
+          <button class="tool-btn apply-btn" id="stgComposeSendBtn">
+            <i class="ri-send-plane-fill"></i> Send
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const goBack = () => {
+    stgMessagingView = stgSelectedMessage ? 'read' : 'list';
+    renderStgMessagingLayout();
+  };
+
+  document.getElementById('stgComposeBackBtn')?.addEventListener('click', goBack);
+  document.getElementById('stgComposeCancelBtn')?.addEventListener('click', goBack);
+
+  document.getElementById('stgComposeSendBtn')?.addEventListener('click', async () => {
+    const recipient_id = document.getElementById('stgMsgRecipient').value;
+    const subject = document.getElementById('stgMsgSubject').value.trim();
+    const body = document.getElementById('stgMsgBody').value.trim();
+    const btn = document.getElementById('stgComposeSendBtn');
+
+    if (!recipient_id || !subject || !body) {
+      showToast('Recipient, subject, and message are required.', 'error');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Sending…';
+
+    try {
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_id: user.id,
+          recipient_id: Number(recipient_id),
+          subject,
+          body,
+          parent_message_id: reply ? reply.id : null
+        })
+      });
+
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(result.error || 'Failed to send message.', 'error');
+        return;
+      }
+
+      stgMessageFolder = 'sent';
+      stgReplyToMessage = null;
+      stgSelectedMessage = null;
+      stgMessagingView = 'list';
+      await loadStgMessagingData();
+      showToast('Message sent successfully.', 'success');
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Send';
+    }
+  });
 }
 
 function _stgApplyDisplaySettings() {
@@ -7933,9 +9829,13 @@ function applyTypographySettings(sizeValue) {
 
 /* ================= ACCEPTANCE PAGE ================= */
 
-let accAllProjects  = [];
-let accAllSites     = {};
-let accOpenProjects = new Set();
+let accAllProjects   = [];
+let accAllSites      = {};
+let accOpenProjects  = new Set();
+let accSelectMode    = {};
+let accSelectedRows  = {};
+let accMediaSelectMode = {};
+let accSelectedMedia   = {};
 
 function loadAcceptance() {
   accAllProjects  = [];
@@ -7951,6 +9851,9 @@ function loadAcceptance() {
             <i class="ri-search-line"></i>
             <input type="text" id="accSearch" placeholder="Search here…">
           </div>
+          <button class="acc-btn" id="accImportBtn">
+            <i class="ri-upload-cloud-2-line"></i> Import
+          </button>
           <button class="acc-btn acc-btn-primary" id="accAddProjectBtn">
             <i class="ri-add-line"></i> Add Project
           </button>
@@ -7984,6 +9887,7 @@ function loadAcceptance() {
     accRenderProjects(this.value.toLowerCase().trim());
   });
 
+  document.getElementById('accImportBtn').addEventListener('click', () => accOpenProjectImportPicker());
   document.getElementById('accAddProjectBtn').addEventListener('click', () => accOpenAddProjectModal());
 
   accFetchProjects();
@@ -8117,10 +10021,198 @@ async function accFetchSites(projectName, card) {
   }
 }
 
+
+function accOpenMediaModal(siteId, siteName, tab) {
+  // Remove any existing instance
+  document.getElementById('accMediaModalOverlay')?.remove();
+
+  const m = document.createElement('div');
+  m.id = 'accMediaModalOverlay';
+  m.className = 'modal-overlay';
+    m.innerHTML = `
+    <div class="acc-modal-shell acc-media-modal" style="max-width:720px;width:95vw;">
+      <div class="acc-modal-header acc-media-head">
+        <div class="acc-modal-title-row acc-media-head-left">
+          <div class="acc-modal-icon acc-media-icon"><i class="ri-upload-cloud-2-line"></i></div>
+          <div class="acc-media-title-wrap">
+            <div class="acc-modal-title">${escHtml(siteName)}</div>
+            <div class="acc-modal-sub">Manage uploads</div>
+          </div>
+        </div>
+
+        <div class="acc-media-head-right">
+          <input type="file" id="accUploadInput" style="display:none;" multiple>
+
+          <button
+            type="button"
+            class="acc-modal-close-btn acc-media-close"
+            id="accMediaClose"
+            aria-label="Close"
+          >
+            <i class="ri-close-line"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="acc-modal-tabs" style="display:flex;gap:0;padding:0 20px;border-bottom:1px solid var(--border,#e5e7eb);">
+        ${['files','images','videos'].map(t => `
+          <button type="button" class="acc-tab-btn${t === tab ? ' active' : ''}" data-tab="${t}"
+            style="padding:10px 18px;border:none;background:none;cursor:pointer;font-weight:600;
+                   border-bottom:2px solid ${t === tab ? 'var(--primary,#2f4b85)' : 'transparent'};
+                   color:${t === tab ? 'var(--primary,#2f4b85)' : '#64748b'};">
+            <i class="ri-${t === 'files' ? 'folder-open' : t === 'images' ? 'image' : 'video'}-line"></i>
+            ${t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>`).join('')}
+      </div>
+
+      <div id="accMediaBody" class="acc-media-body"></div>
+
+      <div class="acc-modal-footer acc-media-footer">
+        <div id="accMediaFooterLeft" class="acc-media-footer-left"></div>
+
+        <div class="acc-media-footer-right">
+          <button
+            type="button"
+            class="acc-upload-btn acc-media-head-btn"
+            id="accMediaUploadBtn"
+            title="Upload files"
+            aria-label="Upload files"
+          >
+            <i class="ri-upload-2-line"></i>
+          </button>
+
+          <button
+            type="button"
+            class="acc-upload-btn acc-media-head-btn"
+            id="accMediaSelectBtn"
+            title="Select items"
+            aria-label="Select items"
+          >
+            <i class="ri-checkbox-multiple-line"></i>
+          </button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(m);
+
+  let currentTab = tab;
+
+  const close = () => {
+    if (m._accMenuOutsideHandler) {
+      document.removeEventListener('click', m._accMenuOutsideHandler);
+      m._accMenuOutsideHandler = null;
+    }
+    m.remove();
+  };
+
+    document.getElementById('accMediaClose').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  // Tab switching
+  m.querySelectorAll('.acc-tab-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+      currentTab = this.dataset.tab;
+      m.querySelectorAll('.acc-tab-btn').forEach(b => {
+        const isActive = b.dataset.tab === currentTab;
+        b.style.borderBottomColor = isActive ? 'var(--primary,#2f4b85)' : 'transparent';
+        b.style.color = isActive ? 'var(--primary,#2f4b85)' : '#64748b';
+        b.classList.toggle('active', isActive);
+      });
+      _accSetUploadAccept(currentTab, uploadInput);
+      accLoadMediaTab(siteId, currentTab, m, false);
+    });
+  });
+
+  // Upload button + hidden file input
+  const uploadBtn   = document.getElementById('accMediaUploadBtn');
+  const uploadInput = document.getElementById('accUploadInput');
+  _accSetUploadAccept(currentTab, uploadInput);
+
+  uploadBtn.addEventListener('click', () => uploadInput.click());
+
+    uploadInput.addEventListener('change', async function () {
+    const files = Array.from(this.files || []);
+    if (!files.length) return;
+
+    const uploadTab = currentTab;
+    const invalid = files.filter(f => !accIsValidUploadFile(f, uploadTab));
+    if (invalid.length) {
+      showToast(`Invalid file type(s): ${invalid.map(f => f.name).join(', ')}`, 'error');
+      this.value = '';
+      return;
+    }
+
+        uploadBtn.disabled = true;
+    uploadBtn.innerHTML = '<i class="ri-loader-4-line spin"></i>';
+
+    try {
+      const fd = new FormData();
+      const fieldName = uploadTab === 'images' ? 'image'
+                      : uploadTab === 'videos' ? 'video'
+                      : 'file';
+
+      files.forEach(f => fd.append(fieldName, f, f.name));
+      fd.append('site_id', siteId);
+      fd.append('uploaded_by', user?.id || '');
+
+      const endpoint = uploadTab === 'images' ? 'images'
+                     : uploadTab === 'videos' ? 'videos'
+                     : 'files';
+
+      const res = await fetch(`/api/acceptance/${endpoint}`, { method: 'POST', body: fd });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(r.error || 'Upload failed');
+      }
+
+      showToast(`${r.uploaded || files.length} file(s) uploaded.`, 'success');
+
+      if (!m._accMediaCache) m._accMediaCache = {};
+      delete m._accMediaCache[uploadTab];
+
+      await accLoadMediaTab(siteId, uploadTab, m, true);
+
+      const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
+      if (row) {
+        const card = row.closest('.acc-project-card');
+        if (card) {
+          const pn = card.dataset.project;
+          delete accAllSites[pn];
+          await accFetchSites(pn, card);
+        }
+      }
+    } catch (err) {
+      showToast(err.message || 'Upload failed.', 'error');
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.innerHTML = '<i class="ri-upload-2-line"></i>';
+      uploadBtn.title = 'Upload files';
+      uploadBtn.setAttribute('aria-label', 'Upload files');
+      this.value = '';
+      _accSetUploadAccept(currentTab, uploadInput);
+    }
+  });
+
+  // Select / Done toggle
+  document.getElementById('accMediaSelectBtn').addEventListener('click', function () {
+    const key = accMediaSelectionKey(siteId, currentTab);
+    accMediaSelectMode[key] = !accMediaSelectMode[key];
+    if (!accMediaSelectMode[key]) accGetSelectedMediaSet(siteId, currentTab).clear();
+    accLoadMediaTab(siteId, currentTab, m, false);
+  });
+
+  // Load initial tab
+  accLoadMediaTab(siteId, currentTab, m, false);
+}
+
+
 function accRenderSitesTable(projectName, card, sites) {
   const body = card.querySelector('.acc-project-body');
   if (!body) return;
   const isAdmin = user && ['admin','executive','noc'].includes((user.role||'').toLowerCase());
+  const selectMode = !!accSelectMode[projectName];
+  if (!accSelectedRows[projectName]) accSelectedRows[projectName] = new Set();
 
   // Store projectName directly on the DOM element — no escaping issues
   body._accProjectName = projectName;
@@ -8133,6 +10225,9 @@ function accRenderSitesTable(projectName, card, sites) {
         <button class="acc-filter-chip"        data-filter="pending"><i class="ri-time-line" style="color:#f59e0b"></i> Pending</button>
       </div>
       <div class="acc-table-actions">
+        ${isAdmin ? `<button class="acc-btn" data-action="import"><i class="ri-upload-cloud-2-line"></i> Import</button>` : ''}
+        ${isAdmin ? `<button class="acc-btn" data-action="select"><i class="ri-checkbox-multiple-line"></i> ${selectMode ? 'Done' : 'Select'}</button>` : ''}
+        ${selectMode ? `<button class="acc-btn" data-action="delete"><i class="ri-delete-bin-line"></i> Delete</button>` : ''}
         ${isAdmin ? `<button class="acc-btn acc-btn-primary acc-add-site-btn" style="font-size:12px;padding:7px 14px;border-radius:8px;"><i class="ri-add-line"></i> Add Site</button>` : ''}
       </div>
     </div>
@@ -8140,8 +10235,11 @@ function accRenderSitesTable(projectName, card, sites) {
       <table class="acc-inner-table">
         <thead>
           <tr>
+            ${selectMode ? '<th style="text-align:center;width:46px;"><input type="checkbox" class="acc-bulk-chk" data-action="select-all"></th>' : ''}
             <th>Site Name</th>
             <th>Status</th>
+            <th>Installer</th>
+            <th>Acceptance Date</th>
             <th>By</th>
             <th style="text-align:center;">Upload</th>
             ${isAdmin ? '<th style="text-align:center;">Actions</th>' : ''}
@@ -8170,10 +10268,48 @@ function accRenderSitesTable(projectName, card, sites) {
     addSiteBtn.addEventListener('click', () => accOpenAddSiteModal(body._accProjectName));
   }
 
-  // Media open buttons
+  body.querySelectorAll('.acc-table-actions .acc-btn[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.action;
+      if (action === 'select') {
+        accSelectMode[projectName] = !selectMode;
+        if (!accSelectMode[projectName]) accSelectedRows[projectName].clear();
+        accRenderSitesTable(projectName, card, sites);
+      } else if (action === 'import') {
+      accOpenAcceptanceImportModal(projectName);
+      } else if (action === 'delete') {
+       accDeleteSelectedSites(projectName, card);
+}
+    });
+  });
+
+  body.querySelector('.acc-bulk-chk[data-action="select-all"]')?.addEventListener('change', function() {
+    const set = accSelectedRows[projectName];
+    set.clear();
+    if (this.checked) sites.forEach(site => set.add(String(site.id)));
+    accRenderSitesTable(projectName, card, sites);
+  });
+
+    // Media open buttons
   body.querySelectorAll('.acc-media-open-btn').forEach(btn => {
-    btn.addEventListener('click', function () {
-      accOpenMediaModal(parseInt(this.dataset.siteId), this.dataset.siteName, this.dataset.tab);
+    btn.replaceWith(btn.cloneNode(true));
+  });
+
+  body.querySelectorAll('.acc-media-open-btn').forEach(btn => {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const siteId = parseInt(this.dataset.siteId, 10);
+      const siteName = this.dataset.siteName || '';
+      const tab = this.dataset.tab || 'files';
+
+      if (!siteId) {
+        showToast('Invalid site ID.', 'error');
+        return;
+      }
+
+      accOpenMediaModal(siteId, siteName, tab);
     });
   });
 
@@ -8190,51 +10326,16 @@ function accRenderSitesTable(projectName, card, sites) {
       accDeleteSite(parseInt(this.dataset.siteId), body._accProjectName);
     });
   });
+
+  body.querySelectorAll('.acc-site-select').forEach(chk => {
+    chk.addEventListener('change', function() {
+      const set = accSelectedRows[projectName];
+      if (this.checked) set.add(this.value);
+      else set.delete(this.value);
+    });
+  });
 }
 
-function accSiteRows(sites, projectName, isAdmin) {
-  if (!sites.length) return '';
-  return sites.map(s => {
-    const isDone    = (s.status||'').toLowerCase() === 'done';
-    const fileCount = parseInt(s.file_count  || 0);
-    const imgCount  = parseInt(s.image_count || 0);
-    const vidCount  = parseInt(s.video_count || 0);
-    const safeP     = escHtml(projectName);
-    const safeName  = escHtml(s.site_name);
-    return `
-      <tr class="acc-site-row" data-status="${isDone ? 'done' : 'pending'}" data-id="${s.id}">
-        <td class="acc-site-name">${safeName}</td>
-        <td>
-          <span class="acc-status-badge ${isDone ? 'done' : 'pending'}">
-            ${isDone ? '<i class="ri-checkbox-circle-fill"></i> Done' : '<i class="ri-time-line"></i> Pending'}
-          </span>
-        </td>
-        <td style="color:#64748b;font-size:13px;">${escHtml(s.uploader_name || '—')}</td>
-        <td class="acc-upload-cell">
-          <button class="acc-upload-btn acc-media-open-btn" title="Files"  data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="files">
-            <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-media-count">${fileCount}</span>` : ''}
-          </button>
-          <button class="acc-upload-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="images">
-            <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-media-count">${imgCount}</span>` : ''}
-          </button>
-          <button class="acc-upload-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${escHtml(s.site_name)}" data-tab="videos">
-            <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-media-count">${vidCount}</span>` : ''}
-          </button>
-        </td>
-        ${isAdmin ? `
-        <td style="text-align:center;white-space:nowrap;">
-          <button class="acc-upload-btn acc-toggle-status-btn" title="${isDone ? 'Mark Pending' : 'Mark Done'}"
-            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}" data-project="${safeP}">
-            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}" style="color:${isDone ? '#f59e0b' : '#22c55e'}"></i>
-          </button>
-          <button class="acc-upload-btn acc-delete-site-btn" title="Delete"
-            data-site-id="${s.id}" data-project="${safeP}">
-            <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
-          </button>
-        </td>` : ''}
-      </tr>`;
-  }).join('');
-}
 
 function accFilterSites(btn, projectName) {
   const filter = btn.dataset.filter;
@@ -8246,6 +10347,55 @@ function accFilterSites(btn, projectName) {
   tbody.querySelectorAll('tr.acc-site-row').forEach(row => {
     row.style.display = (filter === 'all' || row.dataset.status === filter) ? '' : 'none';
   });
+}
+
+function accSiteRows(sites, projectName, isAdmin) {
+  if (!sites.length) return '';
+  const selectMode = !!accSelectMode[projectName];
+  const selected = accSelectedRows[projectName] || new Set();
+  return sites.map(s => {
+    const isDone = (s.status || '').toLowerCase() === 'done';
+    const fileCount = parseInt(s.file_count || 0);
+    const imgCount = parseInt(s.image_count || 0);
+    const vidCount = parseInt(s.video_count || 0);
+    const safeP = escHtml(projectName);
+    const safeName = escHtml(s.site_name);
+    return `
+      <tr class="acc-site-row" data-status="${isDone ? 'done' : 'pending'}" data-id="${s.id}">
+        ${selectMode ? `<td style="text-align:center;"><input type="checkbox" class="acc-site-select" value="${s.id}" ${selected.has(String(s.id)) ? 'checked' : ''}></td>` : ''}
+        <td class="acc-site-name">${safeName}</td>
+        <td>
+          <span class="acc-status-badge ${isDone ? 'done' : 'pending'}">
+            ${isDone ? '<i class="ri-checkbox-circle-fill"></i> Done' : '<i class="ri-time-line"></i> Pending'}
+          </span>
+        </td>
+        <td style="color:#64748b;font-size:13px;">${escHtml(s.installer_name || '—')}</td>
+        <td style="color:#64748b;font-size:13px;">${s.acceptance_date ? new Date(s.acceptance_date).toLocaleDateString() : '—'}</td>
+        <td style="color:#64748b;font-size:13px;">${escHtml(s.uploader_name || '—')}</td>
+        <td class="acc-upload-cell">
+            <button type="button" class="acc-upload-btn acc-media-open-btn" title="Files" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="files">
+            <i class="ri-folder-open-line"></i>${fileCount > 0 ? `<span class="acc-media-count">${fileCount}</span>` : ''}
+          </button>
+            <button type="button" class="acc-upload-btn acc-media-open-btn" title="Images" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="images">
+            <i class="ri-image-line"></i>${imgCount > 0 ? `<span class="acc-media-count">${imgCount}</span>` : ''}
+          </button>
+            <button type="button" class="acc-upload-btn acc-media-open-btn" title="Videos" data-site-id="${s.id}" data-site-name="${safeName}" data-tab="videos">
+            <i class="ri-video-line"></i>${vidCount > 0 ? `<span class="acc-media-count">${vidCount}</span>` : ''}
+          </button>
+        </td>
+        ${isAdmin ? `
+        <td style="text-align:center;white-space:nowrap;">
+          <button class="acc-upload-btn acc-toggle-status-btn" title="${isDone ? 'Mark Pending' : 'Mark Done'}"
+            data-site-id="${s.id}" data-new-status="${isDone ? 'Pending' : 'Done'}" data-project="${safeP}">
+            <i class="ri-${isDone ? 'refresh-line' : 'checkbox-circle-line'}" style="color:${isDone ? '#f59e0b' : '#22c55e'}"></i>
+          </button>
+          <button class="acc-upload-btn acc-delete-site-btn" title="Delete" data-site-id="${s.id}" data-project="${safeP}">
+            <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
+          </button>
+        </td>` : ''}
+      </tr>
+    `;
+  }).join('');
 }
 
 async function accToggleSiteStatus(siteId, newStatus, projectName) {
@@ -8300,6 +10450,326 @@ async function accRefreshProjectProgress(projectName) {
         <span>${parseInt(p.total_sites||0)} Total</span>`;
     }
   } catch {}
+}
+
+function accOpenProjectImportPicker() {
+  if (!accAllProjects.length) {
+    showToast('Create a project first before importing.', 'error');
+    return;
+  }
+  const m = document.createElement('div');
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="acc-modal-shell">
+      <div class="acc-modal-header">
+        <div class="acc-modal-title-row">
+          <div class="acc-modal-icon"><i class="ri-upload-cloud-2-line"></i></div>
+          <div>
+            <div class="acc-modal-title">Import Acceptance Data</div>
+            <div class="acc-modal-sub">Choose the project where the imported sites should go</div>
+          </div>
+        </div>
+        <button class="acc-modal-close-btn" id="accImportPickerClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="acc-modal-body">
+        <label class="acc-modal-label">Project</label>
+        <select id="accImportProjectSelect" class="acc-modal-input">
+          ${accAllProjects.map(project => `<option value="${escHtml(project.project_name)}">${escHtml(project.project_name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="acc-modal-footer">
+        <button class="acc-modal-cancel" id="accImportPickerCancel">Cancel</button>
+        <button class="acc-modal-submit" id="accImportPickerGo"><i class="ri-arrow-right-line"></i> Continue</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  document.getElementById('accImportPickerClose').onclick = close;
+  document.getElementById('accImportPickerCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+  document.getElementById('accImportPickerGo').onclick = () => {
+    const projectName = document.getElementById('accImportProjectSelect').value;
+    close();
+    accOpenAcceptanceImportModal(projectName);
+  };
+}
+
+function accOpenAcceptanceImportModal(projectName) {
+  const m = document.createElement('div');
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="modal-box add-modal-box" style="max-width:520px;">
+      <div class="add-modal-header">
+        <div class="add-modal-icon"><i class="ri-upload-cloud-2-line"></i></div>
+        <div class="add-modal-title"><h3>Import Acceptance Sites</h3><p>${escHtml(projectName)}</p></div>
+        <button class="modal-close-btn" id="accImportClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="add-modal-body">
+        <div class="import-drop-zone" id="accImportDropZone">
+          <i class="ri-file-upload-line" style="font-size:36px;color:#2f4b85;"></i>
+          <p style="margin:8px 0 4px;font-weight:600;color:#1e293b;">Drop file here or click to browse</p>
+          <p style="font-size:12px;color:#94a3b8;">CSV or XLSX. Required column: site_name. Optional: status, installer_name, acceptance_date.</p>
+          <input type="file" id="accImportFileInput" accept=".csv,.xlsx,.xls" class="hidden">
+        </div>
+        <div id="accImportFileName" style="font-size:13px;color:#2f4b85;margin-top:10px;min-height:18px;"></div>
+      </div>
+      <div class="add-modal-footer">
+        <span class="add-modal-hint"><i class="ri-information-line"></i> Wrong format or missing columns will show an error before import.</span>
+        <div class="modal-actions">
+          <button class="tool-btn" id="accImportCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="accImportConfirm" disabled><i class="ri-upload-2-line"></i> Import</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+
+  let parsedRows = [];
+  const close = () => m.remove();
+  document.getElementById('accImportClose').onclick = close;
+  document.getElementById('accImportCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  const zone = document.getElementById('accImportDropZone');
+  const input = document.getElementById('accImportFileInput');
+  const nameEl = document.getElementById('accImportFileName');
+  const confirmBtn = document.getElementById('accImportConfirm');
+
+  zone.onclick = () => input.click();
+  zone.ondragover = e => { e.preventDefault(); zone.classList.add('drop-hover'); };
+  zone.ondragleave = () => zone.classList.remove('drop-hover');
+  zone.ondrop = e => { e.preventDefault(); zone.classList.remove('drop-hover'); handleFile(e.dataTransfer.files[0]); };
+  input.onchange = () => handleFile(input.files[0]);
+
+  async function handleFile(file) {
+    if (!file) return;
+    parsedRows = [];
+    confirmBtn.disabled = true;
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith('.csv') && !lower.endsWith('.xlsx') && !lower.endsWith('.xls')) {
+      nameEl.textContent = 'Invalid file format. Please upload a CSV or Excel file.';
+      showToast('Invalid file format for acceptance import.', 'error');
+      return;
+    }
+    try {
+      const COLS = ['site_name', 'status', 'installer_name', 'acceptance_date'];
+      const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (lower.endsWith('.csv')) {
+        const text = await file.text();
+        const lines = text.split(/\r?\n/).filter(line => line.trim());
+        const headers = (lines[0] || '').split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+        parsedRows = lines.slice(1).map(line => {
+          const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,))/g) || [];
+          const row = {};
+          headers.forEach((header, idx) => {
+            const col = COLS.find(c => norm(c) === norm(header));
+            if (col) row[col] = (vals[idx] || '').replace(/^"|"$/g, '').trim();
+          });
+          return row;
+        }).filter(row => row.site_name);
+      } else {
+        await new Promise((resolve, reject) => {
+          if (window.XLSX) return resolve();
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+        const ab = await file.arrayBuffer();
+        const wb = XLSX.read(ab, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
+        parsedRows = raw.map(row => {
+          const out = {};
+          Object.entries(row).forEach(([header, value]) => {
+            const col = COLS.find(c => norm(c) === norm(header));
+            if (col) out[col] = String(value || '').trim();
+          });
+          return out;
+        }).filter(row => row.site_name);
+      }
+
+      if (!parsedRows.length) {
+        nameEl.textContent = 'No valid rows found. Required column: site_name.';
+        showToast('No valid rows found in the uploaded file.', 'error');
+        return;
+      }
+
+      nameEl.textContent = `${file.name} — ${parsedRows.length} row(s) ready to import`;
+      confirmBtn.disabled = false;
+    } catch (err) {
+      nameEl.textContent = `Could not read file: ${err.message}`;
+      showToast('Could not read the uploaded file.', 'error');
+    }
+  }
+
+  confirmBtn.onclick = async () => {
+    if (!parsedRows.length) return;
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<i class="ri-loader-4-line spin"></i> Importing…';
+    try {
+      const res = await fetch('/api/acceptance/sites/import-json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: projectName, rows: parsedRows, uploaded_by: user?.id || null })
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        showToast(result.error || 'Import failed.', 'error');
+        return;
+      }
+      close();
+      showToast(`Imported ${result.inserted} site(s).`, 'success');
+      delete accAllSites[projectName];
+      const card = document.querySelector(`.acc-project-card[data-project="${CSS.escape(projectName)}"]`);
+      if (card) {
+        await accFetchSites(projectName, card);
+        await accRefreshProjectProgress(projectName);
+      } else {
+        await accFetchProjects();
+      }
+    } catch {
+      showToast('Network error during import.', 'error');
+    } finally {
+      confirmBtn.disabled = false;
+      confirmBtn.innerHTML = '<i class="ri-upload-2-line"></i> Import';
+    }
+  };
+}
+
+function accExportSelectedSites(projectName) {
+  const ids = Array.from(accSelectedRows[projectName] || []);
+  const rows = (accAllSites[projectName] || []).filter(site => ids.includes(String(site.id)));
+  if (!rows.length) {
+    showToast('No acceptance rows selected.', 'error');
+    return;
+  }
+  const csv = [
+    'site_name,status,installer_name,acceptance_date,uploaded_by',
+    ...rows.map(row => [
+      row.site_name || '',
+      row.status || '',
+      row.installer_name || '',
+      row.acceptance_date || '',
+      row.uploader_name || ''
+    ].map(value => `"${String(value).replace(/"/g, '""')}"`).join(','))
+  ].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `${projectName.replace(/[^\w-]+/g, '_')}_acceptance.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  showToast(`${rows.length} acceptance row(s) exported.`, 'success');
+}
+
+async function accDeleteSelectedSites(projectName, card) {
+  const ids = Array.from(accSelectedRows[projectName] || []);
+  if (!ids.length) {
+    showToast('No acceptance rows selected.', 'error');
+    return;
+  }
+  if (!confirm(`Delete ${ids.length} selected site(s)?`)) return;
+  try {
+    const res = await fetch('/api/acceptance/sites/bulk-delete', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids })
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'Delete failed');
+    accSelectedRows[projectName].clear();
+    delete accAllSites[projectName];
+    if (card) {
+      await accFetchSites(projectName, card);
+      await accRefreshProjectProgress(projectName);
+    }
+    showToast(`${result.deleted || ids.length} site(s) deleted.`, 'success');
+  } catch (err) {
+    showToast(err.message || 'Bulk delete failed.', 'error');
+  }
+}
+
+function accMediaSelectionKey(siteId, tab) {
+  return `${siteId}:${tab}`;
+}
+
+function accGetSelectedMediaSet(siteId, tab) {
+  const key = accMediaSelectionKey(siteId, tab);
+  if (!accSelectedMedia[key]) accSelectedMedia[key] = new Set();
+  return accSelectedMedia[key];
+}
+
+async function accDeleteSelectedMedia(siteId, tab, modal) {
+  const selected = Array.from(accGetSelectedMediaSet(siteId, tab));
+  if (!selected.length) {
+    showToast('No uploaded items selected.', 'error');
+    return;
+  }
+
+  if (!confirm(`Delete ${selected.length} selected item(s)?`)) return;
+
+  try {
+    const res = await fetch('/api/acceptance/media/bulk-delete', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: tab, ids: selected })
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showToast(result.error || 'Bulk delete failed.', 'error');
+      return;
+    }
+
+    accGetSelectedMediaSet(siteId, tab).clear();
+
+    if (modal._accMediaCache && modal._accMediaCache[tab]) {
+      modal._accMediaCache[tab] = modal._accMediaCache[tab].filter(item => !selected.includes(String(item.id)));
+    }
+
+    showToast(`${result.deleted || selected.length} item(s) deleted.`, 'success');
+    await accLoadMediaTab(siteId, tab, modal, true);
+
+    const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
+    if (row) {
+      const card = row.closest('.acc-project-card');
+      if (card) {
+        const pn = card.dataset.project;
+        delete accAllSites[pn];
+        await accFetchSites(pn, card);
+      }
+    }
+  } catch {
+    showToast('Bulk delete failed.', 'error');
+  }
+}
+
+function accExportSelectedMedia(siteId, tab, modal) {
+  const selected = Array.from(accGetSelectedMediaSet(siteId, tab));
+  if (!selected.length) {
+    showToast('No uploaded items selected.', 'error');
+    return;
+  }
+
+  const items = (modal?._accMediaCache?.[tab] || []).filter(item => selected.includes(String(item.id)));
+  if (!items.length) {
+    showToast('No uploaded items selected.', 'error');
+    return;
+  }
+
+  items.forEach((item, index) => {
+    const path = item.file_path || item.image_path || item.video_path || '#';
+    const link = document.createElement('a');
+    link.href = path;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.download = item.file_name || item.image_name || item.video_name || `download-${index + 1}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  });
+
+  showToast(`${items.length} item(s) exported.`, 'success');
 }
 
 function accOpenAddProjectModal() {
@@ -8366,6 +10836,8 @@ function accOpenAddSiteModal(projectName) {
       <div class="acc-modal-body">
         <label class="acc-modal-label">Site Name <span style="color:#ef4444">*</span></label>
         <input type="text" id="accSiteNameInput" class="acc-modal-input" placeholder="e.g. VSTG2-L1-001">
+        <label class="acc-modal-label" style="margin-top:14px;">Installer Name</label>
+        <input type="text" id="accInstallerNameInput" class="acc-modal-input" placeholder="Installer name">
         <label class="acc-modal-label" style="margin-top:14px;">Initial Status</label>
         <div class="acc-modal-status-row">
           <label class="acc-modal-radio-label"><input type="radio" name="accSiteStatus" value="Pending" checked> Pending</label>
@@ -8385,13 +10857,15 @@ function accOpenAddSiteModal(projectName) {
   document.getElementById('accSiteSubmit').addEventListener('click', async () => {
     const name   = document.getElementById('accSiteNameInput').value.trim();
     const status = document.querySelector('input[name="accSiteStatus"]:checked')?.value || 'Pending';
+    const installer_name = document.getElementById('accInstallerNameInput').value.trim();
+    const acceptance_date = null;
     if (!name) { showToast('Please enter a site name.', 'error'); return; }
     const btn = document.getElementById('accSiteSubmit');
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Adding…';
     try {
       const res = await fetch('/api/acceptance/sites', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ site_name: name, status, project_name: projectName, uploaded_by: user?.id || null })
+        body: JSON.stringify({ site_name: name, status, project_name: projectName, uploaded_by: user?.id || null, installer_name })
       });
       if (!res.ok) { const r = await res.json(); showToast(r.error || 'Failed.', 'error'); return; }
       close(); showToast('Site added!', 'success');
@@ -8403,161 +10877,345 @@ function accOpenAddSiteModal(projectName) {
   });
 }
 
-function accOpenMediaModal(siteId, siteName, defaultTab) {
-  const m = document.createElement('div');
-  m.className = 'modal-overlay';
-  m.innerHTML = `
-    <div class="acc-media-shell">
-      <div class="acc-modal-header">
-        <div class="acc-modal-title-row">
-          <div class="acc-modal-icon"><i class="ri-upload-cloud-2-line"></i></div>
-          <div>
-            <div class="acc-modal-title">Site Uploads</div>
-            <div class="acc-modal-sub">${escHtml(siteName)}</div>
-          </div>
-        </div>
-        <button class="acc-modal-close-btn" id="accMediaClose"><i class="ri-close-line"></i></button>
-      </div>
-      <div class="acc-media-tabs">
-        <button class="acc-media-tab ${defaultTab==='files'  ? 'active':''}" data-tab="files"><i class="ri-folder-open-line"></i> Files</button>
-        <button class="acc-media-tab ${defaultTab==='images' ? 'active':''}" data-tab="images"><i class="ri-image-line"></i> Images</button>
-        <button class="acc-media-tab ${defaultTab==='videos' ? 'active':''}" data-tab="videos"><i class="ri-video-line"></i> Videos</button>
-      </div>
-      <div class="acc-media-body" id="accMediaBody">
-        <div class="acc-loading"><i class="ri-loader-4-line spin"></i><span>Loading…</span></div>
-      </div>
-      <div class="acc-media-footer">
-        <label class="acc-media-upload-btn" id="accUploadLabel">
-          <i class="ri-upload-2-line"></i> Upload
-          <input type="file" id="accUploadInput" style="display:none;" multiple>
-        </label>
-      </div>
-    </div>`;
-  document.body.appendChild(m);
-
-  let currentTab = defaultTab;
-  const close = () => m.remove();
-  document.getElementById('accMediaClose').onclick = close;
-  m.onclick = e => { if (e.target === m) close(); };
-
-  m.querySelectorAll('.acc-media-tab').forEach(tab => {
-    tab.addEventListener('click', function () {
-      m.querySelectorAll('.acc-media-tab').forEach(t => t.classList.remove('active'));
-      this.classList.add('active');
-      currentTab = this.dataset.tab;
-      _accSetUploadAccept(currentTab);
-      accLoadMediaTab(siteId, currentTab, m);
-    });
-  });
-
-  _accSetUploadAccept(currentTab);
-
-  document.getElementById('accUploadInput').addEventListener('change', async function () {
-    const files = Array.from(this.files);
-    if (!files.length) return;
-    const label = document.getElementById('accUploadLabel');
-    label.innerHTML = '<i class="ri-loader-4-line spin"></i> Uploading…';
-    label.style.pointerEvents = 'none';
-    let ok = 0;
-    for (const file of files) {
-      try {
-        const fd  = new FormData();
-        const key = currentTab === 'files' ? 'file' : currentTab === 'images' ? 'image' : 'video';
-        fd.append(key, file);
-        fd.append('uploaded_by', user?.id || '');
-        const res = await fetch(`/api/acceptance/sites/${siteId}/${currentTab}`, { method: 'POST', body: fd });
-        if (res.ok) ok++;
-      } catch {}
-    }
-    label.innerHTML = '<i class="ri-upload-2-line"></i> Upload';
-    label.style.pointerEvents = '';
-    this.value = '';
-    if (ok) {
-      showToast(`${ok} file(s) uploaded.`, 'success');
-      accLoadMediaTab(siteId, currentTab, m);
-      const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
-      if (row) {
-        const card = row.closest('.acc-project-card');
-        if (card) { const pn = card.dataset.project; delete accAllSites[pn]; accFetchSites(pn, card); }
-      }
-    } else { showToast('Upload failed.', 'error'); }
-  });
-
-  accLoadMediaTab(siteId, currentTab, m);
-}
-
-function _accSetUploadAccept(tab) {
-  const input = document.getElementById('accUploadInput');
-  if (!input) return;
-  input.accept   = tab === 'images' ? 'image/*' : tab === 'videos' ? 'video/*' : '*/*';
-  input.multiple = true;
-}
-
-async function accLoadMediaTab(siteId, tab, modal) {
+async function accLoadMediaTab(siteId, tab, modal, forceRefresh = false) {
   const body = modal.querySelector('#accMediaBody');
+  const footerLeft = modal.querySelector('#accMediaFooterLeft');
+  const selectBtn = modal.querySelector('#accMediaSelectBtn');
   if (!body) return;
-  body.innerHTML = `<div class="acc-loading"><i class="ri-loader-4-line spin"></i><span>Loading…</span></div>`;
-  try {
-    const res   = await fetch(`/api/acceptance/sites/${siteId}/media`);
-    const data  = await res.json();
-    const items = data[tab] || [];
-    if (!items.length) {
-      body.innerHTML = `<div class="acc-media-empty"><i class="ri-inbox-line"></i><span>No ${tab} uploaded yet.</span></div>`;
+
+  const key = accMediaSelectionKey(siteId, tab);
+  const selectMode = !!accMediaSelectMode[key];
+  const selected = accGetSelectedMediaSet(siteId, tab);
+
+  if (footerLeft) footerLeft.innerHTML = '';
+    if (selectBtn) {
+    selectBtn.innerHTML = `<i class="${selectMode ? 'ri-check-line' : 'ri-checkbox-multiple-line'}"></i>`;
+    selectBtn.title = selectMode ? 'Done selecting' : 'Select items';
+    selectBtn.setAttribute('aria-label', selectMode ? 'Done selecting' : 'Select items');
+    selectBtn.classList.toggle('active-tool', selectMode);
+    selectBtn.classList.toggle('is-active', selectMode);
+  }
+
+  if (!modal._accMediaCache) modal._accMediaCache = {};
+
+  let items = modal._accMediaCache[tab];
+
+  if (forceRefresh || !items) {
+    if (!body.children.length) {
+      body.innerHTML = `<div class="acc-loading"><i class="ri-loader-4-line spin"></i><span>Loading…</span></div>`;
+    }
+
+    try {
+      const res = await fetch(`/api/acceptance/sites/${siteId}/media`);
+      const data = await res.json();
+      modal._accMediaCache = data || {};
+      items = modal._accMediaCache[tab] || [];
+    } catch {
+      if (!body.children.length) {
+        body.innerHTML = `<div class="acc-media-empty"><i class="ri-error-warning-line"></i><span>Failed to load.</span></div>`;
+      }
       return;
     }
-    body.innerHTML = `<div class="acc-media-list">${items.map(item => accMediaItemHTML(item, tab)).join('')}</div>`;
-    body.querySelectorAll('.acc-media-delete-btn').forEach(btn => {
-      btn.addEventListener('click', async function () {
-        if (!confirm('Delete this file?')) return;
-        try {
-          const r = await fetch(`/api/acceptance/${this.dataset.type}/${this.dataset.id}`, { method: 'DELETE' });
-          if (!r.ok) throw new Error();
-          showToast('Deleted.', 'success');
-          accLoadMediaTab(siteId, tab, modal);
-          const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
-          if (row) {
-            const card = row.closest('.acc-project-card');
-            if (card) { const pn = card.dataset.project; delete accAllSites[pn]; accFetchSites(pn, card); }
-          }
-        } catch { showToast('Delete failed.', 'error'); }
+  }
+
+    if (selectMode && footerLeft) {
+    footerLeft.innerHTML = `
+      <div class="acc-media-bulkbar">
+        <label class="bulk-select-all-wrap acc-media-select-all-wrap">
+          <input type="checkbox" id="accMediaSelectAll">
+          <span class="bulk-select-all-label"><i class="ri-check-double-line"></i> Select All</span>
+        </label>
+
+        <span class="bulk-count-badge acc-media-selected-badge" id="accMediaSelectedCount">
+          <i class="ri-checkbox-multiple-line"></i> ${selected.size} selected
+        </span>
+
+        <button class="tool-btn" id="accMediaBulkExport" ${selected.size ? '' : 'disabled'}>
+          <i class="ri-download-2-line"></i> Export
+        </button>
+
+        <button class="tool-btn danger-btn" id="accMediaBulkDelete" ${selected.size ? '' : 'disabled'}>
+          <i class="ri-delete-bin-line"></i> Delete
+        </button>
+      </div>
+    `;
+  }
+
+  if (!items.length) {
+    body.innerHTML = `<div class="acc-media-empty"><i class="ri-inbox-line"></i><span>No ${tab} uploaded yet.</span></div>`;
+    return;
+  }
+
+  body.innerHTML = `
+    <div class="acc-media-list acc-media-grid">
+      ${items.map(item => accMediaItemHTML(item, tab, selectMode, selected)).join('')}
+    </div>
+  `;
+
+  if (selectMode) {
+    const selectAll = modal.querySelector('#accMediaSelectAll');
+    const selectedCount = modal.querySelector('#accMediaSelectedCount');
+    const bulkDeleteBtn = modal.querySelector('#accMediaBulkDelete');
+    const bulkExportBtn = modal.querySelector('#accMediaBulkExport');
+
+    const syncBulkState = () => {
+      const allChecked = items.length > 0 && items.every(item => selected.has(String(item.id)));
+      const anyChecked = items.some(item => selected.has(String(item.id)));
+
+      if (selectAll) {
+        selectAll.checked = allChecked;
+        selectAll.indeterminate = anyChecked && !allChecked;
+      }
+
+      if (selectedCount) {
+        selectedCount.innerHTML = `<i class="ri-checkbox-multiple-line"></i> ${selected.size} selected`;
+      }
+
+      if (bulkDeleteBtn) bulkDeleteBtn.disabled = selected.size === 0;
+      if (bulkExportBtn) bulkExportBtn.disabled = selected.size === 0;
+    };
+
+    syncBulkState();
+
+    if (selectAll) {
+      selectAll.addEventListener('change', function () {
+        selected.clear();
+        if (this.checked) items.forEach(item => selected.add(String(item.id)));
+        accLoadMediaTab(siteId, tab, modal, false);
+      });
+    }
+
+    body.querySelectorAll('.acc-media-select').forEach(chk => {
+      chk.addEventListener('change', function () {
+        if (this.checked) selected.add(this.value);
+        else selected.delete(this.value);
+        syncBulkState();
       });
     });
-  } catch {
-    body.innerHTML = `<div class="acc-media-empty"><i class="ri-error-warning-line"></i><span>Failed to load.</span></div>`;
+
+    bulkDeleteBtn?.addEventListener('click', () => accDeleteSelectedMedia(siteId, tab, modal));
+    bulkExportBtn?.addEventListener('click', () => accExportSelectedMedia(siteId, tab, modal));
   }
+
+      const closeAccMediaMenus = () => {
+    body.querySelectorAll('.acc-media-item.menu-open').forEach(el => {
+      el.classList.remove('menu-open', 'menu-drop-up');
+    });
+  };
+
+  body.querySelectorAll('.acc-media-menu-btn').forEach(btn => {
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const item = this.closest('.acc-media-item');
+      const menu = item?.querySelector('.acc-media-menu');
+      const dropdown = item?.querySelector('.acc-media-menu-dropdown');
+      if (!item || !menu || !dropdown) return;
+
+      const willOpen = !item.classList.contains('menu-open');
+
+      closeAccMediaMenus();
+      if (!willOpen) return;
+
+      item.classList.add('menu-open');
+
+      requestAnimationFrame(() => {
+        item.classList.remove('menu-drop-up');
+
+        const rect = dropdown.getBoundingClientRect();
+        const viewportGap = 12;
+        const notEnoughBelow = rect.bottom > (window.innerHeight - viewportGap);
+        const enoughAbove = rect.height < (btn.getBoundingClientRect().top - viewportGap);
+
+        if (notEnoughBelow && enoughAbove) {
+          item.classList.add('menu-drop-up');
+        }
+      });
+    });
+  });
+
+  body.querySelectorAll('.acc-media-download-action').forEach(link => {
+    link.addEventListener('click', () => {
+      closeAccMediaMenus();
+    });
+  });
+
+  body.querySelectorAll('.acc-media-delete-action').forEach(btn => {
+    btn.addEventListener('click', async function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (!confirm('Delete this file?')) return;
+
+      try {
+        const r = await fetch(`/api/acceptance/${this.dataset.type}/${this.dataset.id}`, { method: 'DELETE' });
+        if (!r.ok) throw new Error();
+
+        selected.delete(String(this.dataset.id));
+        closeAccMediaMenus();
+        showToast('Deleted.', 'success');
+        await accLoadMediaTab(siteId, tab, modal, true);
+
+        const row = document.querySelector(`.acc-site-row[data-id="${siteId}"]`);
+        if (row) {
+          const card = row.closest('.acc-project-card');
+          if (card) {
+            const pn = card.dataset.project;
+            delete accAllSites[pn];
+            await accFetchSites(pn, card);
+          }
+        }
+      } catch {
+        showToast('Delete failed.', 'error');
+      }
+    });
+  });
+
+  if (modal._accMenuOutsideHandler) {
+    document.removeEventListener('click', modal._accMenuOutsideHandler);
+  }
+
+  modal._accMenuOutsideHandler = function (e) {
+    if (!modal.isConnected) {
+      document.removeEventListener('click', modal._accMenuOutsideHandler);
+      modal._accMenuOutsideHandler = null;
+      return;
+    }
+
+    if (!e.target.closest('.acc-media-menu')) {
+      closeAccMediaMenus();
+    }
+  };
+
+  document.addEventListener('click', modal._accMenuOutsideHandler);
 }
 
-function accMediaItemHTML(item, tab) {
-  const name    = escHtml(item.file_name || item.image_name || item.video_name || 'Unknown');
+function accAllowedUploadConfig(tab) {
+  if (tab === 'images') {
+    return {
+      accept: 'image/*,.jpg,.jpeg,.png,.gif,.webp,.bmp,.svg',
+      exts: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg'],
+      mimePrefix: 'image/'
+    };
+  }
+  if (tab === 'videos') {
+    return {
+      accept: 'video/*,.mp4,.webm,.mov,.avi,.mkv,.m4v',
+      exts: ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'],
+      mimePrefix: 'video/'
+    };
+  }
+  return {
+    accept: '.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar',
+    exts: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'zip', 'rar'],
+    mimePrefix: null
+  };
+}
+
+function accIsValidUploadFile(file, tab) {
+  const cfg = accAllowedUploadConfig(tab);
+  const ext = String(file.name || '').split('.').pop().toLowerCase();
+  const mime = String(file.type || '').toLowerCase();
+
+  if (cfg.mimePrefix && mime.startsWith(cfg.mimePrefix)) return true;
+  return cfg.exts.includes(ext);
+}
+
+function _accSetUploadAccept(tab, inputEl = null) {
+  const input = inputEl || document.getElementById('accUploadInput');
+  if (!input) return;
+  const cfg = accAllowedUploadConfig(tab);
+  input.accept = cfg.accept;
+  input.multiple = true;
+  input.dataset.tab = tab;
+  input.value = '';
+}
+function accMediaItemHTML(item, tab, selectMode = false, selected = new Set()) {
+  const rawName = item.file_name || item.image_name || item.video_name || 'Unknown';
+  const name    = escHtml(rawName);
   const size    = item.file_size ? `${parseFloat(item.file_size).toFixed(1)} KB` : '';
   const path    = item.file_path || item.image_path || item.video_path || '#';
-  const date    = item.uploaded_at ? new Date(item.uploaded_at).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' }) : '';
+  const date    = item.uploaded_at
+    ? new Date(item.uploaded_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : '';
   const by      = item.uploader_name ? `by ${escHtml(item.uploader_name)}` : '';
   const typeKey = tab === 'images' ? 'images' : tab === 'videos' ? 'videos' : 'files';
+
   let thumb = '';
   if (tab === 'images') {
     thumb = `<div class="acc-media-thumb"><img src="${path}" alt="${name}" onerror="this.parentElement.innerHTML='<i class=\\'ri-image-line\\'></i>'"></div>`;
   } else if (tab === 'videos') {
     thumb = `<div class="acc-media-thumb acc-media-thumb-video"><i class="ri-film-line"></i></div>`;
   } else {
-    const ext  = (name.split('.').pop()||'').toLowerCase();
-    const icon = ext==='pdf' ? 'ri-file-pdf-2-line' : ext.match(/doc/) ? 'ri-file-word-line' : ext.match(/xls/) ? 'ri-file-excel-line' : 'ri-file-line';
+    const ext = (rawName.split('.').pop() || '').toLowerCase();
+    const icon = ext === 'pdf'
+      ? 'ri-file-pdf-2-line'
+      : ext.match(/doc/)
+        ? 'ri-file-word-line'
+        : ext.match(/xls|csv/)
+          ? 'ri-file-excel-line'
+          : ext.match(/ppt/)
+            ? 'ri-file-ppt-2-line'
+            : 'ri-file-line';
+
     thumb = `<div class="acc-media-thumb acc-media-thumb-file"><i class="${icon}"></i></div>`;
   }
+
   return `
-    <div class="acc-media-item">
+    <div class="acc-media-item ${selectMode ? 'select-mode' : ''}">
+      <label class="acc-media-check ${selectMode ? 'is-visible' : ''}" aria-label="Select ${name}">
+        <input
+          type="checkbox"
+          class="acc-media-select"
+          value="${item.id}"
+          ${selected.has(String(item.id)) ? 'checked' : ''}
+          ${selectMode ? '' : 'tabindex="-1"'}
+        >
+      </label>
+
       ${thumb}
+
       <div class="acc-media-info">
         <div class="acc-media-name" title="${name}">${name}</div>
-        <div class="acc-media-meta">${[size, date, by].filter(Boolean).join(' · ')}</div>
+        <div class="acc-media-meta">${[size, date, by].filter(Boolean).join(' • ')}</div>
       </div>
+
       <div class="acc-media-actions">
-        <a href="${path}" target="_blank" download class="acc-upload-btn" title="Download" style="text-decoration:none;">
-          <i class="ri-download-2-line" style="color:#2f4b85;"></i>
-        </a>
-        <button class="acc-upload-btn acc-media-delete-btn" title="Delete" data-id="${item.id}" data-type="${typeKey}">
-          <i class="ri-delete-bin-line" style="color:#ef4444;"></i>
-        </button>
+        <div class="acc-media-menu">
+          <button
+            type="button"
+            class="acc-upload-btn acc-media-menu-btn"
+            title="More actions"
+            aria-label="More actions"
+          >
+            <i class="ri-more-2-fill"></i>
+          </button>
+
+          <div class="acc-media-menu-dropdown">
+            <a
+              class="acc-media-menu-action acc-media-download-action"
+              href="${path}"
+              download
+              target="_blank"
+              rel="noopener"
+            >
+              <i class="ri-download-2-line"></i>
+              <span>Download</span>
+            </a>
+
+            <button
+              type="button"
+              class="acc-media-menu-action acc-media-delete-action"
+              data-id="${item.id}"
+              data-type="${typeKey}"
+            >
+              <i class="ri-delete-bin-line"></i>
+              <span>Delete</span>
+            </button>
+          </div>
+        </div>
       </div>
-    </div>`;
+    </div>
+  `;
 }

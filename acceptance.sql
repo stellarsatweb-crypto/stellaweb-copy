@@ -230,4 +230,7 @@ LEFT JOIN network_sites ns  ON sa.site_id      = ns.id
 LEFT JOIN users         acc ON sa.accepted_by  = acc.id
 LEFT JOIN users         ins ON sa.installed_by = ins.id
 ORDER BY sa.acceptance_date DESC;
-```
+
+ALTER TABLE project_sites
+ADD COLUMN installer_name CITEXT,
+ADD COLUMN status_date       DATE

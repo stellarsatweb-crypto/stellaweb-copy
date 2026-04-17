@@ -533,3 +533,4 @@ SELECT
 FROM equipment_specs es
 JOIN network_sites ns ON es.site_id = ns.id
 ORDER BY ns.province, ns.site_name;
+
