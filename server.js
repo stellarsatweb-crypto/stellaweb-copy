@@ -2169,6 +2169,38 @@ app.get('/api/messages/:id', async (req, res) => {
   }
 });
 
+// POST /api/messages/system — sends a self-notification (request submission confirmation)
+// Allows sender_id === recipient_id specifically for system/request notifications.
+app.post('/api/messages/system', async (req, res) => {
+  const { sender_id, recipient_id, subject, body, parent_message_id } = req.body || {};
+  const senderIdNum    = Number(sender_id);
+  const recipientIdNum = Number(recipient_id);
+
+  if (!senderIdNum || !recipientIdNum || !String(subject || '').trim() || !String(body || '').trim()) {
+    return res.status(400).json({ error: 'sender_id, recipient_id, subject, and body are required' });
+  }
+
+  try {
+    const userCheck = await pool.query(`SELECT id FROM users WHERE id = $1`, [senderIdNum]);
+    if (!userCheck.rowCount) return res.status(400).json({ error: 'User does not exist.' });
+
+    const result = await pool.query(
+      `INSERT INTO in_app_messages (sender_id, recipient_id, subject, body, parent_message_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [
+        senderIdNum,
+        recipientIdNum,
+        String(subject).trim(),
+        String(body).trim(),
+        parent_message_id ? Number(parent_message_id) : null,
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST send message
 app.post('/api/messages', async (req, res) => {
   const {
@@ -2817,6 +2849,109 @@ app.post('/api/users/:id/files-requests', filesRequestProofUpload.single('proof_
     res.status(201).json({ success: true, row: result.rows[0] });
   } catch (err) {
     console.error('POST /api/users/:id/files-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── My Requests — unified view for a single user ────────────────────────────
+// GET /api/users/:id/my-requests
+// Returns all leave, id, salary-increase, and files requests for the user,
+// merged into one array sorted by created_at DESC.
+app.get('/api/users/:id/my-requests', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  try {
+    const [leaves, idReqs, salaryReqs, filesReqs] = await Promise.all([
+      pool.query(
+        `SELECT id, 'leave' AS type, leave_type AS subtype,
+                reason AS summary,
+                status, submitted_at AS created_at, updated_at
+         FROM leave_requests
+         WHERE employee_id = $1
+         ORDER BY submitted_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'id' AS type, id_type AS subtype,
+                purpose AS summary,
+                status, created_at, updated_at
+         FROM id_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'salary' AS type, 'salary increase' AS subtype,
+                justification AS summary,
+                status, created_at, updated_at
+         FROM salary_increase_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'files' AS type, document_name AS subtype,
+                purpose AS summary,
+                status, created_at, updated_at
+         FROM files_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+    ]);
+
+    const all = [
+      ...leaves.rows,
+      ...idReqs.rows,
+      ...salaryReqs.rows,
+      ...filesReqs.rows,
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    res.json(all);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/users/:id/my-requests/:type/:requestId/cancel
+// Cancels a pending request of a given type owned by the user.
+app.put('/api/users/:id/my-requests/:type/:requestId/cancel', async (req, res) => {
+  const userId     = Number(req.params.id);
+  const requestId  = Number(req.params.requestId);
+  const type       = String(req.params.type || '').trim().toLowerCase();
+
+  if (!Number.isFinite(userId) || userId <= 0 || !Number.isFinite(requestId) || requestId <= 0) {
+    return res.status(400).json({ error: 'Invalid user or request id' });
+  }
+
+  const tableMap = {
+    leave:  { table: 'leave_requests',           ownerCol: 'employee_id'  },
+    id:     { table: 'id_requests',              ownerCol: 'requested_by' },
+    salary: { table: 'salary_increase_requests', ownerCol: 'requested_by' },
+    files:  { table: 'files_requests',           ownerCol: 'requested_by' },
+  };
+
+  const meta = tableMap[type];
+  if (!meta) return res.status(400).json({ error: 'Invalid request type' });
+
+  try {
+    const check = await pool.query(
+      `SELECT id, status FROM ${meta.table} WHERE id = $1 AND ${meta.ownerCol} = $2`,
+      [requestId, userId]
+    );
+    if (!check.rowCount) return res.status(404).json({ error: 'Request not found' });
+    if (check.rows[0].status.toLowerCase() !== 'pending') {
+      return res.status(400).json({ error: 'Only pending requests can be cancelled' });
+    }
+
+    await pool.query(
+      `UPDATE ${meta.table} SET status = 'Cancelled', updated_at = NOW() WHERE id = $1`,
+      [requestId]
+    );
+    res.json({ success: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

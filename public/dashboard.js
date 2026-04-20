@@ -53,6 +53,7 @@ let stgUsers = [];
 let stgSelectedMessage = null;
 let stgMessagingView = 'list'; // list | read | compose
 let stgReplyToMessage = null;
+let stgRequestViewFilter = null; // set when jumping from My Requests → Messaging
 
 /* ================= SIDEBAR ================= */
 const PAGE_DEFS = {
@@ -7729,14 +7730,23 @@ function loadSettings() {
           </button>
 
           <!-- Compact user card -->
+          <button class="stg-navitem" data-tab="requests">
+            <div class="stg-navitem-icon"><i class="ri-file-list-3-line"></i></div>
+            <div class="stg-navitem-text">
+              <span class="stg-navitem-label">My Requests</span>
+              <span class="stg-navitem-sub">Leave, ID, Salary, Files</span>
+            </div>
+            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+          </button>
+
           <button class="stg-navitem" data-tab="messaging">
-  <span class="stg-navitem-icon"><i class="ri-mail-line"></i></span>
-  <span class="stg-navitem-text">
-    <span class="stg-navitem-label">In-App Messaging</span>
-    <span class="stg-navitem-sub">Inbox, sent, compose</span>
-  </span>
-  <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
-</button>
+            <div class="stg-navitem-icon"><i class="ri-mail-line"></i></div>
+            <div class="stg-navitem-text">
+              <span class="stg-navitem-label">In-App Messaging</span>
+              <span class="stg-navitem-sub">Inbox, sent, compose</span>
+            </div>
+            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+          </button>
 
 <div class="stg-nav-usercard">
             <div class="stg-nav-avatar">
@@ -7988,19 +7998,41 @@ function loadSettings() {
 
           </div>
 
-              <div class="stg-panel" id="stg-tab-messaging">
-  <div class="stg-card2">
-    <div class="stg-card2-header">
-      <div class="stg-card2-title">
-        <i class="ri-mail-line"></i> In-App Messaging
-      </div>
-      <button class="stg-outline-btn" id="stgComposeBtn">
-        <i class="ri-quill-pen-line"></i> Compose
-      </button>
-    </div>
-    <div id="stgMessagingMount"></div>
-  </div>
-</div>
+          <!-- MY REQUESTS -->
+          <div class="stg-panel" id="stg-tab-requests">
+            <div class="stg-card2 stg-requests-card">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-file-list-3-line"></i> My Requests</div>
+                <div class="stg-requests-filter-row" id="stgRequestsFilterRow">
+                  <select id="stgRequestsTypeFilter" class="stg-req-filter-select">
+                    <option value="">All Types</option>
+                    <option value="leave">Leave</option>
+                    <option value="id">ID Request</option>
+                    <option value="salary">Salary</option>
+                    <option value="files">Files</option>
+                  </select>
+                  <select id="stgRequestsStatusFilter" class="stg-req-filter-select">
+                    <option value="">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="cancelled">Cancelled</option>
+                  </select>
+                </div>
+              </div>
+              <div id="stgRequestsTableWrap"></div>
+            </div>
+          </div>
+
+          <!-- IN-APP MESSAGING -->
+          <div class="stg-panel" id="stg-tab-messaging">
+            <div class="stg-card2 stg-msg-card2">
+              <div class="stg-card2-header">
+                <div class="stg-card2-title"><i class="ri-mail-line"></i> In-App Messaging</div>
+              </div>
+              <div id="stgMessagingMount"></div>
+            </div>
+          </div>
 
         </div><!-- /stg-panels -->
       </div><!-- /stg-layout -->
@@ -8077,7 +8109,17 @@ function loadSettings() {
       document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
       this.classList.add('active');
-      document.getElementById(`stg-tab-${this.dataset.tab}`).classList.add('active');
+      document.getElementById(`stg-tab-${this.dataset.tab}`)?.classList.add('active');
+
+      if (this.dataset.tab === 'messaging') {
+        stgMessageFolder = 'inbox';
+        stgSelectedMessage = null;
+        stgMessagingView = 'list';
+        loadStgMessagingData();
+      }
+      if (this.dataset.tab === 'requests') {
+        loadMyRequests();
+      }
     });
   });
 
@@ -8542,6 +8584,7 @@ function openIdRequestModal(user) {
 
       close();
       showToast('ID request submitted successfully.', 'success');
+      sendRequestNotification('id', result.row?.id || result.id || '?', id_type, purpose);
     } catch {
       showToast('Network error.', 'error');
     } finally {
@@ -8708,6 +8751,7 @@ function openSalaryIncreaseModal(user) {
 
       close();
       showToast('Salary increase request submitted successfully.', 'success');
+      sendRequestNotification('salary', result.row?.id || result.id || '?', 'salary increase', justification);
     } catch {
       showToast('Network error.', 'error');
     } finally {
@@ -8963,6 +9007,7 @@ function openFilesRequestModal(user) {
 
       close();
       showToast('Files request submitted successfully.', 'success');
+      sendRequestNotification('files', result.row?.id || result.id || '?', document_name, purpose);
     } catch {
       showToast('Network error.', 'error');
     } finally {
@@ -9194,8 +9239,12 @@ function openLeaveModal(user) {
 
       const res = await fetch(`/api/users/${user.id}/leaves`, { method: 'POST', body: formData });
       if (!res.ok) { const r = await res.json(); showToast(r.error || 'Submission failed.', 'error'); return; }
+      const leaveResult = await res.json().catch(() => ({}));
       close();
       showToast('Leave request submitted successfully.', 'success');
+      const leaveType = document.getElementById('lvType')?.value || 'leave';
+      const leaveReason = document.getElementById('lvReason')?.value?.trim() || '';
+      sendRequestNotification('leave', leaveResult.id || '?', leaveType, leaveReason);
     } catch { showToast('Network error.', 'error'); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request'; }
   });
@@ -9203,15 +9252,6 @@ function openLeaveModal(user) {
     // ── Account Deletion Request ───────────────────────────────────────────────
   document.getElementById('stgDeleteAccBtn').onclick = () =>
     showToast('Account deletion request sent to admin.', 'success');
-
-  // ── In-App Messaging ───────────────────────────────────────────────────────
-  document.getElementById('stgComposeBtn')?.addEventListener('click', () => {
-    stgReplyToMessage = null;
-    stgMessagingView = 'compose';
-    renderStgMessagingLayout();
-  });
-
-  loadStgMessagingData();
 
   // Apply saved display settings on load
   const fs = localStorage.getItem('fontSize');
@@ -9313,7 +9353,30 @@ function renderStgMessagingLayout() {
 }
 
 function renderStgMessageList(container) {
-  const items = stgMessages || [];
+  let items = stgMessages || [];
+
+  // If jumping from My Requests, filter to show the relevant thread
+  const filter = stgRequestViewFilter;
+  if (filter) {
+    stgRequestViewFilter = null; // consume it
+    const matched = items.filter(m =>
+      (m.subject || '').includes(filter) || (m.body || '').includes(filter)
+    );
+    if (matched.length === 1) {
+      // Auto-open the single matched message
+      fetch(`/api/messages/${matched[0].id}?user_id=${user.id}`)
+        .then(r => r.json())
+        .then(full => {
+          if (full && full.id) {
+            stgSelectedMessage = full;
+            stgMessagingView = 'read';
+            renderStgMessagingLayout();
+          }
+        }).catch(() => {});
+      return;
+    }
+    items = matched.length ? matched : items;
+  }
 
   if (!items.length) {
     container.innerHTML = `
@@ -9590,6 +9653,196 @@ function renderStgComposeView(container) {
       btn.innerHTML = '<i class="ri-send-plane-fill"></i> Send';
     }
   });
+}
+
+// ── My Requests ───────────────────────────────────────────────────────────
+
+async function loadMyRequests() {
+  const wrap = document.getElementById('stgRequestsTableWrap');
+  if (!wrap) return;
+
+  wrap.innerHTML = `
+    <div class="stg-req-loading">
+      <i class="ri-loader-4-line spin"></i> Loading requests…
+    </div>`;
+
+  try {
+    const res  = await fetch(`/api/users/${user.id}/my-requests`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed to load requests');
+    renderMyRequestsTable(Array.isArray(data) ? data : []);
+  } catch (err) {
+    wrap.innerHTML = `
+      <div class="stg-req-empty">
+        <i class="ri-error-warning-line"></i>
+        <p>${escHtml(err.message || 'Failed to load requests.')}</p>
+      </div>`;
+  }
+
+  // Wire up filter changes
+  document.getElementById('stgRequestsTypeFilter')?.addEventListener('change', () => {
+    const wrap2 = document.getElementById('stgRequestsTableWrap');
+    const rows  = wrap2?.querySelectorAll('tr[data-type]');
+    if (!rows) return;
+    applyRequestFilters();
+  });
+  document.getElementById('stgRequestsStatusFilter')?.addEventListener('change', applyRequestFilters);
+}
+
+function applyRequestFilters() {
+  const typeVal   = document.getElementById('stgRequestsTypeFilter')?.value  || '';
+  const statusVal = document.getElementById('stgRequestsStatusFilter')?.value || '';
+  document.querySelectorAll('#stgRequestsTableWrap tr[data-type]').forEach(row => {
+    const matchType   = !typeVal   || row.dataset.type   === typeVal;
+    const matchStatus = !statusVal || row.dataset.status === statusVal.toLowerCase();
+    row.style.display = (matchType && matchStatus) ? '' : 'none';
+  });
+  // Show/hide empty state
+  const visibleRows = document.querySelectorAll('#stgRequestsTableWrap tr[data-type]:not([style*="display: none"])');
+  const emptyRow    = document.getElementById('stgReqEmptyRow');
+  if (emptyRow) emptyRow.style.display = visibleRows.length === 0 ? '' : 'none';
+}
+
+function renderMyRequestsTable(requests) {
+  const wrap = document.getElementById('stgRequestsTableWrap');
+  if (!wrap) return;
+
+  const typeLabels = {
+    leave:  'Leave',
+    id:     'ID Request',
+    salary: 'Salary',
+    files:  'Files',
+  };
+  const statusClass = s => {
+    const sl = (s || '').toLowerCase();
+    if (sl === 'approved')  return 'req-status-approved';
+    if (sl === 'rejected')  return 'req-status-rejected';
+    if (sl === 'cancelled') return 'req-status-cancelled';
+    return 'req-status-pending';
+  };
+
+  wrap.innerHTML = `
+    <div class="stg-req-table-wrap">
+      <table class="stg-req-table">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Details</th>
+            <th>Status</th>
+            <th>Submitted</th>
+            <th>Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${requests.length === 0 ? `
+            <tr id="stgReqEmptyRow">
+              <td colspan="6" class="stg-req-empty-cell">
+                <i class="ri-file-list-3-line"></i>
+                <span>No requests yet.</span>
+              </td>
+            </tr>
+          ` : requests.map(r => `
+            <tr data-type="${escHtml(r.type)}" data-status="${escHtml((r.status||'').toLowerCase())}" data-id="${r.id}">
+              <td>
+                <span class="stg-req-type-badge req-type-${escHtml(r.type)}">
+                  ${escHtml(typeLabels[r.type] || r.type)}
+                </span>
+              </td>
+              <td class="stg-req-detail-cell">
+                <div class="stg-req-subtype">${escHtml(r.subtype || '—')}</div>
+                <div class="stg-req-summary">${escHtml((r.summary || '').slice(0, 80))}${(r.summary||'').length > 80 ? '…' : ''}</div>
+              </td>
+              <td>
+                <span class="stg-req-status-badge ${statusClass(r.status)}">
+                  ${escHtml(r.status || 'Pending')}
+                </span>
+              </td>
+              <td class="stg-req-date">${r.created_at ? new Date(r.created_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : '—'}</td>
+              <td class="stg-req-date">${r.updated_at ? new Date(r.updated_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : '—'}</td>
+              <td class="stg-req-actions">
+                <button class="stg-req-action-btn view-btn" data-type="${escHtml(r.type)}" data-id="${r.id}" title="View in messaging">
+                  <i class="ri-eye-line"></i>
+                </button>
+                ${(r.status||'').toLowerCase() === 'pending' ? `
+                  <button class="stg-req-action-btn cancel-btn" data-type="${escHtml(r.type)}" data-id="${r.id}" title="Cancel request">
+                    <i class="ri-close-circle-line"></i>
+                  </button>
+                ` : ''}
+              </td>
+            </tr>
+          `).join('')}
+          <tr id="stgReqEmptyRow" style="display:none">
+            <td colspan="6" class="stg-req-empty-cell">
+              <i class="ri-file-list-3-line"></i>
+              <span>No requests match your filters.</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  // View button — jump to messaging tab, search for related thread
+  wrap.querySelectorAll('.view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const type = btn.dataset.type;
+      const id   = btn.dataset.id;
+      // Switch to messaging tab
+      document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
+      const msgNav = document.querySelector('.stg-navitem[data-tab="messaging"]');
+      if (msgNav) msgNav.classList.add('active');
+      document.getElementById('stg-tab-messaging')?.classList.add('active');
+      // Load messaging and pre-filter to the request thread subject
+      stgMessageFolder = 'inbox';
+      stgSelectedMessage = null;
+      stgMessagingView = 'list';
+      stgRequestViewFilter = `[REQ-${type.toUpperCase()}-${id}]`;
+      loadStgMessagingData();
+    });
+  });
+
+  // Cancel button
+  wrap.querySelectorAll('.cancel-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Cancel this request?')) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/api/users/${user.id}/my-requests/${btn.dataset.type}/${btn.dataset.id}/cancel`, {
+          method: 'PUT'
+        });
+        const result = await res.json();
+        if (!res.ok) { showToast(result.error || 'Cancel failed.', 'error'); return; }
+        showToast('Request cancelled.', 'success');
+        loadMyRequests();
+      } catch { showToast('Network error.', 'error'); }
+      finally { btn.disabled = false; }
+    });
+  });
+}
+
+// Sends an in-app notification message to the user themselves (self-thread)
+// about a submitted request, tagged with [REQ-TYPE-ID] for cross-linking.
+async function sendRequestNotification(type, requestId, subtype, summary, status = 'Pending') {
+  try {
+    const typeLabels = { leave: 'Leave', id: 'ID Request', salary: 'Salary Increase', files: 'Files Request' };
+    const label = typeLabels[type] || type;
+    const tag   = `[REQ-${type.toUpperCase()}-${requestId}]`;
+    const subject = `${tag} ${label}: ${subtype}`;
+    const body = `Your ${label} request has been submitted.\n\nType: ${label}\nDetails: ${subtype}\nSummary: ${summary}\nStatus: ${status}\n\nYou will be notified when the status changes.`;
+    await fetch('/api/messages/system', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sender_id:    user.id,
+        recipient_id: user.id,
+        subject,
+        body,
+        parent_message_id: null
+      })
+    });
+  } catch (_) { /* non-critical — silently ignore */ }
 }
 
 function _stgApplyDisplaySettings() {

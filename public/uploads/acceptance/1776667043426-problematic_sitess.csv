@@ -1,0 +1,21 @@
+﻿id,Sitename,Province,Municipality,Status,Cause (Assume),Remarks,KAD Name,KAD Visit Date,Site Online Date,Found Problem / Cause in the Site,Solution
+1,Site Alpha,Metro Manila,Quezon City,Offline,Power Outage,Pending restoration,Juan Dela Cruz,2024-01-10,2023-06-15,No power supply detected,Coordinate with MERALCO
+2,Site Bravo,Cebu,Cebu City,Intermittent,Fiber Cut,Temporary fix applied,Maria Santos,2024-01-15,2023-03-20,Fiber line damaged by construction,Replace fiber cable
+3,Site Charlie,Davao del Sur,Davao City,Offline,Equipment Failure,Unit for replacement,Pedro Reyes,2024-02-03,2022-11-05,Router malfunction,Replace router unit
+4,Site Delta,Laguna,San Pedro,Low Signal,Interference,Under monitoring,Ana Gomez,2024-02-08,2023-07-22,Nearby structure causing signal blockage,Relocate antenna
+5,Site Echo,Batangas,Lipa City,Offline,Backhaul Issue,Escalated to NOC,Carlos Mendoza,2024-02-14,2023-09-10,Backhaul link down,Check transmission node
+6,Site Foxtrot,Pampanga,Angeles City,Intermittent,Power Fluctuation,UPS installed,Rosa Lim,2024-02-20,2023-04-18,Voltage instability from grid,Install voltage regulator
+7,Site Golf,Iloilo,Iloilo City,Offline,Typhoon Damage,Awaiting parts,Jose Bautista,2024-03-01,2023-01-30,Antenna pole collapsed,Replace pole and antenna
+8,Site Hotel,Cagayan de Oro,Misamis Oriental,Low Signal,Misalignment,Realignment scheduled,Liza Reyes,2024-03-05,2023-08-14,Antenna misaligned after strong wind,Realign antenna
+9,Site India,Bulacan,Malolos,Offline,Theft,Police report filed,Marco Villanueva,2024-03-12,2023-05-25,Equipment stolen,File insurance claim and replace
+10,Site Juliet,Rizal,Antipolo,Intermittent,Software Bug,Patch applied,Carla Torres,2024-03-18,2023-10-07,Firmware crash loop,Update firmware to latest version
+11,Site Kilo,Albay,Legazpi City,Offline,Flood Damage,Site inaccessible,Edwin Navarro,2024-04-02,2023-02-28,Equipment submerged during flood,Elevate equipment placement
+12,Site Lima,Isabela,Ilagan City,Low Signal,Vegetation Obstruction,Clearing requested,Nena Cruz,2024-04-07,2023-06-03,Trees blocking LOS path,Trim surrounding vegetation
+13,Site Mike,Cavite,Bacoor,Intermittent,Congestion,Capacity upgrade planned,Roy Fernandez,2024-04-15,2023-11-19,High user load degrading performance,Add additional carrier
+14,Site November,Negros Occidental,Bacolod City,Offline,Power Outage,Generator deployed,Beth Castillo,2024-04-22,2023-07-08,Grid power failure in area,Coordinate with local utility
+15,Site Oscar,Zamboanga del Sur,Pagadian City,Intermittent,Backhaul Issue,Monitoring ongoing,Felix Aguilar,2024-05-03,2023-09-27,Microwave link degraded,Replace microwave radio unit
+16,Site Papa,Pangasinan,Dagupan City,Low Signal,Equipment Aging,Replacement scheduled,Diana Ocampo,2024-05-10,2022-08-15,Old BTS causing poor output,Schedule BTS replacement
+17,Site Quebec,Leyte,Tacloban City,Offline,Typhoon Damage,Awaiting assessment,Arnel Soriano,2024-05-17,2023-03-11,Tower structurally compromised,Structural inspection needed
+18,Site Romeo,South Cotabato,General Santos City,Intermittent,Configuration Error,Config restored,Tina Magno,2024-05-24,2023-12-01,Wrong VLAN config pushed remotely,Revert to last stable config
+19,Site Sierra,Benguet,Baguio City,Low Signal,Weather Interference,Under observation,Raul Domingo,2024-06-04,2023-04-05,Fog causing signal attenuation,Adjust transmission power
+20,Site Tango,Surigao del Norte,Surigao City,Offline,Fiber Cut,Repair crew dispatched,Grace Aquino,2024-06-11,2023-10-20,Undersea fiber cable cut,Emergency repair by cable team
