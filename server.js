@@ -2040,25 +2040,6 @@ app.post('/api/users/:id/photo', profilePhotoUpload.single('photo'), async (req,
 });
 
 // GET users list (for recipient picker)
-app.get('/api/users', async (req, res) => {
-  try {
-    const currentUserId = Number(req.query.exclude || 0);
-
-    const result = await pool.query(
-      `
-      SELECT id, full_name, email, role
-      FROM users
-      WHERE ($1 = 0 OR id <> $1)
-      ORDER BY full_name ASC, email ASC
-      `,
-      [currentUserId]
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // GET user by id
 app.get('/api/users/:id', async (req, res) => {
@@ -2198,11 +2179,27 @@ app.post('/api/messages', async (req, res) => {
     parent_message_id
   } = req.body || {};
 
-  if (!sender_id || !recipient_id || !String(subject || '').trim() || !String(body || '').trim()) {
+  const senderIdNum = Number(sender_id);
+  const recipientIdNum = Number(recipient_id);
+
+  if (!senderIdNum || !recipientIdNum || !String(subject || '').trim() || !String(body || '').trim()) {
     return res.status(400).json({ error: 'sender_id, recipient_id, subject, and body are required' });
   }
 
+  if (senderIdNum === recipientIdNum) {
+    return res.status(400).json({ error: 'You cannot send a message to yourself.' });
+  }
+
   try {
+    const usersCheck = await pool.query(
+      `SELECT id FROM users WHERE id = ANY($1::int[])`,
+      [[senderIdNum, recipientIdNum]]
+    );
+
+    if (usersCheck.rowCount < 2) {
+      return res.status(400).json({ error: 'Sender or recipient does not exist.' });
+    }
+
     const result = await pool.query(
       `
       INSERT INTO in_app_messages (
@@ -2212,8 +2209,8 @@ app.post('/api/messages', async (req, res) => {
       RETURNING *
       `,
       [
-        Number(sender_id),
-        Number(recipient_id),
+        senderIdNum,
+        recipientIdNum,
         String(subject).trim(),
         String(body).trim(),
         parent_message_id ? Number(parent_message_id) : null

@@ -1087,10 +1087,13 @@ function loadMap() {
   if (typeof L === 'undefined') {
     const s = document.createElement('script');
     s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    s.onload = () => initMap();
+    // Double rAF: ensures browser has fully painted the layout before Leaflet
+    // measures #mapContainer — prevents the "0px height at init" tile bug.
+    s.onload = () => requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
     document.head.appendChild(s);
   } else {
-    initMap();
+    // L already loaded — still defer so DOM layout is complete
+    requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
   }
 }
 
@@ -1098,41 +1101,64 @@ function initMap() {
   const container = document.getElementById('mapContainer');
   if (!container) return;
 
+  // Guard: container must have real pixel dimensions before Leaflet init.
+  // If still 0, keep retrying until layout is painted.
+  const rect = container.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) {
+    setTimeout(() => initMap(), 80);
+    return;
+  }
+
+  // Destroy any previous instance cleanly
   if (leafletMap && typeof leafletMap.remove === 'function') {
     leafletMap.remove();
     leafletMap = null;
   }
-  if (container._leaflet_id) {
-    container._leaflet_id = null;
-  }
+  if (container._leaflet_id) delete container._leaflet_id;
 
-  const map = L.map('mapContainer', { zoomControl: false }).setView([16.5, 121.0], 7);
-  leafletMap = map;  // expose globally so sidebar toggle can call invalidateSize
+  // Initialize with explicit center + zoom
+  const MAP_CENTER = [16.5, 121.0];
+  const MAP_ZOOM   = 7;
+
+  const map = L.map('mapContainer', {
+    zoomControl: false,
+    preferCanvas: true,       // faster rendering
+    renderer: L.canvas()
+  }).setView(MAP_CENTER, MAP_ZOOM);
+
+  leafletMap = map;
   L.control.zoom({ position: 'bottomright' }).addTo(map);
-  const baseLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+
+  const baseLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
-    maxZoom: 19
+    maxZoom: 19,
+    crossOrigin: true
   }).addTo(map);
 
   let tileErrorShown = false;
-  function scheduleMapResize(delay = 0) {
-    window.setTimeout(() => {
-      if (leafletMap === map) map.invalidateSize();
-    }, delay);
+
+  // After invalidateSize, always re-set the view so tiles are requested
+  // for the correct viewport — fixes "blank after resize" completely.
+  function forceMapRefresh() {
+    if (leafletMap !== map) return;
+    map.invalidateSize({ animate: false, pan: false });
+    map.setView(MAP_CENTER, MAP_ZOOM, { animate: false });
   }
+
   function refreshMapLayout() {
-    scheduleMapResize(0);
-    scheduleMapResize(120);
-    scheduleMapResize(320);
+    [0, 150, 400, 800, 1500].forEach(d =>
+      setTimeout(() => { if (leafletMap === map) forceMapRefresh(); }, d)
+    );
   }
+
   requestAnimationFrame(() => refreshMapLayout());
-  map.whenReady(() => refreshMapLayout());
-  baseLayer.on('load', () => { tileErrorShown = false; refreshMapLayout(); });
+  map.whenReady(() => forceMapRefresh());
+
+  baseLayer.on('load', () => { tileErrorShown = false; });
   baseLayer.on('tileerror', () => {
-    refreshMapLayout();
     if (!tileErrorShown) {
       tileErrorShown = true;
-      showToast('Map tiles failed to load. Please check your internet connection and try refreshing.', 'error');
+      showToast('Map tiles failed to load. Check your internet connection.', 'error');
     }
   });
 
@@ -2563,7 +2589,9 @@ document.getElementById("toggleSidebar").addEventListener("click", () => {
   syncSidebar(sidebar);
   // Wait for the 0.32s CSS transition to finish, then tell Leaflet to resize
   if (leafletMap) {
-    setTimeout(() => leafletMap.invalidateSize(), 350);
+    setTimeout(() => {
+      leafletMap.invalidateSize({ animate: false, pan: false });
+    }, 350);
   }
 });
 
@@ -9704,21 +9732,26 @@ function renderStgComposeView(container) {
     <div class="stg-msg-compose">
       <div class="stg-msg-view-toolbar">
         <div class="stg-msg-view-actions">
-          <button class="stg-outline-btn" id="stgComposeBackBtn"><i class="ri-arrow-left-line"></i> Back</button>
+          <button type="button" class="stg-outline-btn" id="stgComposeBackBtn"><i class="ri-arrow-left-line"></i> Back</button>
         </div>
       </div>
 
       <div class="stg-msg-compose-card">
         <div class="form-group">
           <label>Recipient</label>
-          <select id="stgMsgRecipient">
-            <option value="">Select recipient…</option>
+          <select id="stgMsgRecipient" ${stgUsers.length ? '' : 'disabled'}>
+            <option value="">${stgUsers.length ? 'Select recipient…' : 'No other users available'}</option>
             ${stgUsers.map(u => `
               <option value="${u.id}" ${reply && Number(reply.sender_id) === Number(u.id) ? 'selected' : ''}>
                 ${escHtml(u.full_name || u.email)}${u.role ? ` (${escHtml(u.role)})` : ''}
               </option>
             `).join('')}
           </select>
+          ${!stgUsers.length ? `
+            <div style="margin-top:8px;font-size:12px;color:#94a3b8;">
+              You need at least one other registered user before you can send a message.
+            </div>
+          ` : ''}
         </div>
 
         <div class="form-group">
@@ -9732,8 +9765,8 @@ function renderStgComposeView(container) {
         </div>
 
         <div class="modal-actions">
-          <button class="tool-btn" id="stgComposeCancelBtn">Cancel</button>
-          <button class="tool-btn apply-btn" id="stgComposeSendBtn">
+          <button type="button" class="tool-btn" id="stgComposeCancelBtn">Cancel</button>
+          <button type="button" class="tool-btn apply-btn" id="stgComposeSendBtn">
             <i class="ri-send-plane-fill"></i> Send
           </button>
         </div>
@@ -9750,10 +9783,16 @@ function renderStgComposeView(container) {
   document.getElementById('stgComposeCancelBtn')?.addEventListener('click', goBack);
 
   document.getElementById('stgComposeSendBtn')?.addEventListener('click', async () => {
-    const recipient_id = document.getElementById('stgMsgRecipient').value;
+    const recipientSelect = document.getElementById('stgMsgRecipient');
+    const recipient_id = recipientSelect?.value;
     const subject = document.getElementById('stgMsgSubject').value.trim();
     const body = document.getElementById('stgMsgBody').value.trim();
     const btn = document.getElementById('stgComposeSendBtn');
+
+    if (!stgUsers.length) {
+      showToast('No available recipients found.', 'error');
+      return;
+    }
 
     if (!recipient_id || !subject || !body) {
       showToast('Recipient, subject, and message are required.', 'error');
@@ -9768,15 +9807,16 @@ function renderStgComposeView(container) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sender_id: user.id,
+          sender_id: Number(user.id),
           recipient_id: Number(recipient_id),
           subject,
           body,
-          parent_message_id: reply ? reply.id : null
+          parent_message_id: reply ? Number(reply.id) : null
         })
       });
 
-      const result = await res.json();
+      const result = await res.json().catch(() => ({}));
+
       if (!res.ok) {
         showToast(result.error || 'Failed to send message.', 'error');
         return;
@@ -9788,7 +9828,7 @@ function renderStgComposeView(container) {
       stgMessagingView = 'list';
       await loadStgMessagingData();
       showToast('Message sent successfully.', 'success');
-    } catch {
+    } catch (err) {
       showToast('Network error.', 'error');
     } finally {
       btn.disabled = false;
@@ -10030,7 +10070,7 @@ function accOpenMediaModal(siteId, siteName, tab) {
   m.id = 'accMediaModalOverlay';
   m.className = 'modal-overlay';
     m.innerHTML = `
-    <div class="acc-modal-shell acc-media-modal" style="max-width:720px;width:95vw;">
+    <div class="acc-modal-shell acc-media-modal">
       <div class="acc-modal-header acc-media-head">
         <div class="acc-modal-title-row acc-media-head-left">
           <div class="acc-modal-icon acc-media-icon"><i class="ri-upload-cloud-2-line"></i></div>
