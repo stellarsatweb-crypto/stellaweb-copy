@@ -1001,7 +1001,17 @@ function openReminderModal(regionId, region, cols) {
 
 
 
+
 /* ================= MAP ================= */
+
+// ─── Persistent state helpers ──────────────────────────────────────────────
+const MAP_STATE_KEY = 'mapPageState';
+function saveMapState(state) {
+  try { localStorage.setItem(MAP_STATE_KEY, JSON.stringify(state)); } catch {}
+}
+function loadMapState() {
+  try { return JSON.parse(localStorage.getItem(MAP_STATE_KEY) || '{}'); } catch { return {}; }
+}
 
 function loadMap() {
   mainContent.innerHTML = `
@@ -1009,9 +1019,10 @@ function loadMap() {
 
       <!-- TOP FILTER BAR -->
       <div class="map-top-bar">
-        <div class="map-search-box">
+        <div class="map-search-box" id="mapSearchBox">
           <i class="ri-search-line"></i>
-          <input type="text" id="mapSearch" placeholder="Search site…">
+          <input type="text" id="mapSearch" placeholder="Search site, municipality, province…" autocomplete="off">
+          <button class="map-search-clear hidden" id="mapSearchClear" title="Clear"><i class="ri-close-line"></i></button>
         </div>
         <select id="mapProjectFilter"  class="map-filter-select"><option value="">All Projects</option></select>
         <select id="mapProvinceFilter" class="map-filter-select"><option value="">All Provinces</option></select>
@@ -1020,165 +1031,211 @@ function loadMap() {
           <option value="active">Active Only</option>
           <option value="inactive">Inactive Only</option>
         </select>
+        <div class="map-active-filters" id="mapActiveFilters"></div>
         <div class="map-bulk-row" id="mapBulkRow" style="display:none;">
-          <button class="map-bulk-btn map-bulk-activate"   id="mapBulkActivate">
-            <i class="ri-checkbox-circle-line"></i> Activate Filtered
-          </button>
-          <button class="map-bulk-btn map-bulk-deactivate" id="mapBulkDeactivate">
-            <i class="ri-close-circle-line"></i> Deactivate Filtered
-          </button>
+          <button class="map-bulk-btn map-bulk-activate"   id="mapBulkActivate"><i class="ri-checkbox-circle-line"></i> Activate</button>
+          <button class="map-bulk-btn map-bulk-deactivate" id="mapBulkDeactivate"><i class="ri-close-circle-line"></i> Deactivate</button>
         </div>
-        <button class="map-import-btn" id="mapAddSiteBtn">
-          <i class="ri-add-line"></i> Add Site
-        </button>
-        <button class="map-import-btn" id="mapImportBtn">
-          <i class="ri-upload-cloud-2-line"></i> Import Sites
-        </button>
+        <button class="map-import-btn" id="mapAddSiteBtn"><i class="ri-add-line"></i> Add Site</button>
+        <button class="map-import-btn" id="mapImportBtn"><i class="ri-upload-cloud-2-line"></i> Import Sites</button>
       </div>
 
       <!-- BODY ROW: SIDEBAR + MAP -->
       <div class="map-body-row">
 
-      <!-- LEFT SIDEBAR -->
-      <div class="map-sidebar" id="mapSidebar">
-        <div class="map-sidebar-count" id="mapSidebarCount">Showing — sites</div>
-        <div class="map-sidebar-list" id="mapSiteList">
-          <div class="map-list-loading"><i class="ri-loader-4-line spin"></i> Loading sites…</div>
-        </div>
-      </div>
-
-      <!-- CENTER: MAP ONLY -->
-      <div class="map-card-wrap">
-        <div class="map-stats-overlay">
-          <span class="map-stat-chip" id="mapStatTotal"><i class="ri-map-pin-2-line"></i> — Total</span>
-          <span class="map-stat-chip active-chip"   id="mapStatActive"><i class="ri-record-circle-line"></i> — Active</span>
-          <span class="map-stat-chip inactive-chip" id="mapStatInactive"><i class="ri-radio-button-line"></i> — Inactive</span>
-        </div>
-        <div id="mapContainer" class="map-container"></div>
-      </div>
-
-      <!-- RIGHT: DETAILS PANEL (separate column) -->
-      <div class="map-details-panel hidden" id="mapDetailsPanel">
-        <div class="map-details-header">
-          <div class="map-details-title-wrap">
-            <div class="map-details-name" id="mapDetailsName">—</div>
-            <div class="map-details-sub"  id="mapDetailsSub">—</div>
+        <!-- LEFT SIDEBAR -->
+        <div class="map-sidebar" id="mapSidebar">
+          <div class="map-sidebar-header">
+            <div class="map-sidebar-count" id="mapSidebarCount">Showing — sites</div>
+            <button class="map-sidebar-toggle-btn" id="mapSidebarCollapseBtn" title="Collapse list">
+              <i class="ri-arrow-left-s-line"></i>
+            </button>
           </div>
-          <div class="map-details-header-actions">
-            <button class="map-details-edit-btn" id="mapDetailsEditBtn"><i class="ri-edit-line"></i> Edit</button>
-            <button class="map-details-close-btn" id="mapDetailsPanelClose"><i class="ri-close-line"></i></button>
+          <div class="map-sidebar-list" id="mapSiteList">
+            <div class="map-list-loading"><i class="ri-loader-4-line spin"></i> Loading sites…</div>
           </div>
+          <!-- Virtual scroll sentinel -->
+          <div id="mapListSentinel" style="height:1px;"></div>
         </div>
-        <div class="map-details-body" id="mapDetailsBody"></div>
-      </div>
+
+        <!-- SIDEBAR EXPAND BUTTON (when collapsed) -->
+        <button class="map-sidebar-expand-btn hidden" id="mapSidebarExpandBtn" title="Show site list">
+          <i class="ri-list-unordered"></i>
+        </button>
+
+        <!-- CENTER: MAP -->
+        <div class="map-card-wrap">
+          <!-- Stats overlay -->
+          <div class="map-stats-overlay">
+            <span class="map-stat-chip" id="mapStatTotal"><i class="ri-map-pin-2-line"></i> — Total</span>
+            <span class="map-stat-chip active-chip"   id="mapStatActive"><i class="ri-radio-button-fill"></i> — Active</span>
+            <span class="map-stat-chip inactive-chip" id="mapStatInactive"><i class="ri-radio-button-line"></i> — Inactive</span>
+          </div>
+
+          <!-- Hover preview card -->
+          <div class="map-hover-card hidden" id="mapHoverCard">
+            <div class="map-hover-name" id="mapHoverName"></div>
+            <div class="map-hover-status" id="mapHoverStatus"></div>
+            <div class="map-hover-meta" id="mapHoverMeta"></div>
+            <div class="map-hover-hint"><i class="ri-cursor-line"></i> Click for details</div>
+          </div>
+
+          <div id="mapContainer" class="map-container"></div>
+        </div>
+
+        <!-- RIGHT: DETAILS PANEL (overlay) -->
+        <div class="map-details-panel hidden" id="mapDetailsPanel">
+          <div class="map-details-header">
+            <div class="map-details-title-wrap">
+              <div class="map-details-name" id="mapDetailsName">—</div>
+              <div class="map-details-sub"  id="mapDetailsSub">—</div>
+            </div>
+            <div class="map-details-header-actions">
+              <button class="map-details-edit-btn" id="mapDetailsEditBtn"><i class="ri-edit-line"></i> Edit</button>
+              <button class="map-details-close-btn" id="mapDetailsPanelClose"><i class="ri-close-line"></i></button>
+            </div>
+          </div>
+          <div class="map-details-body" id="mapDetailsBody"></div>
+        </div>
 
       </div>
-
     </div>
   `;
 
-  // Load Leaflet
-  if (!document.getElementById('leafletCss')) {
-    const l = document.createElement('link');
-    l.id = 'leafletCss'; l.rel = 'stylesheet';
-    l.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-    document.head.appendChild(l);
-  }
-  if (typeof L === 'undefined') {
-    const s = document.createElement('script');
-    s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-    // Double rAF: ensures browser has fully painted the layout before Leaflet
-    // measures #mapContainer — prevents the "0px height at init" tile bug.
-    s.onload = () => requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
-    document.head.appendChild(s);
-  } else {
-    // L already loaded — still defer so DOM layout is complete
-    requestAnimationFrame(() => requestAnimationFrame(() => initMap()));
-  }
+  // Restore persisted state
+  const savedState = loadMapState();
+
+  // Load Leaflet + MarkerCluster
+  const loadLeaflet = () => new Promise(resolve => {
+    if (!document.getElementById('leafletCss')) {
+      const l = document.createElement('link');
+      l.id = 'leafletCss'; l.rel = 'stylesheet';
+      l.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(l);
+    }
+    const loadClusterCss = () => {
+      if (!document.getElementById('clusterCss')) {
+        const c = document.createElement('link');
+        c.id = 'clusterCss'; c.rel = 'stylesheet';
+        c.href = 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css';
+        document.head.appendChild(c);
+        const cd = document.createElement('link');
+        cd.rel = 'stylesheet';
+        cd.href = 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css';
+        document.head.appendChild(cd);
+      }
+    };
+    const loadClusterJs = (cb) => {
+      if (window.L && window.L.markerClusterGroup) { cb(); return; }
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js';
+      s.onload = cb;
+      document.head.appendChild(s);
+    };
+    if (typeof L !== 'undefined') {
+      loadClusterCss();
+      loadClusterJs(resolve);
+    } else {
+      const s = document.createElement('script');
+      s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      s.onload = () => { loadClusterCss(); loadClusterJs(resolve); };
+      document.head.appendChild(s);
+    }
+  });
+
+  loadLeaflet().then(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => initMap(savedState)));
+  });
 }
 
-function initMap() {
+function initMap(savedState = {}) {
   const container = document.getElementById('mapContainer');
   if (!container) return;
 
-  // Guard: container must have real pixel dimensions before Leaflet init.
-  // If still 0, keep retrying until layout is painted.
   const rect = container.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) {
-    setTimeout(() => initMap(), 80);
+    setTimeout(() => initMap(savedState), 80);
     return;
   }
 
-  // Destroy any previous instance cleanly
   if (leafletMap && typeof leafletMap.remove === 'function') {
-    leafletMap.remove();
-    leafletMap = null;
+    leafletMap.remove(); leafletMap = null;
   }
   if (container._leaflet_id) delete container._leaflet_id;
 
-  // Initialize with explicit center + zoom
-  const MAP_CENTER = [16.5, 121.0];
-  const MAP_ZOOM   = 7;
+  // Restore saved position or default
+  const initCenter = savedState.center ? savedState.center : [16.5, 121.0];
+  const initZoom   = savedState.zoom   ? savedState.zoom   : 7;
 
   const map = L.map('mapContainer', {
     zoomControl: false,
-    preferCanvas: true,       // faster rendering
-    renderer: L.canvas()
-  }).setView(MAP_CENTER, MAP_ZOOM);
-
+    preferCanvas: true
+  }).setView(initCenter, initZoom);
   leafletMap = map;
+
   L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-  const baseLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>',
     maxZoom: 19,
     crossOrigin: true
   }).addTo(map);
 
-  let tileErrorShown = false;
-
-  // After invalidateSize, always re-set the view so tiles are requested
-  // for the correct viewport — fixes "blank after resize" completely.
+  // ── Resize handling ─────────────────────────────────────────────────────
   function forceMapRefresh() {
     if (leafletMap !== map) return;
     map.invalidateSize({ animate: false, pan: false });
-    map.setView(MAP_CENTER, MAP_ZOOM, { animate: false });
   }
-
   function refreshMapLayout() {
-    [0, 150, 400, 800, 1500].forEach(d =>
-      setTimeout(() => { if (leafletMap === map) forceMapRefresh(); }, d)
-    );
+    [0, 150, 400, 800].forEach(d => setTimeout(() => { if (leafletMap===map) forceMapRefresh(); }, d));
   }
-
   requestAnimationFrame(() => refreshMapLayout());
   map.whenReady(() => forceMapRefresh());
 
-  baseLayer.on('load', () => { tileErrorShown = false; });
-  baseLayer.on('tileerror', () => {
-    if (!tileErrorShown) {
-      tileErrorShown = true;
-      showToast('Map tiles failed to load. Check your internet connection.', 'error');
-    }
-  });
-
-  const handleWindowResize = () => refreshMapLayout();
-  window.addEventListener('resize', handleWindowResize);
-  map.on('unload', () => window.removeEventListener('resize', handleWindowResize));
+  window.addEventListener('resize', forceMapRefresh);
+  map.on('unload', () => window.removeEventListener('resize', forceMapRefresh));
 
   const bodyRow = document.querySelector('.map-body-row');
-  let mapResizeObserver = null;
   if (typeof ResizeObserver !== 'undefined' && bodyRow) {
-    mapResizeObserver = new ResizeObserver(() => refreshMapLayout());
-    mapResizeObserver.observe(bodyRow);
-    map.on('unload', () => mapResizeObserver?.disconnect());
+    const ro = new ResizeObserver(() => forceMapRefresh());
+    ro.observe(bodyRow);
+    map.on('unload', () => ro.disconnect());
   }
 
-  // ── Icons ─────────────────────────────────────────────────────────────────
-  function makeIcon(color, size = 30, pulse = false) {
+  // Save map position on move
+  map.on('moveend zoomend', () => {
+    const c = map.getCenter();
+    const st = loadMapState();
+    saveMapState({ ...st, center: [c.lat, c.lng], zoom: map.getZoom() });
+  });
+
+  // ── Marker Cluster ──────────────────────────────────────────────────────
+  const clusterGroup = L.markerClusterGroup({
+    showCoverageOnHover: false,
+    maxClusterRadius: 50,
+    spiderfyOnMaxZoom: true,
+    animate: true,
+    iconCreateFunction(cluster) {
+      const count = cluster.getChildCount();
+      const size  = count < 10 ? 36 : count < 50 ? 44 : 52;
+      const color = '#2f4b85';
+      return L.divIcon({
+        html: `<div class="map-cluster-icon" style="width:${size}px;height:${size}px;background:${color};">
+                 <span>${count}</span>
+               </div>`,
+        className: '',
+        iconSize: [size, size]
+      });
+    }
+  });
+  map.addLayer(clusterGroup);
+
+  // ── Icons ───────────────────────────────────────────────────────────────
+  function makeIcon(color, size = 30, pulse = false, selected = false) {
     return L.divIcon({
       className: '',
-      html: `<div class="map-pin ${pulse ? 'map-pin-pulse' : ''}" style="--pin-color:${color};width:${size}px;height:${size}px;">
+      html: `<div class="map-pin ${pulse ? 'map-pin-pulse' : ''} ${selected ? 'map-pin-selected' : ''}"
+                  style="--pin-color:${color};width:${size}px;height:${size}px;">
                <i class="ri-map-pin-2-fill" style="font-size:${size}px;line-height:1;color:${color};"></i>
              </div>`,
       iconSize: [size, size], iconAnchor: [size/2, size], popupAnchor: [0, -(size+4)]
@@ -1186,24 +1243,57 @@ function initMap() {
   }
 
   function siteIcon(site, selected = false) {
-    if (selected) return makeIcon('#f59e0b', 34);
-    const active = isActive(site);
-    return active ? makeIcon('#22c55e', 30) : makeIcon('#ef4444', 26);
+    if (selected) return makeIcon('#f59e0b', 36, true, true);
+    return isActive(site) ? makeIcon('#22c55e', 30) : makeIcon('#ef4444', 26);
   }
 
-  // ── State ─────────────────────────────────────────────────────────────────
+  // ── State ───────────────────────────────────────────────────────────────
   let allSites     = [];
-  let allMarkers   = {};     // site_name → L.marker
+  let allMarkers   = {};
   let selectedSite = null;
   let panelEditMode = false;
+  let hoverTimeout  = null;
+
+  // Virtual scroll state
+  const VIRT_BATCH = 40;
+  let virtRendered  = 0;
+  let virtFiltered  = [];
 
   function isActive(site) {
     return site.is_active === true || site.is_active === 't' || site.is_active === 'true' || site.is_active === 1;
   }
 
-  // ── Plot markers ──────────────────────────────────────────────────────────
+  // ── Hover preview card ──────────────────────────────────────────────────
+  const hoverCard = document.getElementById('mapHoverCard');
+  function showHoverCard(site, markerEl) {
+    clearTimeout(hoverTimeout);
+    const active = isActive(site);
+    document.getElementById('mapHoverName').textContent   = site.site_name.replace(/^VSTG2-/i, '');
+    document.getElementById('mapHoverStatus').innerHTML   =
+      `<span class="map-hover-badge ${active ? 'active' : 'inactive'}">
+         <i class="ri-record-circle-${active ? 'fill' : 'line'}"></i> ${active ? 'Active' : 'Inactive'}
+       </span>`;
+    document.getElementById('mapHoverMeta').textContent   =
+      [site.project_name || 'DICT438', site.municipality].filter(Boolean).join(' · ');
+    hoverCard.classList.remove('hidden');
+    // Position near marker
+    const mapRect   = document.getElementById('mapContainer').getBoundingClientRect();
+    const markerRect = markerEl ? markerEl.getBoundingClientRect() : null;
+    if (markerRect) {
+      let left = markerRect.left - mapRect.left + markerRect.width / 2;
+      let top  = markerRect.top  - mapRect.top  - 10;
+      hoverCard.style.left      = left + 'px';
+      hoverCard.style.top       = top  + 'px';
+      hoverCard.style.transform = 'translate(-50%, -100%)';
+    }
+  }
+  function hideHoverCard() {
+    hoverTimeout = setTimeout(() => hoverCard?.classList.add('hidden'), 120);
+  }
+
+  // ── Plot markers ─────────────────────────────────────────────────────────
   function plotMarkers(sites) {
-    Object.values(allMarkers).forEach(m => map.removeLayer(m));
+    clusterGroup.clearLayers();
     allMarkers = {};
 
     sites.forEach(site => {
@@ -1211,118 +1301,284 @@ function initMap() {
       const lng = parseFloat(site.long);
       if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
 
-      const marker = L.marker([lat, lng], { icon: siteIcon(site) }).addTo(map);
+      const marker = L.marker([lat, lng], { icon: siteIcon(site) });
 
-      // ── Pin popup with activate/deactivate button ──
-      function buildPinPopup(s) {
-        const isAct = isActive(s);
-        const shortName = s.site_name.replace(/^VSTG2-/i, '');
-        return `<div class="map-pin-popup">
-          <div class="map-pin-popup-name">${shortName}</div>
-          <div class="map-pin-popup-meta">${s.municipality || ''}</div>
-          <button class="map-pin-popup-btn ${isAct ? 'deactivate' : 'activate'}"
-            data-site="${s.site_name}">
-            <i class="ri-${isAct ? 'close' : 'check'}-circle-line"></i>
-            ${isAct ? 'Deactivate' : 'Activate'}
-          </button>
-        </div>`;
-      }
-
-      marker.bindPopup(buildPinPopup(site), {
-        closeButton: false, className: 'map-pin-popup-wrap',
-        offset: [0, -28], minWidth: 160
+      // Hover preview
+      marker.on('mouseover', function() {
+        const el = this.getElement();
+        showHoverCard(site, el);
       });
+      marker.on('mouseout', hideHoverCard);
 
-      marker.on('click', () => {
-        selectSite(site, marker);
-        marker.openPopup();
-      });
-
-      marker.on('popupopen', () => {
-        setTimeout(() => {
-          const popup = marker.getPopup().getElement();
-          if (!popup) return;
-          // Remove previous listener by replacing node
-          const oldBtn = popup.querySelector('.map-pin-popup-btn');
-          if (!oldBtn) return;
-          const newBtn = oldBtn.cloneNode(true);
-          oldBtn.replaceWith(newBtn);
-          newBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            const newStatus = !isActive(site);
-            newBtn.disabled = true;
-            newBtn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
-            await activateSite(site, newStatus);
-            marker.setPopupContent(buildPinPopup(site));
-          });
-        }, 60);
-      });
+      // Click → select
+      marker.on('click', () => selectSite(site, marker));
 
       allMarkers[site.site_name] = marker;
+      clusterGroup.addLayer(marker);
     });
+
+    // Restore selected site marker
+    if (selectedSite && allMarkers[selectedSite.site_name]) {
+      allMarkers[selectedSite.site_name].setIcon(siteIcon(selectedSite, true));
+    }
   }
 
-  // ── Sidebar list ──────────────────────────────────────────────────────────
-  function renderSiteList(sites) {
+  // ── Virtual scroll sidebar list ──────────────────────────────────────────
+  function renderVirtBatch() {
     const el = document.getElementById('mapSiteList');
     if (!el) return;
-    if (!sites.length) { el.innerHTML = '<div class="map-list-empty">No sites match filters.</div>'; return; }
-
-    el.innerHTML = sites.map(s => {
+    const nextBatch = virtFiltered.slice(virtRendered, virtRendered + VIRT_BATCH);
+    if (!nextBatch.length) return;
+    nextBatch.forEach(s => {
       const active = isActive(s);
       const hasPt  = s.lat && s.long;
-      return `
-        <div class="map-list-item ${selectedSite?.site_name === s.site_name ? 'selected' : ''}"
-             data-name="${escHtml(s.site_name)}">
-          <div class="map-list-dot" style="background:${active ? '#22c55e' : '#ef4444'};
-            ${active ? 'box-shadow:0 0 0 3px rgba(34,197,94,0.2)' : 'box-shadow:0 0 0 3px rgba(239,68,68,0.2)'}"></div>
-          <div class="map-list-text">
-            <div class="map-list-name">${escHtml(s.site_name.replace(/^VSTG2-/, ''))}</div>
-            <div class="map-list-meta">${escHtml(s.project_name || 'DICT438')} | ${escHtml(s.municipality || '—')}</div>
-          </div>
-          ${!hasPt ? '<span class="map-list-nocoord" title="No coordinates"><i class="ri-map-pin-off-line"></i></span>' : ''}
-        </div>`;
-    }).join('');
-
-    el.querySelectorAll('.map-list-item').forEach(item => {
+      const item   = document.createElement('div');
+      item.className = `map-list-item${selectedSite?.site_name === s.site_name ? ' selected' : ''}`;
+      item.dataset.name = s.site_name;
+      item.innerHTML = `
+        <div class="map-list-dot" style="background:${active?'#22c55e':'#ef4444'};
+          ${active?'box-shadow:0 0 0 3px rgba(34,197,94,0.2)':'box-shadow:0 0 0 3px rgba(239,68,68,0.2)'}"></div>
+        <div class="map-list-text">
+          <div class="map-list-name">${escHtml(s.site_name.replace(/^VSTG2-/,''))}</div>
+          <div class="map-list-meta">${escHtml(s.project_name||'DICT438')} | ${escHtml(s.municipality||'—')}</div>
+        </div>
+        ${!hasPt ? '<span class="map-list-nocoord" title="No coordinates"><i class="ri-map-pin-off-line"></i></span>' : ''}`;
       item.addEventListener('click', () => {
-        const site   = allSites.find(s => s.site_name === item.dataset.name);
+        const site   = allSites.find(x => x.site_name === item.dataset.name);
         const marker = allMarkers[item.dataset.name];
         if (site) selectSite(site, marker);
       });
+      el.appendChild(item);
     });
+    virtRendered += nextBatch.length;
   }
 
-  // ── Select site ───────────────────────────────────────────────────────────
-  function selectSite(site, marker) {
-    // Reset previous selected icon
-    if (selectedSite) {
-      const prev = allMarkers[selectedSite.site_name];
-      if (prev) prev.setIcon(siteIcon(selectedSite));
+  function renderSiteList(sites) {
+    const el = document.getElementById('mapSiteList');
+    if (!el) return;
+    virtFiltered = sites;
+    virtRendered = 0;
+    el.innerHTML = '';
+
+    if (!sites.length) {
+      el.innerHTML = `<div class="map-list-empty">
+        <i class="ri-search-line" style="font-size:24px;margin-bottom:8px;"></i>
+        <div>No sites match your filters.</div>
+        <button class="map-list-clear-btn" id="mapListClearFilters">Clear filters</button>
+      </div>`;
+      document.getElementById('mapListClearFilters')?.addEventListener('click', clearAllFilters);
+      return;
     }
 
+    renderVirtBatch();
+  }
+
+  // Infinite scroll sentinel
+  const sentinel = document.getElementById('mapListSentinel');
+  if (typeof IntersectionObserver !== 'undefined' && sentinel) {
+    const sentinelObs = new IntersectionObserver(entries => {
+      if (entries[0].isIntersecting) renderVirtBatch();
+    }, { root: document.querySelector('.map-sidebar'), threshold: 0.1 });
+    sentinelObs.observe(sentinel);
+    map.on('unload', () => sentinelObs.disconnect());
+  }
+
+  // ── Select site ──────────────────────────────────────────────────────────
+  function selectSite(site, marker) {
+    // Reset previous
+    if (selectedSite) {
+      const prev = allMarkers[selectedSite.site_name];
+      if (prev) prev.setIcon(siteIcon(selectedSite, false));
+    }
     selectedSite = site;
     panelEditMode = false;
 
-    // Highlight marker
+    // Highlight marker + fly to
     if (marker) {
       marker.setIcon(siteIcon(site, true));
-      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 12), { duration: 0.6, easeLinearity: 0.5 });
+      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 12), { duration: 0.7, easeLinearity: 0.4 });
     }
 
-    // Sync sidebar
+    // Sync sidebar highlight + scroll
     document.querySelectorAll('.map-list-item').forEach(el => {
       el.classList.toggle('selected', el.dataset.name === site.site_name);
     });
-    const listEl = document.querySelector(`.map-list-item[data-name="${site.site_name}"]`);
+    const listEl = document.querySelector(`.map-list-item[data-name="${CSS.escape(site.site_name)}"]`);
     listEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    // Show details panel
+    // Hide hover card
+    hoverCard?.classList.add('hidden');
+
+    // Persist
+    const st = loadMapState();
+    saveMapState({ ...st, selectedSite: site.site_name });
+
     showDetailsPanel(site);
   }
 
-  // ── Details panel ─────────────────────────────────────────────────────────
+  // ── Filter chips / active filter tags ───────────────────────────────────
+  function renderFilterChips() {
+    const container = document.getElementById('mapActiveFilters');
+    if (!container) return;
+    const q      = (document.getElementById('mapSearch')?.value || '').trim();
+    const proj   = document.getElementById('mapProjectFilter')?.value  || '';
+    const prov   = document.getElementById('mapProvinceFilter')?.value || '';
+    const status = document.getElementById('mapStatusFilter')?.value   || '';
+
+    const chips = [];
+    if (q)      chips.push({ label: `"${q}"`,        clear: () => { document.getElementById('mapSearch').value=''; applyFilters(); }});
+    if (proj)   chips.push({ label: proj,             clear: () => { document.getElementById('mapProjectFilter').value=''; applyFilters(); }});
+    if (prov)   chips.push({ label: prov,             clear: () => { document.getElementById('mapProvinceFilter').value=''; applyFilters(); }});
+    if (status) chips.push({ label: status==='active'?'Active only':'Inactive only', clear: () => { document.getElementById('mapStatusFilter').value=''; applyFilters(); }});
+
+    if (!chips.length) { container.innerHTML = ''; return; }
+    container.innerHTML = chips.map((c,i) =>
+      `<span class="map-filter-chip" data-idx="${i}">${escHtml(c.label)}<button class="map-chip-x">×</button></span>`
+    ).join('') + `<button class="map-chip-clear-all" id="mapChipClearAll">Clear all</button>`;
+
+    container.querySelectorAll('.map-filter-chip').forEach((chip, i) => {
+      chip.querySelector('.map-chip-x').addEventListener('click', () => chips[i].clear());
+    });
+    document.getElementById('mapChipClearAll')?.addEventListener('click', clearAllFilters);
+  }
+
+  function clearAllFilters() {
+    const search = document.getElementById('mapSearch');
+    const proj   = document.getElementById('mapProjectFilter');
+    const prov   = document.getElementById('mapProvinceFilter');
+    const status = document.getElementById('mapStatusFilter');
+    if (search) search.value = '';
+    if (proj)   proj.value   = '';
+    if (prov)   prov.value   = '';
+    if (status) status.value = '';
+    document.getElementById('mapSearchClear')?.classList.add('hidden');
+    applyFilters();
+  }
+
+  // ── Filters ──────────────────────────────────────────────────────────────
+  function getFiltered() {
+    const q      = (document.getElementById('mapSearch')?.value || '').toLowerCase();
+    const proj   = document.getElementById('mapProjectFilter')?.value  || '';
+    const prov   = document.getElementById('mapProvinceFilter')?.value || '';
+    const status = document.getElementById('mapStatusFilter')?.value   || '';
+    return allSites.filter(s => {
+      if (q && !((s.site_name||'').toLowerCase().includes(q) ||
+                 (s.municipality||'').toLowerCase().includes(q) ||
+                 (s.province||'').toLowerCase().includes(q))) return false;
+      if (proj   && s.project_name !== proj)  return false;
+      if (prov   && s.province     !== prov)  return false;
+      if (status === 'active'   && !isActive(s)) return false;
+      if (status === 'inactive' &&  isActive(s)) return false;
+      return true;
+    });
+  }
+
+  function updateSidebarCount(filtered) {
+    const el = document.getElementById('mapSidebarCount');
+    if (el) el.textContent = `Showing ${filtered.length} of ${allSites.length} sites`;
+  }
+
+  function isFilterActive() {
+    return !!(
+      (document.getElementById('mapSearch')?.value || '').trim() ||
+      document.getElementById('mapProjectFilter')?.value ||
+      document.getElementById('mapProvinceFilter')?.value ||
+      document.getElementById('mapStatusFilter')?.value
+    );
+  }
+
+  // Search with auto-focus first result
+  let searchDebounce = null;
+  function handleSearch() {
+    clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(() => {
+      const q = (document.getElementById('mapSearch')?.value || '').trim();
+      document.getElementById('mapSearchClear')?.classList.toggle('hidden', !q);
+      applyFilters();
+      // Auto-zoom to first result if search gives a single match
+      if (q) {
+        const filtered = getFiltered();
+        if (filtered.length === 1 && filtered[0].lat && filtered[0].long) {
+          const site = filtered[0];
+          const marker = allMarkers[site.site_name];
+          selectSite(site, marker);
+        } else if (filtered.length > 0 && filtered.length <= 10) {
+          // Fit bounds to all results
+          const pts = filtered.filter(s=>s.lat&&s.long).map(s=>[parseFloat(s.lat),parseFloat(s.long)]);
+          if (pts.length) map.flyToBounds(pts, { padding: [60,60], maxZoom: 13, duration: 0.8 });
+        }
+      }
+    }, 280);
+  }
+
+  function applyFilters() {
+    const filtered = getFiltered();
+    renderSiteList(filtered);
+    updateMapStats(filtered);
+    updateSidebarCount(filtered);
+    renderFilterChips();
+
+    const filterActive = isFilterActive();
+    const bulkRow = document.getElementById('mapBulkRow');
+    if (bulkRow) bulkRow.style.display = filterActive ? 'flex' : 'none';
+
+    // Update cluster markers
+    clusterGroup.clearLayers();
+    Object.entries(allMarkers).forEach(([name, marker]) => {
+      const inFilter = filtered.some(s => s.site_name === name);
+      if (inFilter) clusterGroup.addLayer(marker);
+    });
+
+    // Persist filter state
+    const st = loadMapState();
+    saveMapState({
+      ...st,
+      search:  document.getElementById('mapSearch')?.value || '',
+      project: document.getElementById('mapProjectFilter')?.value || '',
+      province:document.getElementById('mapProvinceFilter')?.value || '',
+      status:  document.getElementById('mapStatusFilter')?.value || ''
+    });
+  }
+
+  document.getElementById('mapSearch')?.addEventListener('input', handleSearch);
+  document.getElementById('mapSearchClear')?.addEventListener('click', () => {
+    document.getElementById('mapSearch').value = '';
+    document.getElementById('mapSearchClear').classList.add('hidden');
+    applyFilters();
+  });
+  ['mapProjectFilter','mapProvinceFilter','mapStatusFilter'].forEach(id => {
+    document.getElementById(id)?.addEventListener('change', applyFilters);
+  });
+
+  // ── Sidebar collapse/expand ──────────────────────────────────────────────
+  const sidebar       = document.getElementById('mapSidebar');
+  const collapseBtn   = document.getElementById('mapSidebarCollapseBtn');
+  const expandBtn     = document.getElementById('mapSidebarExpandBtn');
+
+  collapseBtn?.addEventListener('click', () => {
+    sidebar?.classList.add('map-sidebar-collapsed');
+    expandBtn?.classList.remove('hidden');
+    setTimeout(() => forceMapRefresh(), 350);
+  });
+  expandBtn?.addEventListener('click', () => {
+    sidebar?.classList.remove('map-sidebar-collapsed');
+    expandBtn?.classList.add('hidden');
+    setTimeout(() => forceMapRefresh(), 350);
+  });
+
+  // ── Stats ────────────────────────────────────────────────────────────────
+  function updateMapStats(sites) {
+    const active   = sites.filter(s => isActive(s)).length;
+    const inactive = sites.length - active;
+    const tot = document.getElementById('mapStatTotal');
+    const act = document.getElementById('mapStatActive');
+    const ina = document.getElementById('mapStatInactive');
+    if (tot) tot.innerHTML = `<i class="ri-map-pin-2-line"></i> ${sites.length} Total`;
+    if (act) act.innerHTML = `<i class="ri-radio-button-fill"></i> ${active} Active`;
+    if (ina) ina.innerHTML = `<i class="ri-radio-button-line"></i> ${inactive} Inactive`;
+  }
+
+  // ── Details Panel helpers ────────────────────────────────────────────────
   function deviceTypeLabel(name) {
     if (!name) return '—';
     const m = name.match(/\b(AP\s*1|AP\s*2|AP\s*3|ER|ROUTER)\b/i);
@@ -1371,19 +1627,23 @@ function initMap() {
       </div>`;
   }
 
+  // ── Details Panel ─────────────────────────────────────────────────────────
   function showDetailsPanel(site) {
-    const panel   = document.getElementById('mapDetailsPanel');
+    const panel = document.getElementById('mapDetailsPanel');
+    if (!panel) return;
+
     const wasHidden = panel.classList.contains('hidden');
     panel.classList.remove('hidden');
+    // Animate in
+    requestAnimationFrame(() => panel.classList.add('map-panel-visible'));
+
     document.querySelector('.map-page-wrap')?.classList.add('details-open');
 
-    // ── Make panel draggable from its header ──────────────────────────────
+    // Make draggable (only bind once)
     if (wasHidden) {
-      // Reset to default position when opening fresh
-      panel.style.right  = '14px';
-      panel.style.top    = '14px';
-      panel.style.left   = '';
-      panel.style.transform = '';
+      panel.style.right = '14px';
+      panel.style.top   = '14px';
+      panel.style.left  = '';
     }
     if (!panel._dragBound) {
       panel._dragBound = true;
@@ -1392,34 +1652,33 @@ function initMap() {
       header?.addEventListener('mousedown', function(e) {
         if (e.target.closest('button')) return;
         e.preventDefault();
-        const rect  = panel.getBoundingClientRect();
-        const offX  = e.clientX - rect.left;
-        const offY  = e.clientY - rect.top;
+        const r    = panel.getBoundingClientRect();
+        const offX = e.clientX - r.left;
+        const offY = e.clientY - r.top;
         panel.style.transition = 'none';
-        panel.style.left   = rect.left + 'px';
-        panel.style.top    = rect.top  + 'px';
-        panel.style.right  = 'auto';
+        panel.style.left  = r.left + 'px';
+        panel.style.top   = r.top  + 'px';
+        panel.style.right = 'auto';
         header.style.cursor = 'grabbing';
-        function onMove(ev) {
-          const wrap = document.querySelector('.map-card-wrap')?.getBoundingClientRect()
-                    || { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
-          const newLeft = Math.min(Math.max(ev.clientX - offX, wrap.left), wrap.right  - panel.offsetWidth);
-          const newTop  = Math.min(Math.max(ev.clientY - offY, wrap.top),  wrap.bottom - panel.offsetHeight);
-          panel.style.left = newLeft + 'px';
-          panel.style.top  = newTop  + 'px';
-        }
-        function onUp() {
+        const onMove = ev => {
+          const wrap = document.querySelector('.map-body-row')?.getBoundingClientRect()
+                    || { left:0, top:0, right:window.innerWidth, bottom:window.innerHeight };
+          panel.style.left = Math.min(Math.max(ev.clientX - offX, wrap.left), wrap.right  - panel.offsetWidth)  + 'px';
+          panel.style.top  = Math.min(Math.max(ev.clientY - offY, wrap.top),  wrap.bottom - panel.offsetHeight) + 'px';
+        };
+        const onUp = () => {
           header.style.cursor = 'grab';
           panel.style.transition = '';
           document.removeEventListener('mousemove', onMove);
           document.removeEventListener('mouseup',   onUp);
-        }
+        };
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup',   onUp);
       });
     }
-    const active  = isActive(site);
-    const devices = Array.isArray(site.devices) ? site.devices : [];
+
+    const active   = isActive(site);
+    const devices  = Array.isArray(site.devices) ? site.devices : [];
     const hasIssue = devices.some(d => d.is_active===false || isExpired(d.license_due));
 
     document.getElementById('mapDetailsName').textContent =
@@ -1428,12 +1687,13 @@ function initMap() {
       `${site.project_name||'DICT438'} | ${site.province||'—'} | ${site.municipality||'—'}`;
 
     document.getElementById('mapDetailsBody').innerHTML = `
-
-      <!-- ── OVERVIEW (always visible) ── -->
       <div class="map-details-status-row">
         <span class="map-details-status-badge ${active?'active':'inactive'}">
           <i class="ri-record-circle-${active?'fill':'line'}"></i> ${active?'Active':'Inactive'}
         </span>
+        <button class="map-activate-btn ${active?'deactivate':'activate'}" id="mapDetailToggleStatus">
+          <i class="ri-${active?'close':'check'}-circle-line"></i> ${active?'Deactivate':'Activate'}
+        </button>
       </div>
 
       <div class="map-overview-grid">
@@ -1451,71 +1711,64 @@ function initMap() {
         </div>
         <div class="map-ov-item">
           <span class="map-ov-label"><i class="ri-cpu-line"></i> Devices</span>
-          <span class="map-ov-value">
-            ${devices.length} linked
-            ${hasIssue ? '<span class="map-ov-issue"><i class="ri-error-warning-line"></i></span>' : ''}
-          </span>
+          <span class="map-ov-value">${devices.length} linked ${hasIssue?'<span class="map-ov-issue"><i class="ri-error-warning-line"></i></span>':''}</span>
         </div>
       </div>
 
-      <!-- ── SEE MORE TOGGLE ── -->
       <button class="map-see-more-btn" id="mapSeeMoreBtn">
-        <i class="ri-arrow-down-s-line"></i> See More
+        <i class="ri-arrow-down-s-line"></i> See More Details
       </button>
 
-      <!-- ── EXPANDED DETAILS (hidden by default) ── -->
       <div class="map-expanded-section hidden" id="mapExpandedSection">
-
         <div class="map-exp-divider"><span>Details</span></div>
         <div class="map-details-section">
           <div class="map-details-row"><span class="map-details-label">Coords</span>
             <span>${site.lat?parseFloat(site.lat).toFixed(5):'—'}, ${site.long?parseFloat(site.long).toFixed(5):'—'}</span>
           </div>
-          <div class="map-details-row"><span class="map-details-label">Installed</span><span>${escHtml(site.installed_by||'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Repaired</span><span>${escHtml(site.repaired_by||'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Installed On</span><span>${site.date_installed ? new Date(site.date_installed).toLocaleDateString() : 'â€”'}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Accepted</span><span>${site.acceptance_date ? new Date(site.acceptance_date).toLocaleDateString() : 'â€”'}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Created By</span><span>${escHtml(site.created_by_name||'â€”')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Installed</span><span>${escHtml(site.installed_by||'—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Repaired</span><span>${escHtml(site.repaired_by||'—')}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Installed On</span><span>${site.date_installed?new Date(site.date_installed).toLocaleDateString():'—'}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Accepted</span><span>${site.acceptance_date?new Date(site.acceptance_date).toLocaleDateString():'—'}</span></div>
+          <div class="map-details-row"><span class="map-details-label">Created By</span><span>${escHtml(site.created_by_name||'—')}</span></div>
         </div>
-
         <div class="map-exp-divider"><span>Equipment</span></div>
         <div class="map-details-section">
           <div class="map-details-row"><span class="map-details-label">Modem</span><span>${escHtml(site.modem||'—')}</span></div>
           <div class="map-details-row"><span class="map-details-label">Transceiver</span><span>${escHtml(site.transceiver||'—')}</span></div>
           <div class="map-details-row"><span class="map-details-label">Dish</span><span>${escHtml(site.dish||'—')}</span></div>
         </div>
-
         <div class="map-exp-divider"><span>Contacts</span></div>
         <div class="map-details-section">
           <div class="map-details-row"><span class="map-details-label">Personnel</span><span>${escHtml(site.contacts||'—')}</span></div>
           <div class="map-details-row"><span class="map-details-label">Email</span><span>${escHtml(site.email||'—')}</span></div>
         </div>
-
-        <div class="map-exp-divider">
-          <span>Network Devices ${hasIssue?'<span class="map-dev-warn-badge"><i class="ri-error-warning-line"></i> Issue</span>':''}</span>
-        </div>
+        <div class="map-exp-divider"><span>Network Devices ${hasIssue?'<span class="map-dev-warn-badge"><i class="ri-error-warning-line"></i> Issue</span>':''}</span></div>
         <div class="map-devices-list" id="mapDevicesList">
-          ${devices.length ? devices.map(d=>buildDeviceCard(d,site)).join('') : '<div class="map-dev-empty"><i class="ri-cpu-line"></i> No devices linked.</div>'}
+          ${devices.length?devices.map(d=>buildDeviceCard(d,site)).join(''):'<div class="map-dev-empty"><i class="ri-cpu-line"></i> No devices linked.</div>'}
         </div>
-
         <div class="map-exp-divider"><span>History</span></div>
         <div class="map-details-section">
-          ${(Array.isArray(site.history) && site.history.length)
-            ? site.history.map(item => `
+          ${Array.isArray(site.history)&&site.history.length
+            ? site.history.map(item=>`
                 <div class="map-details-row">
-                  <span class="map-details-label">${escHtml(item.action_type || 'update')}</span>
-                  <span>${escHtml(item.actor_name || 'System')} • ${item.action_date ? new Date(item.action_date).toLocaleString() : 'â€”'}${item.notes ? ` • ${escHtml(item.notes)}` : ''}</span>
-                </div>
-              `).join('')
+                  <span class="map-details-label">${escHtml(item.action_type||'update')}</span>
+                  <span>${escHtml(item.actor_name||'System')} • ${item.action_date?new Date(item.action_date).toLocaleString():'—'}${item.notes?` • ${escHtml(item.notes)}`:''}</span>
+                </div>`).join('')
             : '<div class="map-details-row"><span class="map-details-label">Track</span><span>No history yet.</span></div>'}
         </div>
-
       </div>
     `;
 
+    // Toggle status button
+    document.getElementById('mapDetailToggleStatus')?.addEventListener('click', async function() {
+      const newStatus = !isActive(site);
+      this.disabled = true;
+      this.innerHTML = '<i class="ri-loader-4-line spin"></i>';
+      await activateSite(site, newStatus);
+    });
 
-
-    document.getElementById('mapSeeMoreBtn').addEventListener('click', function() {
+    // See More toggle
+    document.getElementById('mapSeeMoreBtn')?.addEventListener('click', function() {
       const expanded = document.getElementById('mapExpandedSection');
       const isOpen   = !expanded.classList.contains('hidden');
       expanded.classList.toggle('hidden', isOpen);
@@ -1523,33 +1776,46 @@ function initMap() {
       this.innerHTML = isOpen
         ? '<i class="ri-arrow-down-s-line"></i> See More Details'
         : '<i class="ri-arrow-up-s-line"></i> See Less';
-      // Scroll down to show expanded content
       if (!isOpen) {
         setTimeout(() => {
-          expanded.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }, 50);
+          const body = document.getElementById('mapDetailsBody');
+          if (body) body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' });
+        }, 120);
       }
     });
+
+    // Close button
     document.getElementById('mapDetailsPanelClose').onclick = () => {
-      panel.classList.add('hidden');
-      document.querySelector('.map-page-wrap')?.classList.remove('details-open');
-      if (selectedSite) { const m = allMarkers[selectedSite.site_name]; if (m) m.setIcon(siteIcon(selectedSite)); }
+      panel.classList.remove('map-panel-visible');
+      setTimeout(() => {
+        panel.classList.add('hidden');
+        document.querySelector('.map-page-wrap')?.classList.remove('details-open');
+      }, 200);
+      if (selectedSite) {
+        const m = allMarkers[selectedSite.site_name];
+        if (m) m.setIcon(siteIcon(selectedSite, false));
+      }
       document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
       selectedSite = null;
+      const st = loadMapState();
+      saveMapState({ ...st, selectedSite: null });
     };
+
     document.getElementById('mapDetailsEditBtn').onclick = () => openMapEditModal(site);
 
+    // Device actions
     document.querySelectorAll('.map-dev-toggle-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const id = parseInt(btn.dataset.id);
+        const id  = parseInt(btn.dataset.id);
         const cur = btn.dataset.active === 'true';
         btn.disabled = true;
         try {
           const r = await fetch(`/api/map/devices/${id}/status`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({is_active:!cur})});
           if (!r.ok) throw new Error();
-          const dev = site.devices.find(d=>d.id===id); if (dev) dev.is_active = !cur;
+          const dev = site.devices.find(d=>d.id===id);
+          if (dev) dev.is_active = !cur;
           const marker = allMarkers[site.site_name];
-          if (marker) marker.setIcon(selectedSite?.site_name===site.site_name ? siteIcon(site,true) : siteIcon(site));
+          if (marker) marker.setIcon(siteIcon(site, selectedSite?.site_name===site.site_name));
           showDetailsPanel(site);
           showToast(`Device ${!cur?'activated':'deactivated'}.`,'success');
         } catch { showToast('Device update failed.','error'); }
@@ -1558,271 +1824,32 @@ function initMap() {
     });
     document.querySelectorAll('.map-dev-edit-btn').forEach(btn => {
       btn.addEventListener('click', () => {
-        const id  = parseInt(btn.dataset.id);
-        const dev = site.devices.find(d=>d.id===id);
+        const dev = site.devices.find(d=>d.id===parseInt(btn.dataset.id));
         if (dev) openDeviceEditModal(dev, site);
       });
     });
   }
 
-  // ── Device Edit Modal ─────────────────────────────────────────────────────
-  function showDetailsPanel(site) {
-    const panel = document.getElementById('mapDetailsPanel');
-    if (!panel) return;
-
-    const active = isActive(site);
-    const devices = Array.isArray(site.devices) ? site.devices : [];
-    const hasIssue = devices.some(d => d.is_active === false || isExpired(d.license_due));
-    const body = document.getElementById('mapDetailsBody');
-
-    panel.classList.remove('hidden');
-    document.querySelector('.map-page-wrap')?.classList.add('details-open');
-    refreshMapLayout();
-
-    document.getElementById('mapDetailsName').textContent =
-      site.site_name.replace(/^VSTG2-/, '') || 'â€”';
-    document.getElementById('mapDetailsSub').textContent =
-      `${site.project_name || 'DICT438'} | ${site.province || 'â€”'} | ${site.municipality || 'â€”'}`;
-
-    function renderHistory() {
-      if (!Array.isArray(site.history) || !site.history.length) {
-        return '<div class="map-details-row"><span class="map-details-label">Track</span><span>No history yet.</span></div>';
-      }
-      return `<div class="map-history-list">${
-        site.history.map(item => `
-          <div class="map-history-item">
-            <div class="map-history-meta">${escHtml(item.action_type || 'update')} • ${item.action_date ? new Date(item.action_date).toLocaleString() : 'â€”'}</div>
-            <div class="map-history-note">${escHtml(item.actor_name || 'System')}${item.notes ? ` • ${escHtml(item.notes)}` : ''}</div>
-          </div>
-        `).join('')
-      }</div>`;
-    }
-
-    function bindDeviceActions() {
-      document.querySelectorAll('.map-dev-toggle-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const id = parseInt(btn.dataset.id);
-          const cur = btn.dataset.active === 'true';
-          btn.disabled = true;
-          try {
-            const r = await fetch(`/api/map/devices/${id}/status`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ is_active: !cur })
-            });
-            if (!r.ok) throw new Error();
-            const dev = site.devices.find(d => d.id === id);
-            if (dev) dev.is_active = !cur;
-            const marker = allMarkers[site.site_name];
-            if (marker) marker.setIcon(selectedSite?.site_name === site.site_name ? siteIcon(site, true) : siteIcon(site));
-            showDetailsPanel(site);
-            showToast(`Device ${!cur ? 'activated' : 'deactivated'}.`, 'success');
-          } catch {
-            showToast('Device update failed.', 'error');
-          } finally {
-            btn.disabled = false;
-          }
-        });
+  // ── Activate / Deactivate ─────────────────────────────────────────────────
+  async function activateSite(site, newStatus) {
+    try {
+      const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/status`,{
+        method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({is_active: newStatus})
       });
-
-      document.querySelectorAll('.map-dev-edit-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const id = parseInt(btn.dataset.id);
-          const dev = site.devices.find(d => d.id === id);
-          if (dev) openDeviceEditModal(dev, site);
-        });
-      });
-    }
-
-    function renderReadView() {
-      body.innerHTML = `
-        <div class="map-details-status-row">
-          <span class="map-details-status-badge ${active ? 'active' : 'inactive'}">
-            <i class="ri-record-circle-${active ? 'fill' : 'line'}"></i> ${active ? 'Active' : 'Inactive'}
-          </span>
-        </div>
-
-        <div class="map-panel-actions">
-          <button class="map-panel-btn primary" id="mapPanelInlineEditBtn"><i class="ri-edit-line"></i> Edit Details</button>
-        </div>
-
-        <div class="map-overview-grid">
-          <div class="map-ov-item">
-            <span class="map-ov-label"><i class="ri-server-line"></i> IP Address</span>
-            <span class="map-ov-value">${escHtml(site.ip || 'â€”')}</span>
-          </div>
-          <div class="map-ov-item">
-            <span class="map-ov-label"><i class="ri-building-line"></i> Municipality</span>
-            <span class="map-ov-value">${escHtml(site.municipality || 'â€”')}</span>
-          </div>
-          <div class="map-ov-item">
-            <span class="map-ov-label"><i class="ri-map-pin-2-line"></i> Province</span>
-            <span class="map-ov-value">${escHtml(site.province || 'â€”')}</span>
-          </div>
-          <div class="map-ov-item">
-            <span class="map-ov-label"><i class="ri-cpu-line"></i> Devices</span>
-            <span class="map-ov-value">${devices.length} linked${hasIssue ? ' <span class="map-ov-issue"><i class="ri-error-warning-line"></i></span>' : ''}</span>
-          </div>
-        </div>
-
-        <div class="map-exp-divider"><span>Site Status</span></div>
-        <div class="map-details-section">
-          <div class="map-details-row"><span class="map-details-label">Coordinates</span><span>${site.lat ? parseFloat(site.lat).toFixed(5) : 'â€”'}, ${site.long ? parseFloat(site.long).toFixed(5) : 'â€”'}</span></div>
-        </div>
-
-        <div class="map-exp-divider"><span>Details</span></div>
-        <div class="map-details-section">
-          <div class="map-details-row"><span class="map-details-label">Project</span><span>${escHtml(site.project_name || 'DICT438')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Installed</span><span>${escHtml(site.installed_by || 'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Repaired</span><span>${escHtml(site.repaired_by || 'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Installed On</span><span>${site.date_installed ? new Date(site.date_installed).toLocaleDateString() : 'â€”'}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Accepted</span><span>${site.acceptance_date ? new Date(site.acceptance_date).toLocaleDateString() : 'â€”'}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Contacts</span><span>${escHtml(site.contacts || 'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Email</span><span>${escHtml(site.email || 'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Created By</span><span>${escHtml(site.created_by_name || 'â€”')}</span></div>
-        </div>
-
-        <div class="map-exp-divider"><span>Equipment</span></div>
-        <div class="map-details-section">
-          <div class="map-details-row"><span class="map-details-label">Modem</span><span>${escHtml(site.modem || 'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Transceiver</span><span>${escHtml(site.transceiver || 'â€”')}</span></div>
-          <div class="map-details-row"><span class="map-details-label">Dish</span><span>${escHtml(site.dish || 'â€”')}</span></div>
-        </div>
-
-        <div class="map-exp-divider"><span>Network Devices ${hasIssue ? '<span class="map-dev-warn-badge"><i class="ri-error-warning-line"></i> Issue</span>' : ''}</span></div>
-        <div class="map-devices-list" id="mapDevicesList">
-          ${devices.length ? devices.map(d => buildDeviceCard(d, site)).join('') : '<div class="map-dev-empty"><i class="ri-cpu-line"></i> No devices linked.</div>'}
-        </div>
-
-        <div class="map-exp-divider"><span>History</span></div>
-        ${renderHistory()}
-      `;
-
-      document.getElementById('mapPanelInlineEditBtn').onclick = () => {
-        panelEditMode = true;
-        renderEditView();
-      };
-
-      bindDeviceActions();
-    }
-
-    function renderEditView() {
-      body.innerHTML = `
-        <div class="map-details-status-row">
-          <span class="map-details-status-badge ${active ? 'active' : 'inactive'}">
-            <i class="ri-record-circle-${active ? 'fill' : 'line'}"></i> ${active ? 'Active' : 'Inactive'}
-          </span>
-        </div>
-
-        <div class="map-panel-actions">
-          <button class="map-panel-btn primary" id="mapPanelSaveBtn"><i class="ri-save-line"></i> Save</button>
-          <button class="map-panel-btn ghost" id="mapPanelCancelBtn">Cancel</button>
-        </div>
-
-        <div class="map-exp-divider"><span>Details</span></div>
-        <div class="map-edit-grid">
-          <div class="map-edit-field"><label for="mapPanelProject">Project</label><input id="mapPanelProject" class="map-edit-input" value="${escHtml(site.project_name || 'DICT438')}"></div>
-          <div class="map-edit-field"><label for="mapPanelIp">IP Address</label><input id="mapPanelIp" class="map-edit-input" value="${escHtml(site.ip || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelMunicipality">Municipality</label><input id="mapPanelMunicipality" class="map-edit-input" value="${escHtml(site.municipality || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelProvince">Province</label><input id="mapPanelProvince" class="map-edit-input" value="${escHtml(site.province || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelInstalledBy">Installed By</label><input id="mapPanelInstalledBy" class="map-edit-input" value="${escHtml(site.installed_by || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelRepairedBy">Repaired By</label><input id="mapPanelRepairedBy" class="map-edit-input" value="${escHtml(site.repaired_by || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelDateInstalled">Date Installed</label><input id="mapPanelDateInstalled" type="date" class="map-edit-input" value="${site.date_installed ? new Date(site.date_installed).toISOString().slice(0, 10) : ''}"></div>
-          <div class="map-edit-field"><label for="mapPanelAcceptanceDate">Acceptance Date</label><input id="mapPanelAcceptanceDate" type="date" class="map-edit-input" value="${site.acceptance_date ? new Date(site.acceptance_date).toISOString().slice(0, 10) : ''}"></div>
-          <div class="map-edit-field"><label for="mapPanelContacts">Contacts</label><textarea id="mapPanelContacts" class="map-edit-textarea">${escHtml(site.contacts || '')}</textarea></div>
-          <div class="map-edit-field"><label for="mapPanelEmail">Email / Social</label><input id="mapPanelEmail" class="map-edit-input" value="${escHtml(site.email || '')}"></div>
-        </div>
-
-        <div class="map-exp-divider"><span>Equipment</span></div>
-        <div class="map-edit-grid">
-          <div class="map-edit-field"><label for="mapPanelModem">Modem</label><input id="mapPanelModem" class="map-edit-input" value="${escHtml(site.modem || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelTransceiver">Transceiver</label><input id="mapPanelTransceiver" class="map-edit-input" value="${escHtml(site.transceiver || '')}"></div>
-          <div class="map-edit-field"><label for="mapPanelDish">Dish</label><input id="mapPanelDish" class="map-edit-input" value="${escHtml(site.dish || '')}"></div>
-        </div>
-      `;
-
-      document.getElementById('mapPanelCancelBtn').onclick = () => {
-        panelEditMode = false;
-        renderReadView();
-      };
-
-      document.getElementById('mapPanelSaveBtn').onclick = async () => {
-        const payload = {
-          project_name: document.getElementById('mapPanelProject').value.trim() || 'DICT438',
-          ip: document.getElementById('mapPanelIp').value.trim(),
-          municipality: document.getElementById('mapPanelMunicipality').value.trim(),
-          province: document.getElementById('mapPanelProvince').value.trim(),
-          installed_by: document.getElementById('mapPanelInstalledBy').value.trim(),
-          repaired_by: document.getElementById('mapPanelRepairedBy').value.trim(),
-          date_installed: document.getElementById('mapPanelDateInstalled').value || null,
-          acceptance_date: document.getElementById('mapPanelAcceptanceDate').value || null,
-          contacts: document.getElementById('mapPanelContacts').value.trim(),
-          email: document.getElementById('mapPanelEmail').value.trim(),
-          modem: document.getElementById('mapPanelModem').value.trim(),
-          transceiver: document.getElementById('mapPanelTransceiver').value.trim(),
-          dish: document.getElementById('mapPanelDish').value.trim(),
-          created_by_name: site.created_by_name || user?.full_name || null,
-        };
-
-        if (!payload.project_name) {
-          showToast('Project is required.', 'error');
-          return;
-        }
-
-        const btn = document.getElementById('mapPanelSaveBtn');
-        btn.disabled = true;
-        btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Savingâ€¦';
-
-        try {
-          const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/edit`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-          if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
-
-          Object.assign(site, payload);
-          const idx = allSites.findIndex(s => s.site_name === site.site_name);
-          if (idx !== -1) Object.assign(allSites[idx], payload);
-          panelEditMode = false;
-          const filtered = getFiltered();
-          renderSiteList(filtered);
-          updateMapStats(filtered);
-          updateSidebarCount(filtered);
-          renderReadView();
-          showToast('Site details updated.', 'success');
-        } catch (e) {
-          showToast('Save failed: ' + e.message, 'error');
-        } finally {
-          btn.disabled = false;
-          btn.innerHTML = '<i class="ri-save-line"></i> Save';
-        }
-      };
-    }
-
-    document.getElementById('mapDetailsPanelClose').onclick = () => {
-      panel.classList.add('hidden');
-      document.querySelector('.map-page-wrap')?.classList.remove('details-open');
-      panelEditMode = false;
-      refreshMapLayout();
-      if (selectedSite) {
-        const m = allMarkers[selectedSite.site_name];
-        if (m) m.setIcon(siteIcon(selectedSite));
-      }
-      document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
-      selectedSite = null;
-    };
-
-    document.getElementById('mapDetailsEditBtn').onclick = () => {
-      panelEditMode = !panelEditMode;
-      if (panelEditMode) renderEditView();
-      else renderReadView();
-    };
-
-    if (panelEditMode) renderEditView();
-    else renderReadView();
+      if (!res.ok) throw new Error((await res.json()).error);
+      const idx = allSites.findIndex(s=>s.site_name===site.site_name);
+      if (idx !== -1) allSites[idx].is_active = newStatus;
+      site.is_active = newStatus;
+      const marker = allMarkers[site.site_name];
+      if (marker) marker.setIcon(siteIcon(site, true));
+      applyFilters();
+      showDetailsPanel(site);
+      showToast(`Site ${newStatus?'activated':'deactivated'}.`, 'success');
+    } catch(e) { showToast('Status update failed: '+e.message,'error'); }
   }
 
+  // ── Device Edit Modal ────────────────────────────────────────────────────
   function openDeviceEditModal(dev, site) {
     const m = document.createElement('div');
     m.className = 'modal-overlay';
@@ -1835,37 +1862,20 @@ function initMap() {
         </div>
         <div class="add-modal-body">
           <div class="add-fields-grid">
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-cpu-line"></i> Device Name</label>
-              <input id="devEditName"  class="add-field-input" value="${escHtml(dev.device_name||'')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-price-tag-3-line"></i> Type</label>
+            <div class="add-field-item"><label class="add-field-label">Device Name</label><input id="devEditName" class="add-field-input" value="${escHtml(dev.device_name||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Type</label>
               <select id="devEditType" class="add-field-input">
                 <option value="ER_ROUTER" ${(dev.device_type||'').toUpperCase()==='ER_ROUTER'?'selected':''}>ER Router</option>
-                <option value="AP1"       ${(dev.device_type||'').toUpperCase()==='AP1'?'selected':''}>AP 1</option>
-                <option value="AP2"       ${(dev.device_type||'').toUpperCase()==='AP2'?'selected':''}>AP 2</option>
-                <option value="AP3"       ${(dev.device_type||'').toUpperCase()==='AP3'?'selected':''}>AP 3</option>
-                <option value="OTHER"     ${!['ER_ROUTER','AP1','AP2','AP3'].includes((dev.device_type||'').toUpperCase())?'selected':''}>Other</option>
+                <option value="AP1" ${(dev.device_type||'').toUpperCase()==='AP1'?'selected':''}>AP 1</option>
+                <option value="AP2" ${(dev.device_type||'').toUpperCase()==='AP2'?'selected':''}>AP 2</option>
+                <option value="AP3" ${(dev.device_type||'').toUpperCase()==='AP3'?'selected':''}>AP 3</option>
+                <option value="OTHER">Other</option>
               </select>
             </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-barcode-line"></i> Serial Number</label>
-              <input id="devEditSN"    class="add-field-input" value="${escHtml(dev.serial_number||dev.serial||'')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-mac-line"></i> MAC Address</label>
-              <input id="devEditMAC"   class="add-field-input" value="${escHtml(dev.mac_address||'')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-settings-line"></i> Model</label>
-              <input id="devEditModel" class="add-field-input" value="${escHtml(dev.model||'')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-calendar-line"></i> License Expiry</label>
-              <input id="devEditLic"   class="add-field-input" type="date"
-                value="${dev.license_due?new Date(dev.license_due).toISOString().slice(0,10):''}">
-            </div>
+            <div class="add-field-item"><label class="add-field-label">Serial Number</label><input id="devEditSN" class="add-field-input" value="${escHtml(dev.serial_number||dev.serial||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">MAC Address</label><input id="devEditMAC" class="add-field-input" value="${escHtml(dev.mac_address||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Model</label><input id="devEditModel" class="add-field-input" value="${escHtml(dev.model||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">License Expiry</label><input id="devEditLic" class="add-field-input" type="date" value="${dev.license_due?new Date(dev.license_due).toISOString().slice(0,10):''}"></div>
           </div>
         </div>
         <div class="add-modal-footer">
@@ -1880,7 +1890,7 @@ function initMap() {
     const close = () => m.remove();
     document.getElementById('devEditClose').onclick  = close;
     document.getElementById('devEditCancel').onclick = close;
-    m.onclick = e => { if (e.target===m) close(); };
+    m.onclick = e => { if(e.target===m) close(); };
     document.getElementById('devEditSave').onclick = async () => {
       const payload = {
         device_name:   document.getElementById('devEditName').value.trim(),
@@ -1903,37 +1913,7 @@ function initMap() {
     };
   }
 
-  // ── Activate / Deactivate ─────────────────────────────────────────────────
-  async function activateSite(site, newStatus) {
-    try {
-      const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/status`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_active: newStatus })
-      });
-      if (!res.ok) throw new Error((await res.json()).error);
-
-      // Update local data
-      const idx = allSites.findIndex(s => s.site_name === site.site_name);
-      if (idx !== -1) allSites[idx].is_active = newStatus;
-      site.is_active = newStatus;
-
-      // Update marker icon
-      const marker = allMarkers[site.site_name];
-      if (marker) marker.setIcon(siteIcon(site, true));
-
-      // Refresh sidebar dot + details panel
-      const filtered = getFiltered();
-      renderSiteList(filtered);
-      showDetailsPanel(site);
-
-      showToast(`Site ${newStatus ? 'activated' : 'deactivated'} successfully.`, 'success');
-    } catch(e) {
-      showToast('Status update failed: ' + e.message, 'error');
-    }
-  }
-
-  // ── Edit modal ────────────────────────────────────────────────────────────
+  // ── Edit Site Modal ──────────────────────────────────────────────────────
   function openMapEditModal(site) {
     const m = document.createElement('div');
     m.className = 'modal-overlay';
@@ -1947,62 +1927,20 @@ function initMap() {
         </div>
         <div class="add-modal-body">
           <div class="add-fields-grid" style="grid-template-columns:1fr 1fr;">
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-server-line"></i> IP Address</label>
-              <input type="text" id="mapEditIp" class="add-field-input" value="${escHtml(site.ip || '')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-mac-line"></i> MAC Address</label>
-              <input type="text" id="mapEditMac" class="add-field-input" value="${escHtml(site.mac || '')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-map-pin-line"></i> Latitude</label>
-              <input type="number" id="mapEditLat" class="add-field-input" step="0.0000001" value="${site.lat || ''}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-map-pin-line"></i> Longitude</label>
-              <input type="number" id="mapEditLng" class="add-field-input" step="0.0000001" value="${site.long || ''}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-cpu-line"></i> Modem</label>
-              <input type="text" id="mapEditModem" class="add-field-input" value="${escHtml(site.modem || '')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-signal-tower-line"></i> Transceiver</label>
-              <input type="text" id="mapEditTransceiver" class="add-field-input" value="${escHtml(site.transceiver || '')}">
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-base-station-line"></i> Dish</label>
-              <input type="text" id="mapEditDish" class="add-field-input" value="${escHtml(site.dish || '')}">
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-briefcase-line"></i> Project</label>
-              <input type="text" id="mapEditProject" class="add-field-input" value="${escHtml(site.project_name || 'DICT438')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-user-star-line"></i> Installed By</label>
-              <input type="text" id="mapEditInstalledBy" class="add-field-input" value="${escHtml(site.installed_by || '')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-tools-line"></i> Repaired By</label>
-              <input type="text" id="mapEditRepairedBy" class="add-field-input" value="${escHtml(site.repaired_by || '')}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-calendar-check-line"></i> Date Installed</label>
-              <input type="date" id="mapEditDateInstalled" class="add-field-input" value="${site.date_installed ? new Date(site.date_installed).toISOString().slice(0,10) : ''}">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-checkbox-circle-line"></i> Acceptance Date</label>
-              <input type="date" id="mapEditAcceptanceDate" class="add-field-input" value="${site.acceptance_date ? new Date(site.acceptance_date).toISOString().slice(0,10) : ''}">
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-phone-line"></i> Contacts</label>
-              <textarea id="mapEditContacts" class="add-field-input" style="resize:vertical;min-height:54px;">${escHtml(site.contacts || '')}</textarea>
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-mail-line"></i> Email / Social</label>
-              <input type="text" id="mapEditEmail" class="add-field-input" value="${escHtml(site.email || '')}">
-            </div>
+            <div class="add-field-item"><label class="add-field-label">IP Address</label><input type="text" id="mapEditIp" class="add-field-input" value="${escHtml(site.ip||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">MAC Address</label><input type="text" id="mapEditMac" class="add-field-input" value="${escHtml(site.mac||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Latitude</label><input type="number" id="mapEditLat" class="add-field-input" step="0.0000001" value="${site.lat||''}"></div>
+            <div class="add-field-item"><label class="add-field-label">Longitude</label><input type="number" id="mapEditLng" class="add-field-input" step="0.0000001" value="${site.long||''}"></div>
+            <div class="add-field-item"><label class="add-field-label">Modem</label><input type="text" id="mapEditModem" class="add-field-input" value="${escHtml(site.modem||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Transceiver</label><input type="text" id="mapEditTransceiver" class="add-field-input" value="${escHtml(site.transceiver||'')}"></div>
+            <div class="add-field-item" style="grid-column:1/-1;"><label class="add-field-label">Dish</label><input type="text" id="mapEditDish" class="add-field-input" value="${escHtml(site.dish||'')}"></div>
+            <div class="add-field-item" style="grid-column:1/-1;"><label class="add-field-label">Project</label><input type="text" id="mapEditProject" class="add-field-input" value="${escHtml(site.project_name||'DICT438')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Installed By</label><input type="text" id="mapEditInstalledBy" class="add-field-input" value="${escHtml(site.installed_by||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Repaired By</label><input type="text" id="mapEditRepairedBy" class="add-field-input" value="${escHtml(site.repaired_by||'')}"></div>
+            <div class="add-field-item"><label class="add-field-label">Date Installed</label><input type="date" id="mapEditDateInstalled" class="add-field-input" value="${site.date_installed?new Date(site.date_installed).toISOString().slice(0,10):''}"></div>
+            <div class="add-field-item"><label class="add-field-label">Acceptance Date</label><input type="date" id="mapEditAcceptanceDate" class="add-field-input" value="${site.acceptance_date?new Date(site.acceptance_date).toISOString().slice(0,10):''}"></div>
+            <div class="add-field-item" style="grid-column:1/-1;"><label class="add-field-label">Contacts</label><textarea id="mapEditContacts" class="add-field-input" style="resize:vertical;min-height:54px;">${escHtml(site.contacts||'')}</textarea></div>
+            <div class="add-field-item" style="grid-column:1/-1;"><label class="add-field-label">Email / Social</label><input type="text" id="mapEditEmail" class="add-field-input" value="${escHtml(site.email||'')}"></div>
           </div>
         </div>
         <div class="add-modal-footer">
@@ -2014,226 +1952,104 @@ function initMap() {
         </div>
       </div>`;
     document.body.appendChild(m);
-
     const close = () => m.remove();
     document.getElementById('mapEditClose').onclick  = close;
     document.getElementById('mapEditCancel').onclick = close;
-    m.onclick = e => { if (e.target === m) close(); };
-
+    m.onclick = e => { if(e.target===m) close(); };
     document.getElementById('mapEditSave').onclick = async () => {
       const payload = {
-        ip:          document.getElementById('mapEditIp').value.trim(),
-        mac:         document.getElementById('mapEditMac').value.trim(),
-        lat:         parseFloat(document.getElementById('mapEditLat').value) || null,
-        long:        parseFloat(document.getElementById('mapEditLng').value) || null,
-        modem:       document.getElementById('mapEditModem').value.trim(),
-        transceiver: document.getElementById('mapEditTransceiver').value.trim(),
-        dish:        document.getElementById('mapEditDish').value.trim(),
-        project_name: document.getElementById('mapEditProject').value.trim() || 'DICT438',
-        installed_by: document.getElementById('mapEditInstalledBy').value.trim(),
-        repaired_by: document.getElementById('mapEditRepairedBy').value.trim(),
-        date_installed: document.getElementById('mapEditDateInstalled').value || null,
-        acceptance_date: document.getElementById('mapEditAcceptanceDate').value || null,
-        created_by_name: site.created_by_name || user?.full_name || null,
-        contacts:    document.getElementById('mapEditContacts').value.trim(),
-        email:       document.getElementById('mapEditEmail').value.trim(),
+        ip:            document.getElementById('mapEditIp').value.trim(),
+        mac:           document.getElementById('mapEditMac').value.trim(),
+        lat:           parseFloat(document.getElementById('mapEditLat').value)||null,
+        long:          parseFloat(document.getElementById('mapEditLng').value)||null,
+        modem:         document.getElementById('mapEditModem').value.trim()||null,
+        transceiver:   document.getElementById('mapEditTransceiver').value.trim()||null,
+        dish:          document.getElementById('mapEditDish').value.trim()||null,
+        project_name:  document.getElementById('mapEditProject').value.trim()||'DICT438',
+        installed_by:  document.getElementById('mapEditInstalledBy').value.trim()||null,
+        repaired_by:   document.getElementById('mapEditRepairedBy').value.trim()||null,
+        date_installed:  document.getElementById('mapEditDateInstalled').value||null,
+        acceptance_date: document.getElementById('mapEditAcceptanceDate').value||null,
+        contacts: document.getElementById('mapEditContacts').value.trim()||null,
+        email:    document.getElementById('mapEditEmail').value.trim()||null,
       };
       const btn = document.getElementById('mapEditSave');
-      btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+      btn.disabled=true; btn.innerHTML='<i class="ri-loader-4-line spin"></i> Saving…';
       try {
-        const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/edit`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!res.ok) throw new Error((await res.json()).error);
-        // Update local
+        const res = await fetch(`/api/map/sites/${encodeURIComponent(site.site_name)}/edit`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if (!res.ok) throw new Error((await res.json()).error||'Save failed');
         Object.assign(site, payload);
-        const idx = allSites.findIndex(s => s.site_name === site.site_name);
-        if (idx !== -1) Object.assign(allSites[idx], payload);
-        // Update marker coords if changed
+        // Update marker if coords changed
         if (payload.lat && payload.long) {
-          const marker = allMarkers[site.site_name];
-          if (marker) marker.setLatLng([payload.lat, payload.long]);
+          const oldM = allMarkers[site.site_name];
+          if (oldM) { clusterGroup.removeLayer(oldM); delete allMarkers[site.site_name]; }
+          const newM = L.marker([payload.lat, payload.long], {icon: siteIcon(site,true)});
+          newM.on('click', () => selectSite(site, newM));
+          newM.on('mouseover', function() { showHoverCard(site, this.getElement()); });
+          newM.on('mouseout', hideHoverCard);
+          allMarkers[site.site_name] = newM;
+          clusterGroup.addLayer(newM);
         }
-        close();
-        showDetailsPanel(site);
-        showToast('Site updated.', 'success');
-      } catch(e) { showToast('Save failed: ' + e.message, 'error'); }
-      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Save'; }
+        close(); showDetailsPanel(site);
+        showToast('Site updated.','success');
+      } catch(e) { showToast('Save failed: '+e.message,'error'); }
+      finally { btn.disabled=false; btn.innerHTML='<i class="ri-save-line"></i> Save'; }
     };
   }
-
-  // ── Filters ───────────────────────────────────────────────────────────────
-  function getFiltered() {
-    const q      = (document.getElementById('mapSearch')?.value || '').toLowerCase();
-    const proj   = document.getElementById('mapProjectFilter')?.value  || '';
-    const prov   = document.getElementById('mapProvinceFilter')?.value || '';
-    const status = document.getElementById('mapStatusFilter')?.value   || '';
-    return allSites.filter(s => {
-      if (q && !(
-        (s.site_name    || '').toLowerCase().includes(q) ||
-        (s.municipality || '').toLowerCase().includes(q) ||
-        (s.province     || '').toLowerCase().includes(q)
-      )) return false;
-      if (proj   && s.project_name !== proj)   return false;
-      if (prov   && s.province     !== prov)   return false;
-      if (status === 'active'   && !isActive(s))  return false;
-      if (status === 'inactive' && isActive(s))   return false;
-      return true;
-    });
-  }
-
-  function updateSidebarCount(filtered) {
-    const el = document.getElementById('mapSidebarCount');
-    if (el) el.textContent = `Showing ${filtered.length} site${filtered.length!==1?'s':''}`;
-  }
-
-  function isFilterActive() {
-    const q      = (document.getElementById('mapSearch')?.value || '').trim();
-    const proj   = document.getElementById('mapProjectFilter')?.value  || '';
-    const prov   = document.getElementById('mapProvinceFilter')?.value || '';
-    const status = document.getElementById('mapStatusFilter')?.value   || '';
-    return !!(q || proj || prov || status);
-  }
-
-  function applyFilters() {
-    const filtered = getFiltered();
-    renderSiteList(filtered);
-    updateMapStats(filtered);
-    updateSidebarCount(filtered);
-    const filterActive = isFilterActive();
-    const bulkRow = document.getElementById('mapBulkRow');
-    if (bulkRow) bulkRow.style.display = filterActive ? 'flex' : 'none';
-    Object.entries(allMarkers).forEach(([name, marker]) => {
-      const inFilter = filtered.some(s => s.site_name === name);
-      if (inFilter) { if (!map.hasLayer(marker)) marker.addTo(map); }
-      else          { if (map.hasLayer(marker))  map.removeLayer(marker); }
-    });
-  }
-
-  ['mapSearch','mapProjectFilter','mapProvinceFilter','mapStatusFilter'].forEach(id => {
-    document.getElementById(id)?.addEventListener(id === 'mapSearch' ? 'input' : 'change', applyFilters);
-  });
 
   // ── Bulk Activate / Deactivate ────────────────────────────────────────────
   async function bulkUpdateStatus(newStatus) {
     const filtered = getFiltered();
-    if (!filtered.length) { showToast('No sites match current filters.', 'error'); return; }
-    const all = filtered.length === allSites.length;
-    const msg = all
-      ? `⚠️ This will ${newStatus?'activate':'deactivate'} ALL ${filtered.length} sites. Continue?`
-      : `${newStatus?'Activate':'Deactivate'} ${filtered.length} filtered site${filtered.length!==1?'s':''}?`;
+    if (!filtered.length) { showToast('No sites match current filters.','error'); return; }
+    const msg = `${newStatus?'Activate':'Deactivate'} ${filtered.length} filtered site${filtered.length!==1?'s':''}?`;
     if (!confirm(msg)) return;
     const btnId = newStatus ? 'mapBulkActivate' : 'mapBulkDeactivate';
     const btn = document.getElementById(btnId);
     const orig = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Processing…';
+    btn.disabled=true; btn.innerHTML='<i class="ri-loader-4-line spin"></i> Processing…';
     try {
-      const res = await fetch('/api/map/sites/bulk-status', {
-        method:'PUT', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ site_names: filtered.map(s=>s.site_name), is_active: newStatus })
-      });
+      const res = await fetch('/api/map/sites/bulk-status',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({site_names:filtered.map(s=>s.site_name),is_active:newStatus})});
       if (!res.ok) throw new Error((await res.json()).error);
       const result = await res.json();
       filtered.forEach(site => {
         site.is_active = newStatus;
-        const idx = allSites.findIndex(s => s.site_name === site.site_name);
-        if (idx !== -1) allSites[idx].is_active = newStatus;
+        const idx = allSites.findIndex(s=>s.site_name===site.site_name);
+        if (idx!==-1) allSites[idx].is_active = newStatus;
         const marker = allMarkers[site.site_name];
         if (marker) marker.setIcon(siteIcon(site));
       });
       applyFilters();
-      showToast(`${result.updated||filtered.length} sites ${newStatus?'activated':'deactivated'}.`, 'success');
-    } catch(e) { showToast('Bulk update failed: ' + e.message, 'error'); }
+      showToast(`${result.updated||filtered.length} sites ${newStatus?'activated':'deactivated'}.`,'success');
+    } catch(e) { showToast('Bulk update failed: '+e.message,'error'); }
     finally { btn.disabled=false; btn.innerHTML=orig; }
   }
+  document.getElementById('mapBulkActivate')?.addEventListener('click', ()=>bulkUpdateStatus(true));
+  document.getElementById('mapBulkDeactivate')?.addEventListener('click', ()=>bulkUpdateStatus(false));
 
-  document.getElementById('mapBulkActivate')?.addEventListener('click',   () => bulkUpdateStatus(true));
-  document.getElementById('mapBulkDeactivate')?.addEventListener('click', () => bulkUpdateStatus(false));
-
-  // ── Add Site Modal ───────────────────────────────────────────────────────
+  // ── Add Site Modal ────────────────────────────────────────────────────────
   document.getElementById('mapAddSiteBtn')?.addEventListener('click', () => {
     const m = document.createElement('div');
     m.className = 'modal-overlay';
-    m.id = 'mapAddSiteModal';
     m.innerHTML = `
       <div class="modal-box add-modal-box" style="max-width:500px;">
         <div class="add-modal-header">
           <div class="add-modal-icon"><i class="ri-map-pin-add-line"></i></div>
-          <div class="add-modal-title"><h3>Add Site</h3><p>Register a new network site on the map.</p></div>
+          <div class="add-modal-title"><h3>Add Site</h3><p>Register a new network site.</p></div>
           <button class="modal-close-btn" id="mapAddSiteClose"><i class="ri-close-line"></i></button>
         </div>
         <div class="add-modal-body">
           <div class="add-fields-grid" style="grid-template-columns:1fr 1fr;">
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-map-pin-2-line"></i> Site Name *</label>
-              <input type="text" id="asSiteName" class="add-field-input" placeholder="e.g. L1-0001-ABIANG-BRGY">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-building-line"></i> Municipality</label>
-              <input type="text" id="asMuni" class="add-field-input" placeholder="e.g. ATOK">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-earth-line"></i> Province</label>
-              <input type="text" id="asProvince" class="add-field-input" placeholder="e.g. BENGUET">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-map-pin-line"></i> Latitude</label>
-              <input type="number" id="asLat" class="add-field-input" step="0.0000001" placeholder="e.g. 16.57563">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-map-pin-line"></i> Longitude</label>
-              <input type="number" id="asLng" class="add-field-input" step="0.0000001" placeholder="e.g. 120.74202">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-server-line"></i> IP Address</label>
-              <input type="text" id="asIp" class="add-field-input" placeholder="e.g. 10.0.0.1">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-briefcase-line"></i> Project</label>
-              <input type="text" id="asProject" class="add-field-input" placeholder="DICT438" value="DICT438">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-user-star-line"></i> Installed By</label>
-              <input type="text" id="asInstalledBy" class="add-field-input" placeholder="Installer name">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-tools-line"></i> Repaired By</label>
-              <input type="text" id="asRepairedBy" class="add-field-input" placeholder="Technician name">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-calendar-check-line"></i> Date Installed</label>
-              <input type="date" id="asDateInstalled" class="add-field-input">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-checkbox-circle-line"></i> Acceptance Date</label>
-              <input type="date" id="asAcceptanceDate" class="add-field-input">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-cpu-line"></i> Modem</label>
-              <input type="text" id="asModem" class="add-field-input" placeholder="MDM2010">
-            </div>
-            <div class="add-field-item">
-              <label class="add-field-label"><i class="ri-signal-tower-line"></i> Transceiver</label>
-              <input type="text" id="asTransceiver" class="add-field-input" placeholder="ILB3210 Single Coax">
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-base-station-line"></i> Dish</label>
-              <input type="text" id="asDish" class="add-field-input" placeholder="1.2m Jonsa Satellite Dish">
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-phone-line"></i> Contacts</label>
-              <textarea id="asContacts" class="add-field-input" style="resize:vertical;min-height:54px;" placeholder="Name and number…"></textarea>
-            </div>
-            <div class="add-field-item" style="grid-column:1/-1;">
-              <label class="add-field-label"><i class="ri-mail-line"></i> Email / Social</label>
-              <input type="text" id="asEmail" class="add-field-input" placeholder="email@example.com">
-            </div>
+            <div class="add-field-item" style="grid-column:1/-1;"><label class="add-field-label">Site Name *</label><input type="text" id="asSiteName" class="add-field-input" placeholder="e.g. L1-0001-ABIANG-BRGY"></div>
+            <div class="add-field-item"><label class="add-field-label">Municipality</label><input type="text" id="asMuni" class="add-field-input" placeholder="e.g. ATOK"></div>
+            <div class="add-field-item"><label class="add-field-label">Province</label><input type="text" id="asProvince" class="add-field-input" placeholder="e.g. BENGUET"></div>
+            <div class="add-field-item"><label class="add-field-label">Latitude</label><input type="number" id="asLat" class="add-field-input" step="0.0000001"></div>
+            <div class="add-field-item"><label class="add-field-label">Longitude</label><input type="number" id="asLng" class="add-field-input" step="0.0000001"></div>
+            <div class="add-field-item"><label class="add-field-label">IP Address</label><input type="text" id="asIp" class="add-field-input"></div>
+            <div class="add-field-item"><label class="add-field-label">Project</label><input type="text" id="asProject" class="add-field-input" value="DICT438"></div>
           </div>
         </div>
         <div class="add-modal-footer">
-          <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * are required</span>
+          <span class="add-modal-hint"><i class="ri-information-line"></i> Fields marked * required</span>
           <div class="modal-actions">
             <button class="tool-btn" id="mapAddSiteCancel">Cancel</button>
             <button class="tool-btn apply-btn" id="mapAddSiteSave"><i class="ri-save-line"></i> Add Site</button>
@@ -2244,74 +2060,60 @@ function initMap() {
     const close = () => m.remove();
     document.getElementById('mapAddSiteClose').onclick  = close;
     document.getElementById('mapAddSiteCancel').onclick = close;
-    m.onclick = e => { if (e.target === m) close(); };
+    m.onclick = e => { if(e.target===m) close(); };
     document.getElementById('mapAddSiteSave').onclick = async () => {
       const site_name = document.getElementById('asSiteName').value.trim();
-      if (!site_name) { showToast('Site name is required.', 'error'); return; }
+      if (!site_name) { showToast('Site name is required.','error'); return; }
       const payload = {
         site_name,
-        municipality:  document.getElementById('asMuni').value.trim()        || null,
-        province:      document.getElementById('asProvince').value.trim()    || null,
-        lat:           parseFloat(document.getElementById('asLat').value)    || null,
-        long:          parseFloat(document.getElementById('asLng').value)    || null,
-        ip:            document.getElementById('asIp').value.trim()          || null,
-        project_name:  document.getElementById('asProject').value.trim()     || 'DICT438',
-        installed_by:  document.getElementById('asInstalledBy').value.trim() || null,
-        repaired_by:   document.getElementById('asRepairedBy').value.trim()  || null,
-        date_installed: document.getElementById('asDateInstalled').value || null,
-        acceptance_date: document.getElementById('asAcceptanceDate').value || null,
-        created_by_name: user?.full_name || null,
-        modem:         document.getElementById('asModem').value.trim()       || null,
-        transceiver:   document.getElementById('asTransceiver').value.trim() || null,
-        dish:          document.getElementById('asDish').value.trim()        || null,
-        contacts:      document.getElementById('asContacts').value.trim()    || null,
-        email:         document.getElementById('asEmail').value.trim()       || null,
+        municipality: document.getElementById('asMuni').value.trim()||null,
+        province:     document.getElementById('asProvince').value.trim()||null,
+        lat:          parseFloat(document.getElementById('asLat').value)||null,
+        long:         parseFloat(document.getElementById('asLng').value)||null,
+        ip:           document.getElementById('asIp').value.trim()||null,
+        project_name: document.getElementById('asProject').value.trim()||'DICT438',
+        created_by_name: user?.full_name||null,
       };
       const btn = document.getElementById('mapAddSiteSave');
-      btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+      btn.disabled=true; btn.innerHTML='<i class="ri-loader-4-line spin"></i> Saving…';
       try {
-        const res = await fetch('/api/map/sites', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
+        const res = await fetch('/api/map/sites',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
         const result = await res.json();
-        if (!res.ok) { showToast('Failed: ' + (result.error || 'Unknown'), 'error'); return; }
-        // Add to local state and plot marker
+        if (!res.ok) { showToast('Failed: '+(result.error||'Unknown'),'error'); return; }
         result.devices = [];
         allSites.push(result);
         if (result.lat && result.long) {
-          const marker = L.marker([parseFloat(result.lat), parseFloat(result.long)], { icon: siteIcon(result) }).addTo(map);
+          const marker = L.marker([parseFloat(result.lat),parseFloat(result.long)],{icon:siteIcon(result)});
           marker.on('click', () => selectSite(result, marker));
+          marker.on('mouseover', function() { showHoverCard(result, this.getElement()); });
+          marker.on('mouseout', hideHoverCard);
           allMarkers[result.site_name] = marker;
+          clusterGroup.addLayer(marker);
         }
         applyFilters();
         close();
-        showToast(`Site "${site_name}" added.`, 'success');
-      } catch (err) { showToast('Network error: ' + err.message, 'error'); }
-      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-save-line"></i> Add Site'; }
+        showToast(`Site "${site_name}" added.`,'success');
+      } catch(err) { showToast('Network error: '+err.message,'error'); }
+      finally { btn.disabled=false; btn.innerHTML='<i class="ri-save-line"></i> Add Site'; }
     };
   });
 
-  // ── Import Sites Modal ────────────────────────────────────────────────────
+  // ── Import Sites ──────────────────────────────────────────────────────────
   document.getElementById('mapImportBtn')?.addEventListener('click', () => {
     const m = document.createElement('div');
     m.className = 'modal-overlay';
-    m.id = 'mapImportSitesModal';
     m.innerHTML = `
       <div class="modal-box add-modal-box" style="max-width:480px;">
         <div class="add-modal-header">
           <div class="add-modal-icon"><i class="ri-upload-cloud-2-line"></i></div>
-          <div class="add-modal-title">
-            <h3>Import Sites</h3>
-            <p>Upload a CSV or XLSX file to bulk-add sites to the map.</p>
-          </div>
+          <div class="add-modal-title"><h3>Import Sites</h3><p>Upload CSV or XLSX to bulk-add sites.</p></div>
           <button class="modal-close-btn" id="mapImportClose"><i class="ri-close-line"></i></button>
         </div>
         <div class="add-modal-body">
           <div class="import-drop-zone" id="mapImportDropZone" style="margin-bottom:8px;">
             <i class="ri-file-upload-line" style="font-size:36px;color:#2f4b85;"></i>
             <p style="margin:8px 0 4px;font-weight:600;color:#1e293b;">Drop file here or click to browse</p>
-            <p style="font-size:12px;color:#94a3b8;">CSV or XLSX — columns: site_name, municipality, province, lat, long, ip, project_name, modem, transceiver, dish, contacts, email</p>
+            <p style="font-size:12px;color:#94a3b8;">CSV or XLSX</p>
             <input type="file" id="mapImportFileInput" accept=".csv,.xlsx" class="hidden">
           </div>
           <div id="mapImportFileName" style="font-size:13px;color:#2f4b85;min-height:18px;"></div>
@@ -2323,7 +2125,7 @@ function initMap() {
           </div>
         </div>
         <div class="add-modal-footer">
-          <span class="add-modal-hint"><i class="ri-information-line"></i> Duplicate site names will be skipped</span>
+          <span class="add-modal-hint"><i class="ri-information-line"></i> Duplicate site names skipped</span>
           <div class="modal-actions">
             <button class="tool-btn" id="mapImportCancel">Cancel</button>
             <button class="tool-btn apply-btn" id="mapImportConfirm" disabled><i class="ri-upload-2-line"></i> Import</button>
@@ -2331,169 +2133,124 @@ function initMap() {
         </div>
       </div>`;
     document.body.appendChild(m);
-
     let parsedRows = [];
     const close = () => m.remove();
     document.getElementById('mapImportClose').onclick  = close;
     document.getElementById('mapImportCancel').onclick = close;
-    m.onclick = e => { if (e.target === m) close(); };
-
-    const zone   = document.getElementById('mapImportDropZone');
-    const input  = document.getElementById('mapImportFileInput');
-    const fname  = document.getElementById('mapImportFileName');
-    const confirm = document.getElementById('mapImportConfirm');
-
-    zone.onclick     = () => input.click();
+    m.onclick = e => { if(e.target===m) close(); };
+    const zone  = document.getElementById('mapImportDropZone');
+    const input = document.getElementById('mapImportFileInput');
+    zone.onclick = () => input.click();
     zone.ondragover  = e => { e.preventDefault(); zone.classList.add('drop-hover'); };
     zone.ondragleave = () => zone.classList.remove('drop-hover');
     zone.ondrop      = e => { e.preventDefault(); zone.classList.remove('drop-hover'); handleFile(e.dataTransfer.files[0]); };
     input.onchange   = () => handleFile(input.files[0]);
-
     async function handleFile(file) {
       if (!file) return;
-      fname.textContent = '';
-      parsedRows = [];
-      confirm.disabled = true;
+      const fname   = document.getElementById('mapImportFileName');
+      const confirm = document.getElementById('mapImportConfirm');
+      parsedRows = []; confirm.disabled = true;
       try {
         const COLS = ['site_name','municipality','province','lat','long','ip','project_name','installed_by','repaired_by','date_installed','acceptance_date','modem','transceiver','dish','contacts','email'];
         const norm = s => String(s||'').replace(/\s+/g,' ').trim().toLowerCase();
         if (file.name.endsWith('.csv')) {
-          const text = await file.text();
-          const lines = text.split(/\r?\n/).filter(l => l.trim());
-          const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g,''));
-          parsedRows = lines.slice(1).map(line => {
-            const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,))/g) || [];
+          const lines = (await file.text()).split(/\r?\n/).filter(l=>l.trim());
+          const headers = lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''));
+          parsedRows = lines.slice(1).map(line=>{
+            const vals = line.match(/(".*?"|[^,]+|(?<=,)(?=,))/g)||[];
             const row = {};
-            headers.forEach((h,i) => {
-              const col = COLS.find(c => norm(c) === norm(h));
-              if (col) row[col] = (vals[i]||'').replace(/^"|"$/g,'').trim();
-            });
+            headers.forEach((h,i)=>{ const c=COLS.find(x=>norm(x)===norm(h)); if(c) row[c]=(vals[i]||'').replace(/^"|"$/g,'').trim(); });
             return row;
-          }).filter(r => r.site_name);
+          }).filter(r=>r.site_name);
         } else {
-          await new Promise((res, rej) => {
-            if (window.XLSX) { res(); return; }
-            const s = document.createElement('script');
-            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-            s.onload = res; s.onerror = rej;
-            document.head.appendChild(s);
-          });
-          const ab = await file.arrayBuffer();
-          const wb = XLSX.read(ab, { type: 'array' });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
-          parsedRows = raw.map(r => {
-            const row = {};
-            Object.entries(r).forEach(([h,v]) => {
-              const col = COLS.find(c => norm(c) === norm(h));
-              if (col) row[col] = String(v||'').trim();
-            });
+          await new Promise((res,rej)=>{ if(window.XLSX){res();return;} const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
+          const wb = XLSX.read(await file.arrayBuffer(),{type:'array'});
+          parsedRows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''}).map(r=>{
+            const row={};
+            Object.entries(r).forEach(([h,v])=>{ const c=COLS.find(x=>norm(x)===norm(h)); if(c) row[c]=String(v||'').trim(); });
             return row;
-          }).filter(r => r.site_name);
+          }).filter(r=>r.site_name);
         }
         fname.textContent = `📄 ${file.name} — ${parsedRows.length} rows found`;
-        confirm.disabled = parsedRows.length === 0;
-      } catch (err) {
-        fname.textContent = `⚠️ Could not read file: ${err.message}`;
-      }
+        confirm.disabled = parsedRows.length===0;
+      } catch(err) { document.getElementById('mapImportFileName').textContent='⚠️ '+err.message; }
     }
-
     document.getElementById('mapImportConfirm').onclick = async () => {
       if (!parsedRows.length) return;
       const btn  = document.getElementById('mapImportConfirm');
-      const prog = document.getElementById('mapImportProgress');
       const bar  = document.getElementById('mapImportBar');
       const txt  = document.getElementById('mapImportProgressText');
-      btn.disabled = true;
-      btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Importing…';
-      prog.style.display = 'block';
-      bar.style.width = '30%';
-      txt.textContent = 'Sending to server…';
+      document.getElementById('mapImportProgress').style.display='block';
+      btn.disabled=true; btn.innerHTML='<i class="ri-loader-4-line spin"></i> Importing…';
+      bar.style.width='30%'; txt.textContent='Sending to server…';
       try {
-        const res = await fetch('/api/map/sites/import', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sites: parsedRows })
-        });
+        const res = await fetch('/api/map/sites/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sites:parsedRows})});
         const result = await res.json();
-        bar.style.width = '100%';
-        if (!res.ok) { showToast('Import failed: ' + (result.error||'Unknown'), 'error'); return; }
-        txt.textContent = `Done — ${result.inserted} inserted, ${result.skipped} skipped.`;
-        showToast(`Imported ${result.inserted} site(s).`, result.inserted > 0 ? 'success' : 'error');
-        // Reload all sites to reflect new entries
-        setTimeout(async () => {
-          close();
-          const r2 = await fetch('/api/map/sites');
-          allSites = await r2.json();
-          plotMarkers(allSites);
-          applyFilters();
-        }, 1200);
-      } catch (err) { showToast('Network error: ' + err.message, 'error'); }
-      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-upload-2-line"></i> Import'; }
+        bar.style.width='100%';
+        if (!res.ok) { showToast('Import failed: '+(result.error||'Unknown'),'error'); return; }
+        txt.textContent=`Done — ${result.inserted} inserted, ${result.skipped} skipped.`;
+        showToast(`Imported ${result.inserted} site(s).`, result.inserted>0?'success':'error');
+        setTimeout(async()=>{ close(); const r2=await fetch('/api/map/sites'); allSites=await r2.json(); plotMarkers(allSites); applyFilters(); }, 1200);
+      } catch(err) { showToast('Network error: '+err.message,'error'); }
+      finally { btn.disabled=false; btn.innerHTML='<i class="ri-upload-2-line"></i> Import'; }
     };
   });
 
   // ── Load sites ────────────────────────────────────────────────────────────
-  function updateMapStats(sites) {
-    const active   = sites.filter(s => isActive(s)).length;
-    const inactive = sites.length - active;
-    const tot = document.getElementById('mapStatTotal');
-    const act = document.getElementById('mapStatActive');
-    const ina = document.getElementById('mapStatInactive');
-    if (tot) tot.innerHTML = `<i class="ri-map-pin-2-line"></i> ${sites.length} Total`;
-    if (act) act.innerHTML = `<i class="ri-radio-button-fill"></i> ${active} Active`;
-    if (ina) ina.innerHTML = `<i class="ri-radio-button-line"></i> ${inactive} Inactive`;
-  }
-
   async function loadSites() {
     try {
-      const res   = await fetch('/api/map/sites');
-      allSites    = await res.json();
+      const res = await fetch('/api/map/sites');
+      allSites  = await res.json();
 
       // Populate dropdowns
-      const projects  = [...new Set(allSites.map(s => s.project_name).filter(Boolean))].sort();
-      const provinces = [...new Set(allSites.map(s => s.province).filter(Boolean))].sort();
+      const projects  = [...new Set(allSites.map(s=>s.project_name).filter(Boolean))].sort();
+      const provinces = [...new Set(allSites.map(s=>s.province).filter(Boolean))].sort();
       const pjSel = document.getElementById('mapProjectFilter');
       const pvSel = document.getElementById('mapProvinceFilter');
-      projects.forEach(p  => { const o = document.createElement('option'); o.value = o.textContent = p;  pjSel.appendChild(o); });
-      provinces.forEach(p => { const o = document.createElement('option'); o.value = o.textContent = p;  pvSel.appendChild(o); });
+      projects.forEach(p  => { const o=document.createElement('option'); o.value=o.textContent=p; pjSel.appendChild(o); });
+      provinces.forEach(p => { const o=document.createElement('option'); o.value=o.textContent=p; pvSel.appendChild(o); });
 
-      renderSiteList(allSites);
+      // Restore saved filter state
+      if (savedState.search)   { const el=document.getElementById('mapSearch');        if(el){el.value=savedState.search; document.getElementById('mapSearchClear')?.classList.toggle('hidden',!savedState.search);} }
+      if (savedState.project)  { const el=document.getElementById('mapProjectFilter'); if(el) el.value=savedState.project; }
+      if (savedState.province) { const el=document.getElementById('mapProvinceFilter');if(el) el.value=savedState.province; }
+      if (savedState.status)   { const el=document.getElementById('mapStatusFilter');  if(el) el.value=savedState.status; }
+
       plotMarkers(allSites);
+      applyFilters();
       updateMapStats(allSites);
-      updateSidebarCount(allSites);
-      // Enable bulk buttons once loaded
-      // Bulk buttons hidden until a filter is applied
+
+      // Restore selected site
+      if (savedState.selectedSite) {
+        const site = allSites.find(s => s.site_name === savedState.selectedSite);
+        const marker = site ? allMarkers[site.site_name] : null;
+        if (site) selectSite(site, marker);
+      }
+
       showToast(`${allSites.length} sites loaded.`, 'success');
-    } catch(e) {
-      document.getElementById('mapSiteList').innerHTML =
-        '<div class="map-list-empty"><i class="ri-error-warning-line"></i> Failed to load sites.</div>';
+    } catch {
+      const el = document.getElementById('mapSiteList');
+      if (el) el.innerHTML = '<div class="map-list-empty"><i class="ri-error-warning-line"></i> Failed to load sites.</div>';
     }
   }
 
   loadSites();
 
-  // Close panel on ESC key
+  // ESC to close panel
   document.addEventListener('keydown', function onMapEsc(e) {
     if (e.key !== 'Escape') return;
     const panel = document.getElementById('mapDetailsPanel');
     if (panel && !panel.classList.contains('hidden')) {
-      panel.classList.add('hidden');
+      panel.classList.remove('map-panel-visible');
+      setTimeout(() => panel.classList.add('hidden'), 200);
       document.querySelector('.map-page-wrap')?.classList.remove('details-open');
-      if (selectedSite) {
-        const m = allMarkers[selectedSite.site_name];
-        if (m) m.setIcon(siteIcon(selectedSite));
-      }
-      document.querySelectorAll('.map-list-item').forEach(el => el.classList.remove('selected'));
+      if (selectedSite) { const mk=allMarkers[selectedSite.site_name]; if(mk) mk.setIcon(siteIcon(selectedSite,false)); }
+      document.querySelectorAll('.map-list-item').forEach(el=>el.classList.remove('selected'));
       selectedSite = null;
     }
-    // Remove listener when map is unloaded
-    if (!document.getElementById('mapContainer')) {
-      document.removeEventListener('keydown', onMapEsc);
-    }
+    if (!document.getElementById('mapContainer')) document.removeEventListener('keydown', onMapEsc);
   });
 }
-
-
 /* ================= LOGOUT ================= */
 
 function showLogoutModal() {
@@ -2589,9 +2346,7 @@ document.getElementById("toggleSidebar").addEventListener("click", () => {
   syncSidebar(sidebar);
   // Wait for the 0.32s CSS transition to finish, then tell Leaflet to resize
   if (leafletMap) {
-    setTimeout(() => {
-      leafletMap.invalidateSize({ animate: false, pan: false });
-    }, 350);
+    setTimeout(() => leafletMap.invalidateSize(), 350);
   }
 });
 
