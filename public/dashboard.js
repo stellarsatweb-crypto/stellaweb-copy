@@ -53,7 +53,7 @@ let stgUsers = [];
 let stgSelectedMessage = null;
 let stgMessagingView = 'list'; // list | read | compose
 let stgReplyToMessage = null;
-let stgRequestViewFilter = null; // set when jumping from My Requests → Messaging
+let stgRequestFilter = null;  // set when jumping to messaging from My Requests
 
 /* ================= SIDEBAR ================= */
 const PAGE_DEFS = {
@@ -91,7 +91,7 @@ function getHomePageKey() {
 }
 
 function activateMenu(pageKey) {
-  document.querySelectorAll(".menu li").forEach(li => {
+  document.querySelectorAll(".menu li[data-page]").forEach(li => {
     li.classList.toggle("active", li.dataset.page === pageKey);
   });
 }
@@ -111,20 +111,119 @@ function openPage(pageKey) {
 
 function renderSidebarMenu() {
   if (!sidebarMenu) return;
-  sidebarMenu.innerHTML = getVisiblePages().map((pageKey, index) => {
-    const page = PAGE_DEFS[pageKey];
-    return `
-      <li data-page="${pageKey}" class="${index === 0 ? "active" : ""}">
-        <i class="${page.icon}"></i><span>${page.label}</span>
-      </li>
-    `;
-  }).join("");
 
-  sidebarMenu.querySelectorAll("li").forEach(item => {
-    item.addEventListener("click", function () {
+  // Section groupings for NOC and Finance roles
+  const NOC_SECTIONS = [
+    {
+      label: 'Main',
+      pages: ['dashboard', 'map'],
+    },
+    {
+      label: 'Operations',
+      pages: ['terminals', 'problematicSites', 'acceptance'],
+    },
+    {
+      label: 'Management',
+      pages: ['ticket', 'reports', 'letters'],
+    },
+    {
+      label: 'System',
+      pages: ['settings', 'logout'],
+    },
+  ];
+
+  const FINANCE_SECTIONS = [
+    {
+      label: 'Overview',
+      pages: ['financeDashboard'],
+    },
+    {
+      label: 'Finance',
+      pages: ['companyIncome', 'companyExpenses', 'projectExpenses', 'collections'],
+    },
+    {
+      label: 'Management',
+      pages: ['employee', 'financialReport', 'letters'],
+    },
+    {
+      label: 'System',
+      pages: ['settings', 'logout'],
+    },
+  ];
+
+  const sections = roleKey === 'finance' ? FINANCE_SECTIONS : NOC_SECTIONS;
+  const visible  = new Set(getVisiblePages());
+  const firstPage = getVisiblePages()[0];
+
+  let html = '';
+  sections.forEach((section, sIdx) => {
+    const sectionPages = section.pages.filter(p => visible.has(p));
+    if (!sectionPages.length) return;
+
+    if (sIdx > 0) {
+      html += `<li class="menu-section-divider" role="separator"></li>`;
+    }
+    html += `<li class="menu-section-label">${section.label}</li>`;
+
+    sectionPages.forEach(pageKey => {
+      const page = PAGE_DEFS[pageKey];
+      const isFirst = pageKey === firstPage;
+      html += `
+        <li data-page="${pageKey}" data-tooltip="${page.label}" class="${isFirst ? 'active' : ''}">
+          <i class="${page.icon}"></i><span>${page.label}</span>
+        </li>
+      `;
+    });
+  });
+
+  sidebarMenu.innerHTML = html;
+
+  sidebarMenu.querySelectorAll('li[data-page]').forEach(item => {
+    item.addEventListener('click', function () {
       openPage(this.dataset.page);
     });
   });
+
+  // ── Inject premium profile card below the menu ──────────────────────────
+  const sidebar = document.getElementById('sidebar');
+  // Remove any existing profile card before re-rendering
+  sidebar.querySelector('.sb-profile')?.remove();
+
+  const u = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  const initials = u.full_name
+    ? u.full_name.split(' ').filter(Boolean).map(w => w[0]).join('').slice(0, 2).toUpperCase()
+    : (u.email ? u.email[0].toUpperCase() : 'U');
+  const displayName = u.full_name || u.email || 'User';
+  const displayRole = u.role ? u.role.charAt(0).toUpperCase() + u.role.slice(1).toLowerCase() : 'Staff';
+
+  const avatarHTML = u.photo
+    ? `<img src="${u.photo}" alt="${displayName}">`
+    : initials;
+
+  const profileEl = document.createElement('div');
+  profileEl.className = 'sb-profile';
+  profileEl.innerHTML = `
+    <div class="sb-profile-inner" title="${displayName} · ${displayRole}">
+      <div class="sb-avatar">
+        ${avatarHTML}
+        <span class="sb-avatar-dot"></span>
+      </div>
+      <div class="sb-profile-text">
+        <div class="sb-profile-name">${displayName}</div>
+        <div class="sb-profile-role">${displayRole}</div>
+      </div>
+      <i class="ri-more-2-fill sb-profile-icon"></i>
+    </div>
+  `;
+
+  // Click → open settings
+  profileEl.querySelector('.sb-profile-inner').addEventListener('click', () => {
+    openPage('settings');
+  });
+
+  // Insert before the toggle button (last element)
+  const toggleBtn = sidebar.querySelector('#toggleSidebar');
+  sidebar.insertBefore(profileEl, toggleBtn);
 }
 
 
@@ -7729,24 +7828,24 @@ function loadSettings() {
             <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
           </button>
 
-          <!-- Compact user card -->
           <button class="stg-navitem" data-tab="requests">
             <div class="stg-navitem-icon"><i class="ri-file-list-3-line"></i></div>
             <div class="stg-navitem-text">
               <span class="stg-navitem-label">My Requests</span>
-              <span class="stg-navitem-sub">Leave, ID, Salary, Files</span>
+              <span class="stg-navitem-sub">Leave, ID, salary, files</span>
             </div>
             <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
           </button>
 
+          <!-- Compact user card -->
           <button class="stg-navitem" data-tab="messaging">
-            <div class="stg-navitem-icon"><i class="ri-mail-line"></i></div>
-            <div class="stg-navitem-text">
-              <span class="stg-navitem-label">In-App Messaging</span>
-              <span class="stg-navitem-sub">Inbox, sent, compose</span>
-            </div>
-            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
-          </button>
+  <span class="stg-navitem-icon"><i class="ri-mail-line"></i></span>
+  <span class="stg-navitem-text">
+    <span class="stg-navitem-label">In-App Messaging</span>
+    <span class="stg-navitem-sub">Inbox, sent, compose</span>
+  </span>
+  <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+</button>
 
 <div class="stg-nav-usercard">
             <div class="stg-nav-avatar">
@@ -7998,41 +8097,24 @@ function loadSettings() {
 
           </div>
 
-          <!-- MY REQUESTS -->
-          <div class="stg-panel" id="stg-tab-requests">
-            <div class="stg-card2 stg-requests-card">
-              <div class="stg-card2-header">
-                <div class="stg-card2-title"><i class="ri-file-list-3-line"></i> My Requests</div>
-                <div class="stg-requests-filter-row" id="stgRequestsFilterRow">
-                  <select id="stgRequestsTypeFilter" class="stg-req-filter-select">
-                    <option value="">All Types</option>
-                    <option value="leave">Leave</option>
-                    <option value="id">ID Request</option>
-                    <option value="salary">Salary</option>
-                    <option value="files">Files</option>
-                  </select>
-                  <select id="stgRequestsStatusFilter" class="stg-req-filter-select">
-                    <option value="">All Statuses</option>
-                    <option value="pending">Pending</option>
-                    <option value="approved">Approved</option>
-                    <option value="rejected">Rejected</option>
-                    <option value="cancelled">Cancelled</option>
-                  </select>
-                </div>
-              </div>
-              <div id="stgRequestsTableWrap"></div>
-            </div>
-          </div>
-
-          <!-- IN-APP MESSAGING -->
-          <div class="stg-panel" id="stg-tab-messaging">
-            <div class="stg-card2 stg-msg-card2">
-              <div class="stg-card2-header">
-                <div class="stg-card2-title"><i class="ri-mail-line"></i> In-App Messaging</div>
-              </div>
-              <div id="stgMessagingMount"></div>
-            </div>
-          </div>
+              <div class="stg-panel" id="stg-tab-messaging">
+  <div class="stg-card2">
+    <div class="stg-card2-header">
+      <div class="stg-card2-title">
+        <i class="ri-mail-line"></i> In-App Messaging
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="stg-outline-btn" id="stgMsgHeaderRefreshBtn" title="Refresh messages">
+          <i class="ri-refresh-line"></i>
+        </button>
+        <button class="stg-outline-btn" id="stgComposeBtn">
+          <i class="ri-quill-pen-line"></i> Compose
+        </button>
+      </div>
+    </div>
+    <div id="stgMessagingMount"></div>
+  </div>
+</div>
 
         </div><!-- /stg-panels -->
       </div><!-- /stg-layout -->
@@ -8106,19 +8188,21 @@ function loadSettings() {
   // ── Nav switching ──────────────────────────────────────────────────────────
   document.querySelectorAll('.stg-navitem').forEach(btn => {
     btn.addEventListener('click', function () {
+      if (this.dataset.tab === 'requests') {
+        // Full-page takeover — same pattern as Dashboard / Map
+        loadMyRequestsPage();
+        return;
+      }
       document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
       this.classList.add('active');
-      document.getElementById(`stg-tab-${this.dataset.tab}`)?.classList.add('active');
+      document.getElementById(`stg-tab-${this.dataset.tab}`).classList.add('active');
 
       if (this.dataset.tab === 'messaging') {
-        stgMessageFolder = 'inbox';
         stgSelectedMessage = null;
-        stgMessagingView = 'list';
+        stgReplyToMessage  = null;
+        stgMessagingView   = 'list';
         loadStgMessagingData();
-      }
-      if (this.dataset.tab === 'requests') {
-        loadMyRequests();
       }
     });
   });
@@ -8584,7 +8668,9 @@ function openIdRequestModal(user) {
 
       close();
       showToast('ID request submitted successfully.', 'success');
-      sendRequestNotification('id', result.row?.id || result.id || '?', id_type, purpose);
+      sendRequestNotification('id',
+        `ID Type: ${id_type}\nPurpose: ${purpose}${remarks ? '\nRemarks: ' + remarks : ''}${department ? '\nDepartment: ' + department : ''}`
+      );
     } catch {
       showToast('Network error.', 'error');
     } finally {
@@ -8593,8 +8679,6 @@ function openIdRequestModal(user) {
     }
   });
 }
-
-// Similar structure to ID request modal, with fields relevant to salary increase
 function openSalaryIncreaseModal(user) {
   if (document.getElementById('salaryIncreaseModal')) return;
 
@@ -8751,7 +8835,9 @@ function openSalaryIncreaseModal(user) {
 
       close();
       showToast('Salary increase request submitted successfully.', 'success');
-      sendRequestNotification('salary', result.row?.id || result.id || '?', 'salary increase', justification);
+      sendRequestNotification('salary',
+        `Current Salary: ${current_salary || 'N/A'}\nRequested Salary: ${requested_salary}\nEffective Date: ${effective_date}\nJustification: ${justification}${remarks ? '\nRemarks: ' + remarks : ''}`
+      );
     } catch {
       showToast('Network error.', 'error');
     } finally {
@@ -9007,7 +9093,9 @@ function openFilesRequestModal(user) {
 
       close();
       showToast('Files request submitted successfully.', 'success');
-      sendRequestNotification('files', result.row?.id || result.id || '?', document_name, purpose);
+      sendRequestNotification('files',
+        `Document: ${document_name}\nPurpose: ${purpose}\nAction: ${request_action}\nCopy Type: ${copy_type}${department ? '\nDepartment: ' + department : ''}`
+      );
     } catch {
       showToast('Network error.', 'error');
     } finally {
@@ -9239,12 +9327,11 @@ function openLeaveModal(user) {
 
       const res = await fetch(`/api/users/${user.id}/leaves`, { method: 'POST', body: formData });
       if (!res.ok) { const r = await res.json(); showToast(r.error || 'Submission failed.', 'error'); return; }
-      const leaveResult = await res.json().catch(() => ({}));
       close();
       showToast('Leave request submitted successfully.', 'success');
-      const leaveType = document.getElementById('lvType')?.value || 'leave';
-      const leaveReason = document.getElementById('lvReason')?.value?.trim() || '';
-      sendRequestNotification('leave', leaveResult.id || '?', leaveType, leaveReason);
+      sendRequestNotification('leave',
+        `Leave Type: ${leave_type}\nStart Date: ${start_date}\nEnd Date: ${end_date}\nDays: ${daysVal === '—' ? 'N/A' : daysVal}\nReason: ${document.getElementById('lvReason')?.value?.trim() || 'N/A'}`
+      );
     } catch { showToast('Network error.', 'error'); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request'; }
   });
@@ -9252,6 +9339,25 @@ function openLeaveModal(user) {
     // ── Account Deletion Request ───────────────────────────────────────────────
   document.getElementById('stgDeleteAccBtn').onclick = () =>
     showToast('Account deletion request sent to admin.', 'success');
+
+  // ── In-App Messaging ───────────────────────────────────────────────────────
+  document.getElementById('stgMsgHeaderRefreshBtn')?.addEventListener('click', () => {
+    stgSelectedMessage = null;
+    stgReplyToMessage  = null;
+    stgMessagingView   = 'list';
+    loadStgMessagingData();
+  });
+
+  document.getElementById('stgComposeBtn')?.addEventListener('click', () => {
+    stgReplyToMessage = null;
+    stgMessagingView = 'compose';
+    renderStgMessagingLayout();
+  });
+
+  // ── My Requests ─────────────────────────────────────────────────────────────
+  // (Handled as a full-page via loadMyRequestsPage() — no panel wiring needed here)
+
+  loadStgMessagingData();
 
   // Apply saved display settings on load
   const fs = localStorage.getItem('fontSize');
@@ -9353,38 +9459,21 @@ function renderStgMessagingLayout() {
 }
 
 function renderStgMessageList(container) {
-  let items = stgMessages || [];
-
-  // If jumping from My Requests, filter to show the relevant thread
-  const filter = stgRequestViewFilter;
-  if (filter) {
-    stgRequestViewFilter = null; // consume it
-    const matched = items.filter(m =>
-      (m.subject || '').includes(filter) || (m.body || '').includes(filter)
-    );
-    if (matched.length === 1) {
-      // Auto-open the single matched message
-      fetch(`/api/messages/${matched[0].id}?user_id=${user.id}`)
-        .then(r => r.json())
-        .then(full => {
-          if (full && full.id) {
-            stgSelectedMessage = full;
-            stgMessagingView = 'read';
-            renderStgMessagingLayout();
-          }
-        }).catch(() => {});
-      return;
-    }
-    items = matched.length ? matched : items;
-  }
+  const items = stgMessages || [];
+  const activeFilter = stgRequestFilter;
+  stgRequestFilter = null; // clear after first render
 
   if (!items.length) {
     container.innerHTML = `
       <div class="stg-msg-empty">
         <i class="ri-mail-open-line"></i>
-        <div>No messages in ${stgMessageFolder}.</div>
+        <div>No messages in ${escHtml(stgMessageFolder)}.</div>
+        <button class="stg-outline-btn" id="stgMsgRefreshBtn" style="margin-top:12px;">
+          <i class="ri-refresh-line"></i> Refresh
+        </button>
       </div>
     `;
+    document.getElementById('stgMsgRefreshBtn')?.addEventListener('click', () => loadStgMessagingData());
     return;
   }
 
@@ -9397,17 +9486,19 @@ function renderStgMessageList(container) {
 
         const preview = String(msg.body || '').replace(/\s+/g, ' ').trim().slice(0, 120);
         const dateText = new Date(msg.created_at).toLocaleString();
+        const isRequestMsg = msg.subject && msg.subject.startsWith('[');
+        const isHighlighted = activeFilter && msg.subject && msg.subject.includes(activeFilter);
 
         return `
-          <div class="stg-msg-row ${!msg.is_read && stgMessageFolder === 'inbox' ? 'unread' : ''}" data-id="${msg.id}">
+          <div class="stg-msg-row ${!msg.is_read && stgMessageFolder === 'inbox' ? 'unread' : ''} ${isHighlighted ? 'stg-msg-row-highlighted' : ''}" data-id="${msg.id}">
             <div class="stg-msg-row-left">
-              <div class="stg-msg-avatar">${String(counterpartName).trim().charAt(0).toUpperCase()}</div>
+              <div class="stg-msg-avatar ${isRequestMsg ? 'stg-msg-avatar-system' : ''}">${isRequestMsg ? '<i class="ri-file-list-3-line"></i>' : String(counterpartName).trim().charAt(0).toUpperCase()}</div>
               <div class="stg-msg-meta">
                 <div class="stg-msg-topline">
                   <span class="stg-msg-sender">${escHtml(counterpartName)}</span>
                   <span class="stg-msg-date">${escHtml(dateText)}</span>
                 </div>
-                <div class="stg-msg-subject">${escHtml(msg.subject || '(No subject)')}</div>
+                <div class="stg-msg-subject">${escHtml(msg.subject || '(No subject)')}${isRequestMsg ? ' <span class="stg-msg-req-tag">Request</span>' : ''}</div>
                 <div class="stg-msg-preview">${escHtml(preview || 'No preview available')}</div>
               </div>
             </div>
@@ -9417,6 +9508,12 @@ function renderStgMessageList(container) {
       }).join('')}
     </div>
   `;
+
+  // Auto-scroll to highlighted row if jumping from My Requests
+  if (activeFilter) {
+    const highlighted = container.querySelector('.stg-msg-row-highlighted');
+    if (highlighted) setTimeout(() => highlighted.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80);
+  }
 
   container.querySelectorAll('.stg-msg-row').forEach(row => {
     row.addEventListener('click', async () => {
@@ -9655,194 +9752,232 @@ function renderStgComposeView(container) {
   });
 }
 
-// ── My Requests ───────────────────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════
+   REQUEST NOTIFICATION HELPER
+   Fires a system self-message after any request is submitted.
+   Also refreshes the My Requests table if it's visible.
+═══════════════════════════════════════════════════════════ */
+async function sendRequestNotification(requestType, details) {
+  if (!user || !user.id) return;
+  const typeLabels = {
+    leave:  'Leave Request',
+    id:     'ID Request',
+    salary: 'Salary Increase Request',
+    files:  'Files Request',
+  };
+  const label   = typeLabels[requestType] || 'Request';
+  const subject = `[${label}] Submitted — Pending Review`;
+  const body    = `Your ${label} has been submitted and is pending review.\n\n${details}\n\nStatus: Pending\nSubmitted: ${new Date().toLocaleString()}\n\nYou will receive an update here when the status changes.`;
+  try {
+    await fetch('/api/messages/system', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender_id: user.id, recipient_id: user.id, subject, body }),
+    });
+    // Silently reload inbox so the new thread appears immediately
+    if (stgMessageFolder === 'inbox') loadStgMessagingData();
+    // Reload My Requests table if the full-page view is currently open
+    const reqMount = document.getElementById('stgRequestsMount');
+    if (reqMount) loadMyRequests();
+  } catch { /* non-critical — don't surface to user */ }
+}
 
+/* ═══════════════════════════════════════════════════════════
+   MY REQUESTS — full-page loader (replaces mainContent)
+   Same pattern as loadDashboard(), loadMap(), etc.
+═══════════════════════════════════════════════════════════ */
+function loadMyRequestsPage() {
+  mainContent.innerHTML = `
+    <div class="myreq-page">
+
+      <!-- Page header -->
+      <div class="myreq-page-header">
+        <div class="myreq-page-header-left">
+          <button class="myreq-back-btn" id="myReqBackBtn">
+            <i class="ri-arrow-left-line"></i> Back to Settings
+          </button>
+          <div>
+            <h2 class="myreq-title"><i class="ri-file-list-3-line"></i> My Requests</h2>
+            <p class="myreq-subtitle">Track your leave, ID, salary, and files requests</p>
+          </div>
+        </div>
+        <button class="stg-outline-btn" id="myReqRefreshBtn">
+          <i class="ri-refresh-line"></i> Refresh
+        </button>
+      </div>
+
+      <!-- Content area -->
+      <div class="myreq-body">
+        <div id="stgRequestsMount">
+          <div class="stg-req-empty">
+            <i class="ri-loader-4-line spin"></i>
+            <span>Loading requests…</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  `;
+
+  document.getElementById('myReqBackBtn').addEventListener('click', () => loadSettings());
+  document.getElementById('myReqRefreshBtn').addEventListener('click', () => loadMyRequests());
+
+  loadMyRequests();
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MY REQUESTS — fetch + render
+═══════════════════════════════════════════════════════════ */
 async function loadMyRequests() {
-  const wrap = document.getElementById('stgRequestsTableWrap');
-  if (!wrap) return;
-
-  wrap.innerHTML = `
-    <div class="stg-req-loading">
-      <i class="ri-loader-4-line spin"></i> Loading requests…
-    </div>`;
-
+  const mount = document.getElementById('stgRequestsMount');
+  if (!mount) return;
+  if (!user || !user.id) {
+    mount.innerHTML = `<div class="stg-req-empty"><i class="ri-error-warning-line"></i><span>Session error — please log in again.</span></div>`;
+    return;
+  }
+  mount.innerHTML = `<div class="stg-req-empty"><i class="ri-loader-4-line spin"></i><span>Loading requests…</span></div>`;
   try {
     const res  = await fetch(`/api/users/${user.id}/my-requests`);
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load requests');
-    renderMyRequestsTable(Array.isArray(data) ? data : []);
+    const data = await res.json().catch(() => []);
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    renderMyRequestsTable(mount, Array.isArray(data) ? data : []);
   } catch (err) {
-    wrap.innerHTML = `
+    mount.innerHTML = `<div class="stg-req-empty"><i class="ri-error-warning-line"></i><span>${escHtml(err.message || 'Failed to load requests.')}</span></div>`;
+  }
+}
+
+function renderMyRequestsTable(mount, rows) {
+  const typeConfig = {
+    leave:  { label: 'Leave',          icon: 'ri-calendar-check-line',   color: '#6366f1' },
+    id:     { label: 'ID Request',      icon: 'ri-id-card-line',          color: '#0ea5e9' },
+    salary: { label: 'Salary Increase', icon: 'ri-money-dollar-circle-line', color: '#10b981' },
+    files:  { label: 'Files Request',   icon: 'ri-folder-open-line',      color: '#f59e0b' },
+  };
+  const statusConfig = {
+    pending:   { cls: 'req-badge-pending',   label: 'Pending'   },
+    approved:  { cls: 'req-badge-approved',  label: 'Approved'  },
+    rejected:  { cls: 'req-badge-rejected',  label: 'Rejected'  },
+    cancelled: { cls: 'req-badge-cancelled', label: 'Cancelled' },
+  };
+
+  if (!rows.length) {
+    mount.innerHTML = `
       <div class="stg-req-empty">
-        <i class="ri-error-warning-line"></i>
-        <p>${escHtml(err.message || 'Failed to load requests.')}</p>
+        <i class="ri-file-list-3-line"></i>
+        <span>No requests yet.</span>
+        <small>Submit a Leave, ID, Salary, or Files request to see it here.</small>
       </div>`;
+    return;
   }
 
-  // Wire up filter changes
-  document.getElementById('stgRequestsTypeFilter')?.addEventListener('change', () => {
-    const wrap2 = document.getElementById('stgRequestsTableWrap');
-    const rows  = wrap2?.querySelectorAll('tr[data-type]');
-    if (!rows) return;
-    applyRequestFilters();
-  });
-  document.getElementById('stgRequestsStatusFilter')?.addEventListener('change', applyRequestFilters);
-}
+  const rows_html = rows.map(r => {
+    const tc  = typeConfig[r.type]  || { label: r.type, icon: 'ri-file-line', color: '#64748b' };
+    const sc  = statusConfig[(r.status || '').toLowerCase()] || { cls: 'req-badge-pending', label: r.status || '—' };
+    const sub = r.subtype ? `<small class="req-row-subtype">${escHtml(r.subtype)}</small>` : '';
+    const summary = r.summary ? String(r.summary).slice(0, 80) + (r.summary.length > 80 ? '…' : '') : '—';
+    const dateSubmit = r.created_at ? new Date(r.created_at).toLocaleDateString() : '—';
+    const dateUpdated = r.updated_at ? new Date(r.updated_at).toLocaleDateString() : '—';
+    const canCancel = (r.status || '').toLowerCase() === 'pending';
 
-function applyRequestFilters() {
-  const typeVal   = document.getElementById('stgRequestsTypeFilter')?.value  || '';
-  const statusVal = document.getElementById('stgRequestsStatusFilter')?.value || '';
-  document.querySelectorAll('#stgRequestsTableWrap tr[data-type]').forEach(row => {
-    const matchType   = !typeVal   || row.dataset.type   === typeVal;
-    const matchStatus = !statusVal || row.dataset.status === statusVal.toLowerCase();
-    row.style.display = (matchType && matchStatus) ? '' : 'none';
-  });
-  // Show/hide empty state
-  const visibleRows = document.querySelectorAll('#stgRequestsTableWrap tr[data-type]:not([style*="display: none"])');
-  const emptyRow    = document.getElementById('stgReqEmptyRow');
-  if (emptyRow) emptyRow.style.display = visibleRows.length === 0 ? '' : 'none';
-}
+    return `
+      <tr class="req-row" data-id="${r.id}" data-type="${escHtml(r.type)}">
+        <td>
+          <div class="req-type-cell">
+            <span class="req-type-icon" style="color:${tc.color};background:${tc.color}18">
+              <i class="${tc.icon}"></i>
+            </span>
+            <div>
+              <div class="req-type-label">${escHtml(tc.label)}</div>
+              ${sub}
+            </div>
+          </div>
+        </td>
+        <td><div class="req-summary-cell">${escHtml(summary)}</div></td>
+        <td><span class="req-badge ${sc.cls}">${escHtml(sc.label)}</span></td>
+        <td class="req-date-cell">${escHtml(dateSubmit)}</td>
+        <td class="req-date-cell">${escHtml(dateUpdated)}</td>
+        <td>
+          <div class="req-actions-cell">
+            <button class="req-action-btn req-view-btn" data-id="${r.id}" data-type="${escHtml(r.type)}" title="View in Messaging">
+              <i class="ri-mail-open-line"></i> View
+            </button>
+            ${canCancel ? `<button class="req-action-btn req-cancel-btn" data-id="${r.id}" data-type="${escHtml(r.type)}" title="Cancel Request">
+              <i class="ri-close-circle-line"></i> Cancel
+            </button>` : ''}
+          </div>
+        </td>
+      </tr>`;
+  }).join('');
 
-function renderMyRequestsTable(requests) {
-  const wrap = document.getElementById('stgRequestsTableWrap');
-  if (!wrap) return;
-
-  const typeLabels = {
-    leave:  'Leave',
-    id:     'ID Request',
-    salary: 'Salary',
-    files:  'Files',
-  };
-  const statusClass = s => {
-    const sl = (s || '').toLowerCase();
-    if (sl === 'approved')  return 'req-status-approved';
-    if (sl === 'rejected')  return 'req-status-rejected';
-    if (sl === 'cancelled') return 'req-status-cancelled';
-    return 'req-status-pending';
-  };
-
-  wrap.innerHTML = `
-    <div class="stg-req-table-wrap">
-      <table class="stg-req-table">
+  mount.innerHTML = `
+    <div class="req-table-wrap">
+      <table class="req-table">
         <thead>
           <tr>
             <th>Type</th>
             <th>Details</th>
             <th>Status</th>
             <th>Submitted</th>
-            <th>Updated</th>
+            <th>Last Updated</th>
             <th>Actions</th>
           </tr>
         </thead>
-        <tbody>
-          ${requests.length === 0 ? `
-            <tr id="stgReqEmptyRow">
-              <td colspan="6" class="stg-req-empty-cell">
-                <i class="ri-file-list-3-line"></i>
-                <span>No requests yet.</span>
-              </td>
-            </tr>
-          ` : requests.map(r => `
-            <tr data-type="${escHtml(r.type)}" data-status="${escHtml((r.status||'').toLowerCase())}" data-id="${r.id}">
-              <td>
-                <span class="stg-req-type-badge req-type-${escHtml(r.type)}">
-                  ${escHtml(typeLabels[r.type] || r.type)}
-                </span>
-              </td>
-              <td class="stg-req-detail-cell">
-                <div class="stg-req-subtype">${escHtml(r.subtype || '—')}</div>
-                <div class="stg-req-summary">${escHtml((r.summary || '').slice(0, 80))}${(r.summary||'').length > 80 ? '…' : ''}</div>
-              </td>
-              <td>
-                <span class="stg-req-status-badge ${statusClass(r.status)}">
-                  ${escHtml(r.status || 'Pending')}
-                </span>
-              </td>
-              <td class="stg-req-date">${r.created_at ? new Date(r.created_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : '—'}</td>
-              <td class="stg-req-date">${r.updated_at ? new Date(r.updated_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'}) : '—'}</td>
-              <td class="stg-req-actions">
-                <button class="stg-req-action-btn view-btn" data-type="${escHtml(r.type)}" data-id="${r.id}" title="View in messaging">
-                  <i class="ri-eye-line"></i>
-                </button>
-                ${(r.status||'').toLowerCase() === 'pending' ? `
-                  <button class="stg-req-action-btn cancel-btn" data-type="${escHtml(r.type)}" data-id="${r.id}" title="Cancel request">
-                    <i class="ri-close-circle-line"></i>
-                  </button>
-                ` : ''}
-              </td>
-            </tr>
-          `).join('')}
-          <tr id="stgReqEmptyRow" style="display:none">
-            <td colspan="6" class="stg-req-empty-cell">
-              <i class="ri-file-list-3-line"></i>
-              <span>No requests match your filters.</span>
-            </td>
-          </tr>
-        </tbody>
+        <tbody>${rows_html}</tbody>
       </table>
-    </div>
-  `;
+    </div>`;
 
-  // View button — jump to messaging tab, search for related thread
-  wrap.querySelectorAll('.view-btn').forEach(btn => {
+  // ── View → jump to Settings → Messaging inbox, highlight thread ─────────
+  mount.querySelectorAll('.req-view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const type = btn.dataset.type;
-      const id   = btn.dataset.id;
-      // Switch to messaging tab
-      document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
-      const msgNav = document.querySelector('.stg-navitem[data-tab="messaging"]');
-      if (msgNav) msgNav.classList.add('active');
-      document.getElementById('stg-tab-messaging')?.classList.add('active');
-      // Load messaging and pre-filter to the request thread subject
-      stgMessageFolder = 'inbox';
+      const tc   = typeConfig[type] || { label: type };
+      // Set filter BEFORE loading settings so messaging picks it up
+      stgMessageFolder   = 'inbox';
       stgSelectedMessage = null;
-      stgMessagingView = 'list';
-      stgRequestViewFilter = `[REQ-${type.toUpperCase()}-${id}]`;
-      loadStgMessagingData();
+      stgReplyToMessage  = null;
+      stgMessagingView   = 'list';
+      stgRequestFilter   = tc.label;
+      // Load settings page, then programmatically switch to messaging tab
+      loadSettings();
+      // After loadSettings() re-renders the DOM, activate the messaging tab
+      requestAnimationFrame(() => {
+        const msgNavBtn = document.querySelector('.stg-navitem[data-tab="messaging"]');
+        const msgPanel  = document.getElementById('stg-tab-messaging');
+        if (msgNavBtn && msgPanel) {
+          document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
+          document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
+          msgNavBtn.classList.add('active');
+          msgPanel.classList.add('active');
+        }
+      });
     });
   });
 
-  // Cancel button
-  wrap.querySelectorAll('.cancel-btn').forEach(btn => {
+  // ── Cancel request ───────────────────────────────────────────────────────
+  mount.querySelectorAll('.req-cancel-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
+      const reqId   = btn.dataset.id;
+      const reqType = btn.dataset.type;
       if (!confirm('Cancel this request?')) return;
       btn.disabled = true;
+      btn.innerHTML = '<i class="ri-loader-4-line spin"></i>';
       try {
-        const res = await fetch(`/api/users/${user.id}/my-requests/${btn.dataset.type}/${btn.dataset.id}/cancel`, {
-          method: 'PUT'
+        const res = await fetch(`/api/users/${user.id}/my-requests/${reqType}/${reqId}/cancel`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
         });
-        const result = await res.json();
-        if (!res.ok) { showToast(result.error || 'Cancel failed.', 'error'); return; }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) { showToast(data.error || 'Cancel failed.', 'error'); return; }
         showToast('Request cancelled.', 'success');
         loadMyRequests();
+        // Also fire a system message about the cancellation
+        sendRequestNotification('cancel_update',
+          `Your request has been cancelled.\nRequest ID: ${reqId}\nType: ${reqType}`
+        );
       } catch { showToast('Network error.', 'error'); }
-      finally { btn.disabled = false; }
+      finally { btn.disabled = false; btn.innerHTML = '<i class="ri-close-circle-line"></i> Cancel'; }
     });
   });
-}
-
-// Sends an in-app notification message to the user themselves (self-thread)
-// about a submitted request, tagged with [REQ-TYPE-ID] for cross-linking.
-async function sendRequestNotification(type, requestId, subtype, summary, status = 'Pending') {
-  try {
-    const typeLabels = { leave: 'Leave', id: 'ID Request', salary: 'Salary Increase', files: 'Files Request' };
-    const label = typeLabels[type] || type;
-    const tag   = `[REQ-${type.toUpperCase()}-${requestId}]`;
-    const subject = `${tag} ${label}: ${subtype}`;
-    const body = `Your ${label} request has been submitted.\n\nType: ${label}\nDetails: ${subtype}\nSummary: ${summary}\nStatus: ${status}\n\nYou will be notified when the status changes.`;
-    await fetch('/api/messages/system', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sender_id:    user.id,
-        recipient_id: user.id,
-        subject,
-        body,
-        parent_message_id: null
-      })
-    });
-  } catch (_) { /* non-critical — silently ignore */ }
 }
 
 function _stgApplyDisplaySettings() {
