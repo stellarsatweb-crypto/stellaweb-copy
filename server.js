@@ -2956,6 +2956,259 @@ app.put('/api/users/:id/my-requests/:type/:requestId/cancel', async (req, res) =
   }
 });
 
+// ── Unified Threads — merged inbox + requests view ──────────────────────────
+// GET /api/users/:id/threads?filter=all|requests|messages&status=all|pending|approved|rejected&search=...
+// Returns all messages and requests as unified thread objects, sorted by created_at DESC.
+app.get('/api/users/:id/threads', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+
+  const filter = String(req.query.filter || 'all').trim().toLowerCase();
+  const statusFilter = String(req.query.status || 'all').trim().toLowerCase();
+  const search = String(req.query.search || '').trim().toLowerCase();
+
+  try {
+    const results = [];
+
+    // ── Fetch messages (inbox + sent) ──────────────────────────────────────
+    if (filter === 'all' || filter === 'messages') {
+      const msgRes = await pool.query(`
+        SELECT
+          m.id, m.subject, m.body, m.is_read, m.parent_message_id,
+          m.created_at, m.updated_at,
+          sender.id AS sender_id, sender.full_name AS sender_name, sender.email AS sender_email,
+          recipient.id AS recipient_id, recipient.full_name AS recipient_name, recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE (m.recipient_id = $1 AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE)
+           OR (m.sender_id = $1 AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE)
+        ORDER BY m.created_at DESC
+      `, [userId]);
+
+      for (const m of msgRes.rows) {
+        const isSender = Number(m.sender_id) === userId;
+        const thread = {
+          thread_id: `msg_${m.id}`,
+          type: 'message',
+          status: null,
+          title: m.subject || '(No subject)',
+          summary: String(m.body || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+          sender_name: isSender ? 'You' : (m.sender_name || m.sender_email || 'System'),
+          sender_id: m.sender_id,
+          recipient_id: m.recipient_id,
+          recipient_name: m.recipient_name || m.recipient_email || 'Unknown',
+          is_read: isSender ? true : m.is_read,  // sent messages are always "read" by sender
+          created_at: m.created_at,
+          updated_at: m.updated_at || m.created_at,
+          raw: m,
+        };
+        if (search && !thread.title.toLowerCase().includes(search) && !thread.summary.toLowerCase().includes(search)) continue;
+        results.push(thread);
+      }
+    }
+
+    // ── Fetch requests ──────────────────────────────────────────────────────
+    if (filter === 'all' || filter === 'requests') {
+      const [leaves, idReqs, salaryReqs, filesReqs] = await Promise.all([
+        pool.query(
+          `SELECT id, 'leave' AS req_type, leave_type AS subtype, reason AS summary,
+                  status, submitted_at AS created_at, updated_at, employee_id AS owner_id
+           FROM leave_requests WHERE employee_id = $1 ORDER BY submitted_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'id' AS req_type, id_type AS subtype, purpose AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM id_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'salary' AS req_type, 'salary increase' AS subtype, justification AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM salary_increase_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'files' AS req_type, document_name AS subtype, purpose AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM files_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+      ]);
+
+      const typeLabels = { leave: 'Leave Request', id: 'ID Request', salary: 'Salary Increase', files: 'Files Request' };
+      const allReqs = [...leaves.rows, ...idReqs.rows, ...salaryReqs.rows, ...filesReqs.rows];
+
+      for (const r of allReqs) {
+        const statusLower = (r.status || 'pending').toLowerCase();
+        if (statusFilter !== 'all' && statusLower !== statusFilter) continue;
+
+        const label = typeLabels[r.req_type] || r.req_type;
+        const title = `[${label}]${r.subtype ? ` — ${r.subtype}` : ''}`;
+        const summary = String(r.summary || '').slice(0, 120);
+
+        if (search && !title.toLowerCase().includes(search) && !summary.toLowerCase().includes(search)) continue;
+
+        results.push({
+          thread_id: `req_${r.req_type}_${r.id}`,
+          type: 'request',
+          req_type: r.req_type,
+          status: r.status || 'Pending',
+          title,
+          summary,
+          sender_name: 'You',
+          sender_id: userId,
+          is_read: true,
+          created_at: r.created_at,
+          updated_at: r.updated_at || r.created_at,
+          raw: r,
+        });
+      }
+    }
+
+    // Sort by created_at DESC
+    results.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/:id/threads/:threadId — fetch thread messages for a request or message
+app.get('/api/users/:id/threads/:threadId', async (req, res) => {
+  const userId = Number(req.params.id);
+  const threadId = String(req.params.threadId || '');
+
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+
+  try {
+    // ── Message thread ─────────────────────────────────────────────────────
+    if (threadId.startsWith('msg_')) {
+      const msgId = Number(threadId.replace('msg_', ''));
+      const result = await pool.query(`
+        SELECT m.*,
+          sender.full_name AS sender_name, sender.email AS sender_email,
+          recipient.full_name AS recipient_name, recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
+      `, [msgId, userId]);
+
+      if (!result.rowCount) return res.status(404).json({ error: 'Thread not found' });
+      const root = result.rows[0];
+
+      // Fetch thread replies (same parent chain)
+      const replies = await pool.query(`
+        SELECT m.*,
+          sender.full_name AS sender_name, sender.email AS sender_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        WHERE m.parent_message_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
+        ORDER BY m.created_at ASC
+      `, [msgId, userId]);
+
+      return res.json({
+        thread_id: threadId,
+        type: 'message',
+        title: root.subject || '(No subject)',
+        messages: [
+          { id: root.id, sender_name: root.sender_name || 'Unknown', body: root.body, created_at: root.created_at, is_system: false },
+          ...replies.rows.map(r => ({ id: r.id, sender_name: r.sender_name || 'Unknown', body: r.body, created_at: r.created_at, is_system: false }))
+        ],
+        raw: root,
+      });
+    }
+
+    // ── Request thread ─────────────────────────────────────────────────────
+    if (threadId.startsWith('req_')) {
+      const parts = threadId.replace('req_', '').split('_');
+      const reqType = parts[0];
+      const reqId = Number(parts[1]);
+
+      const tableMap = {
+        leave:  { table: 'leave_requests',           ownerCol: 'employee_id',  label: 'Leave Request'    },
+        id:     { table: 'id_requests',              ownerCol: 'requested_by', label: 'ID Request'       },
+        salary: { table: 'salary_increase_requests', ownerCol: 'requested_by', label: 'Salary Increase'  },
+        files:  { table: 'files_requests',           ownerCol: 'requested_by', label: 'Files Request'    },
+      };
+      const meta = tableMap[reqType];
+      if (!meta) return res.status(400).json({ error: 'Invalid request type' });
+
+      const result = await pool.query(
+        `SELECT * FROM ${meta.table} WHERE id = $1 AND ${meta.ownerCol} = $2`,
+        [reqId, userId]
+      );
+      if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+      const req_row = result.rows[0];
+
+      // Build synthetic thread messages
+      const messages = [];
+      const summary = req_row.justification || req_row.reason || req_row.purpose || req_row.document_name || '';
+      const details = Object.entries(req_row)
+        .filter(([k]) => !['id', 'updated_at', 'created_at', 'employee_id', 'requested_by', 'owner_id'].includes(k))
+        .map(([k, v]) => v != null ? `${k.replace(/_/g,' ')}: ${v}` : null)
+        .filter(Boolean)
+        .join('\n');
+
+      messages.push({
+        id: `init_${req_row.id}`,
+        sender_name: 'You',
+        body: `${meta.label} submitted.\n\n${details}`,
+        created_at: req_row.created_at || req_row.submitted_at,
+        is_system: false,
+      });
+      messages.push({
+        id: `status_${req_row.id}`,
+        sender_name: 'System',
+        body: `Status: ${req_row.status || 'Pending'}`,
+        created_at: req_row.created_at || req_row.submitted_at,
+        is_system: true,
+        status: req_row.status,
+      });
+      if (req_row.remarks) {
+        messages.push({
+          id: `remark_${req_row.id}`,
+          sender_name: 'Admin',
+          body: req_row.remarks,
+          created_at: req_row.updated_at || req_row.created_at,
+          is_system: false,
+        });
+      }
+      if (req_row.status && req_row.status.toLowerCase() !== 'pending') {
+        messages.push({
+          id: `resolved_${req_row.id}`,
+          sender_name: 'System',
+          body: `Status changed to: ${req_row.status}`,
+          created_at: req_row.updated_at || req_row.created_at,
+          is_system: true,
+          status: req_row.status,
+        });
+      }
+
+      const subtype = req_row.leave_type || req_row.id_type || req_row.document_name || '';
+      return res.json({
+        thread_id: threadId,
+        type: 'request',
+        req_type: reqType,
+        status: req_row.status || 'Pending',
+        title: `[${meta.label}]${subtype ? ` — ${subtype}` : ''}`,
+        messages,
+        raw: req_row,
+      });
+    }
+
+    return res.status(400).json({ error: 'Invalid thread id' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Dashboard Stats ─────────────────────────────────────────────────────────
 
 app.get('/api/dashboard/stats', async (req, res) => {

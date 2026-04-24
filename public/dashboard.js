@@ -55,6 +55,18 @@ let stgMessagingView = 'list'; // list | read | compose
 let stgReplyToMessage = null;
 let stgRequestFilter = null;  // set when jumping to messaging from My Requests
 
+/* ================= UNIFIED THREAD INBOX STATE ================= */
+let utThreads = [];
+let utSelectedThreadId = null;
+let utSelectedThread = null;
+let utFilter = 'messages';   // messages | requests (matches utFolder)
+let utStatusFilter = 'all';  // all | pending | approved | rejected
+let utSearch = '';
+let utView = 'list';         // list | thread | compose
+let utFolder = 'inbox';      // inbox | sent | drafts | starred
+let utDrafts = [];           // locally stored drafts [{id, recipient_id, subject, body, created_at}]
+let utStarred = new Set(JSON.parse(localStorage.getItem('ut_starred') || '[]')); // starred thread_ids
+
 /* ================= SIDEBAR ================= */
 const PAGE_DEFS = {
   dashboard:          { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => loadDashboard() },
@@ -7790,14 +7802,6 @@ function loadSettings() {
   mainContent.innerHTML = `
     <div class="stg-page">
 
-      <!-- Page header -->
-      <div class="stg-page-header">
-        <div class="stg-page-header-left">
-          <h2 class="stg-title">Settings</h2>
-          <p class="stg-subtitle">Manage your account, display and privacy preferences</p>
-        </div>
-      </div>
-
       <!-- Two-column layout -->
       <div class="stg-layout">
 
@@ -7828,24 +7832,14 @@ function loadSettings() {
             <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
           </button>
 
-          <button class="stg-navitem" data-tab="requests">
-            <div class="stg-navitem-icon"><i class="ri-file-list-3-line"></i></div>
+          <button class="stg-navitem" data-tab="inbox">
+            <div class="stg-navitem-icon"><i class="ri-inbox-2-line"></i></div>
             <div class="stg-navitem-text">
-              <span class="stg-navitem-label">My Requests</span>
-              <span class="stg-navitem-sub">Leave, ID, salary, files</span>
+              <span class="stg-navitem-label">Inbox</span>
+              <span class="stg-navitem-sub">Messages &amp; Requests</span>
             </div>
             <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
           </button>
-
-          <!-- Compact user card -->
-          <button class="stg-navitem" data-tab="messaging">
-  <span class="stg-navitem-icon"><i class="ri-mail-line"></i></span>
-  <span class="stg-navitem-text">
-    <span class="stg-navitem-label">In-App Messaging</span>
-    <span class="stg-navitem-sub">Inbox, sent, compose</span>
-  </span>
-  <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
-</button>
 
 <div class="stg-nav-usercard">
             <div class="stg-nav-avatar">
@@ -8097,24 +8091,15 @@ function loadSettings() {
 
           </div>
 
-              <div class="stg-panel" id="stg-tab-messaging">
-  <div class="stg-card2">
-    <div class="stg-card2-header">
-      <div class="stg-card2-title">
-        <i class="ri-mail-line"></i> In-App Messaging
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <button class="stg-outline-btn" id="stgMsgHeaderRefreshBtn" title="Refresh messages">
-          <i class="ri-refresh-line"></i>
-        </button>
-        <button class="stg-outline-btn" id="stgComposeBtn">
-          <i class="ri-quill-pen-line"></i> Compose
-        </button>
-      </div>
-    </div>
-    <div id="stgMessagingMount"></div>
-  </div>
-</div>
+
+              <div class="stg-panel" id="stg-tab-inbox">
+                <div id="utInboxMount" style="min-height:540px;">
+                  <div class="ut-empty-state">
+                    <i class="ri-inbox-2-line"></i>
+                    <div>Click Inbox in the sidebar to load your messages and requests.</div>
+                  </div>
+                </div>
+              </div>
 
         </div><!-- /stg-panels -->
       </div><!-- /stg-layout -->
@@ -8188,15 +8173,22 @@ function loadSettings() {
   // ── Nav switching ──────────────────────────────────────────────────────────
   document.querySelectorAll('.stg-navitem').forEach(btn => {
     btn.addEventListener('click', function () {
-      if (this.dataset.tab === 'requests') {
-        // Full-page takeover — same pattern as Dashboard / Map
-        loadMyRequestsPage();
-        return;
-      }
       document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
       this.classList.add('active');
-      document.getElementById(`stg-tab-${this.dataset.tab}`).classList.add('active');
+      const panel = document.getElementById(`stg-tab-${this.dataset.tab}`);
+      if (panel) panel.classList.add('active');
+
+      if (this.dataset.tab === 'inbox') {
+        utSelectedThreadId = null;
+        utSelectedThread   = null;
+        utView             = 'list';
+        utFilter           = 'messages';
+        utFolder           = 'inbox';
+        utStatusFilter     = 'all';
+        utSearch           = '';
+        loadUnifiedInbox();
+      }
 
       if (this.dataset.tab === 'messaging') {
         stgSelectedMessage = null;
@@ -9340,7 +9332,7 @@ function openLeaveModal(user) {
   document.getElementById('stgDeleteAccBtn').onclick = () =>
     showToast('Account deletion request sent to admin.', 'success');
 
-  // ── In-App Messaging ───────────────────────────────────────────────────────
+  // ── In-App Messaging (legacy — kept for backward compat, hidden via tab merge) ─
   document.getElementById('stgMsgHeaderRefreshBtn')?.addEventListener('click', () => {
     stgSelectedMessage = null;
     stgReplyToMessage  = null;
@@ -9364,6 +9356,852 @@ function openLeaveModal(user) {
   if (fs) document.documentElement.style.fontSize = fs + 'px';
 }
 
+/* ═══════════════════════════════════════════════════════════
+   UNIFIED INBOX — 3-panel thread-based messaging + requests
+═══════════════════════════════════════════════════════════ */
+
+/* ── Update nav badge counts without re-rendering the whole shell ── */
+function _updateUtNavCounts() {
+  const mount = document.getElementById('utInboxMount');
+  if (!mount) return;
+
+  const msgThreads   = utThreads.filter(t => t.type === 'message');
+  const unreadCount  = msgThreads.filter(t => !t.is_read && Number(t.recipient_id) === Number(user.id)).length;
+  const sentCount    = msgThreads.filter(t => Number(t.sender_id) === Number(user.id)).length;
+  const starredCount = utThreads.filter(t => utStarred.has(t.thread_id)).length;
+  const pendingCount = utThreads.filter(t => t.type === 'request' && (t.status || '').toLowerCase() === 'pending').length;
+  const draftsCount  = utDrafts.length;
+  const inboxCount   = msgThreads.filter(t => Number(t.recipient_id) === Number(user.id)).length;
+
+  const updateBtn = (folder, count, cls) => {
+    const btn = mount.querySelector(`.ut-nav-btn[data-folder="${folder}"]`);
+    if (!btn) return;
+    let badge = btn.querySelector('.ut-nav-count');
+    if (count > 0) {
+      if (!badge) { badge = document.createElement('span'); badge.className = `ut-nav-count${cls ? ' ' + cls : ''}`; btn.appendChild(badge); }
+      badge.textContent = count;
+      badge.className = `ut-nav-count${cls ? ' ' + cls : ''}`;
+    } else {
+      badge?.remove();
+    }
+  };
+
+  updateBtn('inbox',    unreadCount > 0 ? unreadCount : inboxCount, unreadCount > 0 ? 'unread' : '');
+  updateBtn('sent',     sentCount,    '');
+  updateBtn('starred',  starredCount, '');
+  updateBtn('drafts',   draftsCount,  'draft');
+  updateBtn('requests', pendingCount, 'pending');
+}
+
+async function loadUnifiedInbox() {
+  const mount = document.getElementById('utInboxMount');
+  if (!mount) return;
+
+  // Drafts folder is purely client-side — no fetch needed
+  if (utFolder === 'drafts') {
+    try {
+      const usersRes  = await fetch(`/api/users?exclude=${user.id}`);
+      const usersData = await usersRes.json().catch(() => []);
+      stgUsers = Array.isArray(usersData) ? usersData : [];
+    } catch {}
+    renderUnifiedInbox();
+    return;
+  }
+
+  // If the shell is already rendered (ut-shell exists), only show loading in thread list
+  // This prevents the entire layout from flickering/blanking on refresh
+  const shellExists = !!mount.querySelector('.ut-shell');
+  if (shellExists) {
+    const listBody = document.getElementById('utThreadListBody');
+    if (listBody) listBody.innerHTML = `<div class="ut-loading"><i class="ri-loader-4-line spin"></i> Loading…</div>`;
+  } else {
+    mount.innerHTML = `<div class="ut-loading"><i class="ri-loader-4-line spin"></i> Loading…</div>`;
+  }
+
+  try {
+    // Determine API filter: for mail folders (inbox/sent/starred) fetch all messages
+    // For requests folder fetch all requests
+    const apiFilter = (utFolder === 'requests') ? 'requests' : 'messages';
+    const params = new URLSearchParams({
+      filter: apiFilter,
+      status: utStatusFilter,
+    });
+    // Don't pass search to server — we filter client-side to avoid search leaking across folder switches
+
+    const [threadsRes, usersRes] = await Promise.all([
+      fetch(`/api/users/${user.id}/threads?${params}`),
+      fetch(`/api/users?exclude=${user.id}`)
+    ]);
+
+    const threadsData = await threadsRes.json().catch(() => []);
+    const usersData   = await usersRes.json().catch(() => []);
+
+    if (!threadsRes.ok) throw new Error(threadsData?.error || 'Failed to load inbox');
+    utThreads = Array.isArray(threadsData) ? threadsData : [];
+    stgUsers  = Array.isArray(usersData)   ? usersData   : [];
+
+    // If shell already exists, only update the thread list (no full re-render = no flicker)
+    if (shellExists && mount.querySelector('.ut-shell')) {
+      renderUtThreadList();
+      // Update nav counts without full re-render
+      _updateUtNavCounts();
+    } else {
+      renderUnifiedInbox();
+    }
+  } catch (err) {
+    const listBody = document.getElementById('utThreadListBody');
+    const errHtml = `<div class="ut-empty-state"><i class="ri-error-warning-line"></i><div>${escHtml(err.message)}</div></div>`;
+    if (listBody) listBody.innerHTML = errHtml;
+    else if (mount) mount.innerHTML = errHtml;
+  }
+}
+
+function renderUnifiedInbox() {
+  const mount = document.getElementById('utInboxMount');
+  if (!mount) return;
+
+  // Count helpers
+  const msgThreads     = utThreads.filter(t => t.type === 'message');
+  // Unread = inbox messages (received) that haven't been read yet
+  const unreadCount    = msgThreads.filter(t => !t.is_read && Number(t.recipient_id) === Number(user.id)).length;
+  const sentCount      = msgThreads.filter(t => Number(t.sender_id) === Number(user.id)).length;
+  const starredCount   = utThreads.filter(t => utStarred.has(t.thread_id)).length;
+  const pendingCount   = utThreads.filter(t => t.type === 'request' && (t.status || '').toLowerCase() === 'pending').length;
+  const draftsCount    = utDrafts.length;
+
+  // For inbox folder: only messages where current user is receiver
+  const inboxCount     = msgThreads.filter(t => Number(t.recipient_id) === Number(user.id)).length;
+
+  mount.innerHTML = `
+    <div class="ut-shell">
+
+      <!-- Left Nav -->
+      <aside class="ut-left-nav">
+        <button class="ut-compose-btn" id="utComposeBtn">
+          <i class="ri-edit-box-line"></i> <span>Compose</span>
+        </button>
+
+        <div class="ut-nav-section-label">Mail</div>
+        <button class="ut-nav-btn ${utFolder === 'inbox' ? 'active' : ''}" data-folder="inbox">
+          <i class="ri-inbox-2-line"></i> <span>Inbox</span>
+          ${unreadCount > 0 ? `<span class="ut-nav-count unread">${unreadCount}</span>` : (inboxCount > 0 ? `<span class="ut-nav-count">${inboxCount}</span>` : '')}
+        </button>
+        <button class="ut-nav-btn ${utFolder === 'starred' ? 'active' : ''}" data-folder="starred">
+          <i class="ri-star-line"></i> <span>Starred</span>
+          ${starredCount > 0 ? `<span class="ut-nav-count">${starredCount}</span>` : ''}
+        </button>
+        <button class="ut-nav-btn ${utFolder === 'sent' ? 'active' : ''}" data-folder="sent">
+          <i class="ri-send-plane-line"></i> <span>Sent</span>
+          ${sentCount > 0 ? `<span class="ut-nav-count">${sentCount}</span>` : ''}
+        </button>
+        <button class="ut-nav-btn ${utFolder === 'drafts' ? 'active' : ''}" data-folder="drafts">
+          <i class="ri-draft-line"></i> <span>Drafts</span>
+          ${draftsCount > 0 ? `<span class="ut-nav-count draft">${draftsCount}</span>` : ''}
+        </button>
+
+        <div class="ut-nav-section-label" style="margin-top:10px;">Requests</div>
+        <button class="ut-nav-btn ${utFolder === 'requests' ? 'active' : ''}" data-folder="requests">
+          <i class="ri-file-list-3-line"></i> <span>All Requests</span>
+          ${pendingCount > 0 ? `<span class="ut-nav-count pending">${pendingCount}</span>` : ''}
+        </button>
+
+        ${utFolder === 'requests' ? `
+        <div class="ut-nav-section-label" style="margin-top:10px;">Status</div>
+        <button class="ut-nav-btn ut-status-btn ${utStatusFilter === 'all' ? 'active' : ''}" data-status="all">
+          <i class="ri-apps-line"></i> <span>All</span>
+        </button>
+        <button class="ut-nav-btn ut-status-btn ${utStatusFilter === 'pending' ? 'active' : ''}" data-status="pending">
+          <span class="ut-status-dot pending"></span> <span>Pending</span>
+        </button>
+        <button class="ut-nav-btn ut-status-btn ${utStatusFilter === 'approved' ? 'active' : ''}" data-status="approved">
+          <span class="ut-status-dot approved"></span> <span>Approved</span>
+        </button>
+        <button class="ut-nav-btn ut-status-btn ${utStatusFilter === 'rejected' ? 'active' : ''}" data-status="rejected">
+          <span class="ut-status-dot rejected"></span> <span>Rejected</span>
+        </button>
+        ` : ''}
+      </aside>
+
+      <!-- Thread List -->
+      <section class="ut-thread-list-panel" id="utThreadListPanel">
+        <div class="ut-search-row">
+          <div class="ut-search-wrap">
+            <i class="ri-search-line"></i>
+            <input type="text" id="utSearchInput" class="ut-search-input" placeholder="Search threads…" value="">
+          </div>
+          <button class="ut-refresh-btn" id="utRefreshBtn" title="Refresh"><i class="ri-refresh-line"></i></button>
+        </div>
+        <div id="utThreadListBody"></div>
+      </section>
+
+      <!-- Conversation View -->
+      <section class="ut-conversation-panel" id="utConversationPanel">
+        <div id="utConversationBody">
+          <div class="ut-empty-state">
+            <i class="ri-chat-3-line"></i>
+            <div>Select a thread to view the conversation</div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  `;
+
+  // Wire folder buttons — avoid full re-render to prevent flicker
+  mount.querySelectorAll('.ut-nav-btn[data-folder]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const newFolder = btn.dataset.folder;
+      const folderChanged = newFolder !== utFolder;
+      utFolder = newFolder;
+      utSearch = '';  // CRITICAL: clear search on folder switch
+      utSelectedThreadId = null;
+      utSelectedThread   = null;
+      utView = 'list';
+      // Map folder to filter for API
+      if (utFolder === 'requests') {
+        utFilter = 'requests';
+      } else {
+        utFilter = 'messages';
+      }
+      // Clear conversation pane immediately (no flicker)
+      const convBody = document.getElementById('utConversationBody');
+      if (convBody) convBody.innerHTML = `<div class="ut-empty-state"><i class="ri-chat-3-line"></i><div>Select a thread to view the conversation</div></div>`;
+
+      // Update active state on nav buttons without full re-render
+      mount.querySelectorAll('.ut-nav-btn[data-folder]').forEach(b => {
+        b.classList.toggle('active', b.dataset.folder === utFolder);
+      });
+
+      // Drafts folder is purely client-side — just re-render thread list
+      if (utFolder === 'drafts') {
+        renderUtThreadList();
+        return;
+      }
+
+      // If the data for this folder type is already loaded, just filter client-side
+      const needsApiCall = (utFolder === 'requests' && utFilter === 'requests' && !utThreads.some(t => t.type === 'request'))
+        || (utFolder !== 'requests' && !utThreads.some(t => t.type === 'message'));
+
+      if (folderChanged && (utFolder === 'requests' || needsApiCall)) {
+        // Need fresh data — show loading only in thread list, not whole shell
+        const listBody = document.getElementById('utThreadListBody');
+        if (listBody) listBody.innerHTML = `<div class="ut-loading"><i class="ri-loader-4-line spin"></i> Loading…</div>`;
+        loadUnifiedInbox();
+      } else {
+        // Data already loaded — just re-filter and re-render the thread list
+        renderUtThreadList();
+      }
+    });
+  });
+
+  mount.querySelectorAll('.ut-nav-btn.ut-status-btn[data-status]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      utStatusFilter = btn.dataset.status;
+      utSelectedThreadId = null;
+      utSelectedThread   = null;
+      // Update active state without full re-render
+      mount.querySelectorAll('.ut-nav-btn.ut-status-btn[data-status]').forEach(b => {
+        b.classList.toggle('active', b.dataset.status === utStatusFilter);
+      });
+      renderUtThreadList();
+    });
+  });
+
+  // Search — clear on focus if empty, filter locally without reload
+  const searchInput = document.getElementById('utSearchInput');
+  let searchTimer;
+  searchInput?.addEventListener('input', function() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      utSearch = this.value.trim();
+      renderUtThreadList();
+    }, 250);
+  });
+
+  document.getElementById('utRefreshBtn')?.addEventListener('click', () => {
+    utSearch = '';
+    if (searchInput) searchInput.value = '';
+    loadUnifiedInbox();
+  });
+
+  document.getElementById('utComposeBtn')?.addEventListener('click', () => {
+    utView = 'compose';
+    stgReplyToMessage = null;
+    renderUtConversationPane();
+  });
+
+  renderUtThreadList();
+
+  // If a thread was previously selected, restore it
+  if (utSelectedThreadId && utSelectedThread) {
+    renderUtConversationPane();
+  }
+}
+
+function renderUtThreadList() {
+  const body = document.getElementById('utThreadListBody');
+  if (!body) return;
+
+  // Smooth fade-in: briefly fade out then fade in new content
+  body.classList.add('ut-fading');
+  const _render = () => {
+  body.classList.remove('ut-fading');
+
+  // ── Drafts folder ──────────────────────────────────────────────────────────
+  if (utFolder === 'drafts') {
+    const filtered = utDrafts.filter(d => {
+      if (!utSearch) return true;
+      const q = utSearch.toLowerCase();
+      return (d.subject || '').toLowerCase().includes(q) || (d.body || '').toLowerCase().includes(q);
+    });
+    if (!filtered.length) {
+      body.innerHTML = `<div class="ut-empty-state"><i class="ri-draft-line"></i><div>No drafts saved.</div>${utSearch ? `<small>Try clearing your search.</small>` : ''}</div>`;
+      return;
+    }
+    body.innerHTML = filtered.map(d => `
+      <div class="ut-thread-row draft-row" data-draft-id="${d.id}">
+        <div class="ut-thread-row-top">
+          <span class="ut-thread-icon" style="color:#94a3b8;background:#94a3b818">
+            <i class="ri-draft-line"></i>
+          </span>
+          <div class="ut-thread-meta">
+            <div class="ut-thread-title-row">
+              <span class="ut-thread-title ut-draft-label">[Draft]</span>
+              <span class="ut-thread-title"> ${escHtml(d.subject || '(no subject)')}</span>
+            </div>
+            <div class="ut-thread-preview">${escHtml((d.body || '').slice(0, 80))}</div>
+          </div>
+          <button class="ut-star-btn ut-draft-delete" data-draft-id="${d.id}" title="Delete draft"><i class="ri-delete-bin-line"></i></button>
+        </div>
+      </div>`).join('');
+
+    body.querySelectorAll('.draft-row').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.ut-draft-delete')) return;
+        const dId = row.dataset.draftId;
+        const draft = utDrafts.find(d => d.id === dId);
+        if (!draft) return;
+        stgReplyToMessage = null;
+        utView = 'compose';
+        renderUtConversationPane(draft);
+      });
+    });
+    body.querySelectorAll('.ut-draft-delete').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const dId = btn.dataset.draftId;
+        utDrafts = utDrafts.filter(d => d.id !== dId);
+        renderUtThreadList();
+        renderUnifiedInbox();
+      });
+    });
+    return;
+  }
+
+  const typeConfig = {
+    leave:   { label: 'Leave',    icon: 'ri-calendar-check-line',      color: '#6366f1' },
+    id:      { label: 'ID Req',   icon: 'ri-id-card-line',             color: '#0ea5e9' },
+    salary:  { label: 'Salary',   icon: 'ri-money-dollar-circle-line', color: '#10b981' },
+    files:   { label: 'Files',    icon: 'ri-folder-open-line',         color: '#f59e0b' },
+    message: { label: 'Message',  icon: 'ri-mail-line',                color: '#64748b' },
+  };
+
+  // ── Folder filtering logic ──────────────────────────────────────────────────
+  let displayThreads = utThreads.filter(t => {
+    // Folder filter
+    if (utFolder === 'inbox') {
+      // Inbox = messages where current user is the RECIPIENT (not sent by them)
+      if (t.type !== 'message') return false;
+      if (Number(t.sender_id) === Number(user.id)) return false; // exclude self-sent
+    } else if (utFolder === 'sent') {
+      // Sent = messages where current user is the SENDER
+      if (t.type !== 'message') return false;
+      if (Number(t.sender_id) !== Number(user.id)) return false;
+    } else if (utFolder === 'starred') {
+      if (!utStarred.has(t.thread_id)) return false;
+    } else if (utFolder === 'requests') {
+      if (t.type !== 'request') return false;
+      // Status sub-filter
+      if (utStatusFilter !== 'all') {
+        if ((t.status || 'pending').toLowerCase() !== utStatusFilter) return false;
+      }
+    }
+
+    // Search filter (apply only if search is non-empty)
+    if (utSearch) {
+      const q = utSearch.toLowerCase();
+      const inTitle   = (t.title   || '').toLowerCase().includes(q);
+      const inSummary = (t.summary || '').toLowerCase().includes(q);
+      if (!inTitle && !inSummary) return false;
+    }
+
+    return true;
+  });
+
+  const folderEmptyLabels = {
+    inbox:    'Your inbox is empty.',
+    sent:     'No sent messages.',
+    starred:  'No starred threads.',
+    requests: 'No requests found.',
+  };
+
+  if (!displayThreads.length) {
+    body.innerHTML = `
+      <div class="ut-empty-state">
+        <i class="ri-inbox-2-line"></i>
+        <div>${folderEmptyLabels[utFolder] || 'Nothing here.'}</div>
+        ${utSearch ? `<small>Try clearing your search.</small>` : ''}
+      </div>`;
+    return;
+  }
+
+  body.innerHTML = displayThreads.map(t => {
+    const isReq  = t.type === 'request';
+    const tc     = isReq ? (typeConfig[t.req_type] || typeConfig.message) : typeConfig.message;
+    const status = isReq ? (t.status || 'Pending') : null;
+    const statusLower = (status || '').toLowerCase();
+    const isUnread = !t.is_read && !isReq;
+    const isActive = t.thread_id === utSelectedThreadId;
+    const isStarred = utStarred.has(t.thread_id);
+    const timeText = t.created_at ? relativeTime(t.created_at) : '';
+
+    const badgeHtml = status
+      ? `<span class="ut-badge ut-badge-${statusLower}">${escHtml(status)}</span>`
+      : '';
+
+    return `
+      <div class="ut-thread-row ${isUnread ? 'unread' : ''} ${isActive ? 'active' : ''}" data-tid="${escHtml(t.thread_id)}">
+        <div class="ut-thread-row-top">
+          <span class="ut-thread-icon" style="color:${tc.color};background:${tc.color}18">
+            <i class="${tc.icon}"></i>
+          </span>
+          <div class="ut-thread-meta">
+            <div class="ut-thread-title-row">
+              <span class="ut-thread-title">${escHtml(t.title)}</span>
+              ${isUnread ? '<span class="ut-unread-dot"></span>' : ''}
+            </div>
+            <div class="ut-thread-subrow">
+              ${badgeHtml}
+              <span class="ut-thread-time">${escHtml(timeText)}</span>
+            </div>
+            <div class="ut-thread-preview">${escHtml(t.summary || '')}</div>
+          </div>
+          <button class="ut-star-btn ${isStarred ? 'starred' : ''}" data-tid="${escHtml(t.thread_id)}" title="${isStarred ? 'Unstar' : 'Star'}">
+            <i class="${isStarred ? 'ri-star-fill' : 'ri-star-line'}"></i>
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+
+  // ── Star button clicks ─────────────────────────────────────────────────────
+  body.querySelectorAll('.ut-star-btn[data-tid]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tid = btn.dataset.tid;
+      if (utStarred.has(tid)) {
+        utStarred.delete(tid);
+      } else {
+        utStarred.add(tid);
+      }
+      localStorage.setItem('ut_starred', JSON.stringify([...utStarred]));
+      // Re-render thread list only (no full reload)
+      const icon = btn.querySelector('i');
+      if (icon) {
+        icon.className = utStarred.has(tid) ? 'ri-star-fill' : 'ri-star-line';
+      }
+      btn.classList.toggle('starred', utStarred.has(tid));
+      btn.title = utStarred.has(tid) ? 'Unstar' : 'Star';
+      // If in starred folder and just un-starred, remove from list
+      if (utFolder === 'starred' && !utStarred.has(tid)) {
+        const row = body.querySelector(`.ut-thread-row[data-tid="${tid}"]`);
+        if (row) row.remove();
+      }
+      // Refresh nav counts
+      const navStarBtn = document.querySelector('.ut-nav-btn[data-folder="starred"] .ut-nav-count');
+      if (navStarBtn) navStarBtn.textContent = utStarred.size;
+    });
+  });
+
+  body.querySelectorAll('.ut-thread-row').forEach(row => {
+    row.addEventListener('click', async (e) => {
+      if (e.target.closest('.ut-star-btn')) return;
+      const tid = row.dataset.tid;
+      utSelectedThreadId = tid;
+      utView = 'thread';
+
+      // Mark active in list
+      body.querySelectorAll('.ut-thread-row').forEach(r => r.classList.remove('active'));
+      row.classList.add('active');
+      row.classList.remove('unread');
+
+      // Load thread detail
+      const convBody = document.getElementById('utConversationBody');
+      if (convBody) convBody.innerHTML = `<div class="ut-loading"><i class="ri-loader-4-line spin"></i> Loading…</div>`;
+
+      try {
+        const res  = await fetch(`/api/users/${user.id}/threads/${encodeURIComponent(tid)}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Failed to load thread');
+        utSelectedThread = data;
+
+        // Mark message as read if applicable
+        if (tid.startsWith('msg_')) {
+          const msgId = tid.replace('msg_', '');
+          fetch(`/api/messages/${msgId}/read`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: user.id, is_read: true })
+          }).catch(() => {});
+          // Update local unread count
+          utThreads = utThreads.map(t => t.thread_id === tid ? { ...t, is_read: true } : t);
+        }
+
+        renderUtConversationPane();
+      } catch (err) {
+        if (convBody) convBody.innerHTML = `<div class="ut-empty-state"><i class="ri-error-warning-line"></i><div>${escHtml(err.message)}</div></div>`;
+      }
+    });
+  });
+  }; // end _render
+  requestAnimationFrame(_render);
+}
+
+function renderUtConversationPane(draft = null) {
+  const panel = document.getElementById('utConversationBody');
+  if (!panel) return;
+
+  if (utView === 'compose') {
+    renderUtComposeView(panel, draft);
+    return;
+  }
+
+  if (!utSelectedThread) {
+    panel.innerHTML = `<div class="ut-empty-state"><i class="ri-chat-3-line"></i><div>Select a thread to view the conversation</div></div>`;
+    return;
+  }
+
+  const t = utSelectedThread;
+  const isReq = t.type === 'request';
+  const status = isReq ? (t.status || 'Pending') : null;
+  const statusLower = (status || '').toLowerCase();
+  const canCancel = isReq && statusLower === 'pending';
+  const reqTypeMap = { leave: 'leave', id: 'id', salary: 'salary', files: 'files' };
+
+  panel.innerHTML = `
+    <div class="ut-conv-wrap">
+
+      <!-- Gmail-style thread header -->
+      <div class="ut-conv-header">
+        <div class="ut-conv-title-row">
+          <button class="ut-back-btn" id="utConvBackBtn"><i class="ri-arrow-left-line"></i></button>
+          <div class="ut-conv-title">${escHtml(t.title)}</div>
+          ${status ? `<span class="ut-badge ut-badge-${statusLower}">${escHtml(status)}</span>` : ''}
+        </div>
+        <div class="ut-conv-actions">
+          ${!isReq ? `<button class="ut-action-btn" id="utConvReplyBtn"><i class="ri-reply-line"></i> Reply</button>` : ''}
+          ${canCancel ? `<button class="ut-action-btn danger" id="utConvCancelBtn"><i class="ri-close-circle-line"></i> Cancel Request</button>` : ''}
+          ${!isReq ? `<button class="ut-action-btn danger" id="utConvDeleteBtn"><i class="ri-delete-bin-line"></i> Delete</button>` : ''}
+        </div>
+      </div>
+
+      <!-- Gmail-style message thread: stacked email cards, oldest → newest -->
+      <div class="ut-messages-area" id="utMessagesArea">
+        ${(t.messages || []).map((msg, idx) => {
+          const isMine   = msg.sender_name === 'You' || Number(msg.sender_id) === Number(user.id);
+          const isSystem = msg.is_system;
+          const timeStr  = msg.created_at ? new Date(msg.created_at).toLocaleString('en-US', {
+            month: 'short', day: 'numeric', year: 'numeric',
+            hour: 'numeric', minute: '2-digit', hour12: true
+          }) : '';
+          const senderInitial = (msg.sender_name || 'S').charAt(0).toUpperCase();
+
+          if (isSystem) {
+            const sLower = (msg.status || '').toLowerCase();
+            const sIcon  = sLower === 'approved'
+              ? '<i class="ri-checkbox-circle-fill ut-email-sys-icon approved"></i>'
+              : sLower === 'rejected'
+                ? '<i class="ri-close-circle-fill ut-email-sys-icon rejected"></i>'
+                : '<i class="ri-information-line ut-email-sys-icon"></i>';
+            return `
+              <div class="ut-email-sys-row">
+                ${sIcon}
+                <span class="ut-email-sys-body">${escHtml(msg.body)}</span>
+                <span class="ut-email-sys-time">${escHtml(timeStr)}</span>
+              </div>`;
+          }
+
+          return `
+            <div class="ut-email-card${isMine ? ' ut-email-card-mine' : ''}">
+              <div class="ut-email-card-header">
+                <div class="ut-email-avatar${isMine ? ' mine' : ''}">${senderInitial}</div>
+                <div class="ut-email-meta">
+                  <div class="ut-email-sender-row">
+                    <span class="ut-email-sender-name">${escHtml(msg.sender_name || 'Unknown')}</span>
+                    ${isMine ? '<span class="ut-email-you-tag">You</span>' : ''}
+                  </div>
+                  <div class="ut-email-time">${escHtml(timeStr)}</div>
+                </div>
+              </div>
+              <div class="ut-email-body">${escHtml(msg.body || '').replace(/\n/g, '<br>')}</div>
+            </div>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+
+  // Scroll to bottom of thread (newest message)
+  const area = document.getElementById('utMessagesArea');
+  if (area) setTimeout(() => { area.scrollTop = area.scrollHeight; }, 60);
+
+  document.getElementById('utConvBackBtn')?.addEventListener('click', () => {
+    utSelectedThread   = null;
+    utSelectedThreadId = null;
+    utView = 'list';
+    renderUtConversationPane();
+    document.querySelectorAll('.ut-thread-row').forEach(r => r.classList.remove('active'));
+  });
+
+  document.getElementById('utConvReplyBtn')?.addEventListener('click', () => {
+    stgReplyToMessage = t.raw;
+    utView = 'compose';
+    renderUtConversationPane();
+  });
+
+  document.getElementById('utConvDeleteBtn')?.addEventListener('click', async () => {
+    if (!t.raw?.id) return;
+    if (!confirm('Delete this message?')) return;
+    const msgId = t.raw.id;
+    const threadId = utSelectedThreadId;
+    // Immediately update UI state — no flicker/reappearance
+    utThreads = utThreads.filter(th => th.thread_id !== threadId);
+    utSelectedThread = null;
+    utSelectedThreadId = null;
+    utView = 'list';
+    // Clear conversation pane immediately
+    const convBody = document.getElementById('utConversationBody');
+    if (convBody) convBody.innerHTML = `<div class="ut-empty-state"><i class="ri-chat-3-line"></i><div>Select a thread to view the conversation</div></div>`;
+    // Re-render thread list immediately with updated state
+    renderUtThreadList();
+    try {
+      const res = await fetch(`/api/messages/${msgId}?user_id=${user.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        showToast('Delete failed.', 'error');
+        // Reload to restore accurate state
+        loadUnifiedInbox();
+        return;
+      }
+      showToast('Message deleted.', 'success');
+      // Refresh in background to stay in sync with server
+      loadUnifiedInbox();
+    } catch { showToast('Network error.', 'error'); loadUnifiedInbox(); }
+  });
+
+  document.getElementById('utConvCancelBtn')?.addEventListener('click', async () => {
+    if (!confirm('Cancel this request?')) return;
+    const btn = document.getElementById('utConvCancelBtn');
+    btn.disabled = true;
+    const reqType = t.req_type;
+    const reqId   = t.raw?.id;
+    try {
+      const res  = await fetch(`/api/users/${user.id}/my-requests/${reqType}/${reqId}/cancel`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showToast(data.error || 'Cancel failed.', 'error'); return; }
+      showToast('Request cancelled.', 'success');
+      utSelectedThread = null; utSelectedThreadId = null;
+      loadUnifiedInbox();
+    } catch { showToast('Network error.', 'error'); }
+    finally { if (btn) btn.disabled = false; }
+  });
+}
+
+function renderUtComposeView(container, existingDraft = null) {
+  const reply = stgReplyToMessage;
+  const isDraftEdit = !!existingDraft;
+  const draftId = existingDraft?.id || null;
+
+  const defaultSubject = existingDraft?.subject ||
+    (reply ? ((reply.subject || '').startsWith('Re:') ? reply.subject : `Re: ${reply.subject || ''}`) : '');
+  const defaultBody = existingDraft?.body ||
+    (reply ? `\n\n--- Original ---\n${reply.body || ''}` : '');
+  const defaultRecipient = existingDraft?.recipient_id || (reply ? reply.sender_id : '');
+
+  container.innerHTML = `
+    <div class="ut-conv-wrap">
+      <div class="ut-conv-header">
+        <div class="ut-conv-title-row">
+          <button class="ut-back-btn" id="utComposeBackBtn"><i class="ri-arrow-left-line"></i></button>
+          <div class="ut-conv-title"><i class="ri-edit-box-line"></i> ${isDraftEdit ? 'Edit Draft' : 'New Message'}</div>
+        </div>
+      </div>
+      <div class="ut-compose-body">
+        <div class="ut-compose-form">
+          <div class="ut-form-group">
+            <label class="ut-form-label">To</label>
+            <select id="utMsgRecipient" class="ut-form-select" ${stgUsers.length ? '' : 'disabled'}>
+              <option value="">${stgUsers.length ? 'Select recipient…' : 'No users available'}</option>
+              ${stgUsers.map(u => `
+                <option value="${u.id}" ${Number(defaultRecipient) === Number(u.id) ? 'selected' : ''}>
+                  ${escHtml(u.full_name || u.email)}${u.role ? ` (${escHtml(u.role)})` : ''}
+                </option>`).join('')}
+            </select>
+          </div>
+          <div class="ut-form-group">
+            <label class="ut-form-label">Subject</label>
+            <input type="text" id="utMsgSubject" class="ut-form-input" value="${escHtml(defaultSubject)}" placeholder="Enter subject…">
+          </div>
+          <div class="ut-form-group">
+            <label class="ut-form-label">Message</label>
+            <textarea id="utMsgBody" class="ut-form-textarea" placeholder="Write your message…">${escHtml(defaultBody)}</textarea>
+          </div>
+          <div class="ut-compose-footer">
+            <button class="ut-action-btn" id="utSaveDraftBtn"><i class="ri-save-line"></i> Save Draft</button>
+            <button class="ut-action-btn" id="utComposeCancelBtn">Discard</button>
+            <button class="ut-action-btn primary" id="utComposeSendBtn">
+              <i class="ri-send-plane-fill"></i> Send
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const goBack = (saveDraft = false) => {
+    if (saveDraft) {
+      const recipient_id = document.getElementById('utMsgRecipient')?.value;
+      const subject      = document.getElementById('utMsgSubject')?.value.trim();
+      const body         = document.getElementById('utMsgBody')?.value.trim();
+      // Only save as draft if there's some content
+      if (subject || body) {
+        const draft = {
+          id: draftId || ('draft_' + Date.now()),
+          recipient_id,
+          subject,
+          body,
+          created_at: new Date().toISOString()
+        };
+        // Remove old version if editing
+        if (draftId) utDrafts = utDrafts.filter(d => d.id !== draftId);
+        utDrafts.unshift(draft);
+        showToast('Draft saved.', 'success');
+      }
+    } else {
+      // Discard — remove if editing
+      if (draftId) utDrafts = utDrafts.filter(d => d.id !== draftId);
+    }
+    stgReplyToMessage = null;
+    utView = utSelectedThread ? 'thread' : 'list';
+    renderUtConversationPane();
+    // If in drafts folder, refresh list
+    if (utFolder === 'drafts') renderUtThreadList();
+  };
+
+  document.getElementById('utComposeBackBtn')?.addEventListener('click', () => goBack(true));
+  document.getElementById('utComposeCancelBtn')?.addEventListener('click', () => goBack(false));
+  document.getElementById('utSaveDraftBtn')?.addEventListener('click', () => {
+    const recipient_id = document.getElementById('utMsgRecipient')?.value;
+    const subject      = document.getElementById('utMsgSubject')?.value.trim();
+    const body         = document.getElementById('utMsgBody')?.value.trim();
+    const draft = {
+      id: draftId || ('draft_' + Date.now()),
+      recipient_id,
+      subject,
+      body,
+      created_at: new Date().toISOString()
+    };
+    if (draftId) utDrafts = utDrafts.filter(d => d.id !== draftId);
+    utDrafts.unshift(draft);
+    showToast('Draft saved.', 'success');
+    stgReplyToMessage = null;
+    utFolder = 'drafts';
+    utFilter = 'messages';
+    utView = 'list';
+    loadUnifiedInbox();
+  });
+
+  document.getElementById('utComposeSendBtn')?.addEventListener('click', async () => {
+    const recipient_id = document.getElementById('utMsgRecipient')?.value;
+    const subject      = document.getElementById('utMsgSubject')?.value.trim();
+    const body         = document.getElementById('utMsgBody')?.value.trim();
+    const btn          = document.getElementById('utComposeSendBtn');
+
+    if (!recipient_id || !subject || !body) {
+      showToast('Recipient, subject, and message are required.', 'error');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Sending…';
+
+    try {
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_id: Number(user.id),
+          recipient_id: Number(recipient_id),
+          subject, body,
+          parent_message_id: reply ? Number(reply.id) : null
+        })
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) { showToast(result.error || 'Send failed.', 'error'); return; }
+
+      // Remove from drafts if was a draft
+      if (draftId) utDrafts = utDrafts.filter(d => d.id !== draftId);
+
+      // Optimistically add the sent message to utThreads so it shows immediately in Sent folder
+      const recipientUser = stgUsers.find(u => Number(u.id) === Number(recipient_id));
+      const optimisticThread = {
+        thread_id: `msg_${result.id}`,
+        type: 'message',
+        status: null,
+        title: subject,
+        summary: body.replace(/\s+/g, ' ').trim().slice(0, 120),
+        sender_name: 'You',
+        sender_id: Number(user.id),
+        recipient_id: Number(recipient_id),
+        recipient_name: recipientUser ? (recipientUser.full_name || recipientUser.email) : 'Unknown',
+        is_read: true,
+        created_at: result.created_at || new Date().toISOString(),
+        updated_at: result.created_at || new Date().toISOString(),
+        raw: result,
+      };
+      // Remove any duplicate (by thread_id) then prepend
+      utThreads = [optimisticThread, ...utThreads.filter(t => t.thread_id !== optimisticThread.thread_id)];
+
+      stgReplyToMessage = null;
+      utSelectedThread   = null;
+      utSelectedThreadId = null;
+      utFolder = 'sent'; // Switch to sent folder after sending
+      utFilter = 'messages';
+      utView = 'list';
+      showToast('Message sent.', 'success');
+      // Render the shell immediately with optimistic data (no flicker)
+      renderUnifiedInbox();
+      // Then background-refresh to sync with server
+      loadUnifiedInbox();
+    } catch { showToast('Network error.', 'error'); }
+    finally { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-fill"></i> Send'; } }
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   RELATIVE TIME HELPER
+═══════════════════════════════════════════════════════════ */
+function relativeTime(dateStr) {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins  = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days  = Math.floor(diff / 86400000);
+  if (mins < 1)   return 'just now';
+  if (mins < 60)  return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7)   return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
 async function loadStgMessagingData() {
   try {
     const [usersRes, msgRes] = await Promise.all([
@@ -9384,7 +10222,16 @@ async function loadStgMessagingData() {
 
     stgUsers = Array.isArray(usersData) ? usersData : [];
     stgMessages = Array.isArray(msgData) ? msgData : [];
-    renderStgMessagingLayout();
+
+    // If shell already exists, only update the main section to prevent flicker
+    const mount = document.getElementById('stgMessagingMount');
+    const shellExists = mount && !!mount.querySelector('.stg-msg-shell');
+    if (shellExists && stgMessagingView === 'list') {
+      const main = document.getElementById('stgMsgMain');
+      if (main) renderStgMessageList(main);
+    } else {
+      renderStgMessagingLayout();
+    }
   } catch (err) {
     const mount = document.getElementById('stgMessagingMount');
     if (mount) {
@@ -9438,6 +10285,16 @@ function renderStgMessagingLayout() {
       stgSelectedMessage = null;
       stgReplyToMessage = null;
       stgMessagingView = 'list';
+
+      // Update active state immediately without full re-render
+      mount.querySelectorAll('.stg-msg-folder').forEach(b => {
+        b.classList.toggle('active', b.dataset.folder === stgMessageFolder);
+      });
+
+      // Show loading only in message list area (no shell flicker)
+      const main = document.getElementById('stgMsgMain');
+      if (main) main.innerHTML = `<div class="stg-msg-empty"><i class="ri-loader-4-line spin"></i></div>`;
+
       await loadStgMessagingData();
     });
   });
@@ -9618,21 +10475,25 @@ function renderStgMessageView(container, msg) {
   });
 
   document.getElementById('stgMsgDeleteBtn')?.addEventListener('click', async () => {
+    if (!confirm('Delete this message?')) return;
+    // Immediately update state to prevent reappearance
+    stgMessages = stgMessages.filter(m => Number(m.id) !== Number(msg.id));
+    stgSelectedMessage = null;
+    stgMessagingView = 'list';
+    renderStgMessagingLayout(); // optimistic re-render
     try {
       const res = await fetch(`/api/messages/${msg.id}?user_id=${user.id}`, { method: 'DELETE' });
-      const result = await res.json();
-
+      const result = await res.json().catch(() => ({}));
       if (!res.ok) {
         showToast(result.error || 'Delete failed.', 'error');
+        await loadStgMessagingData(); // restore accurate state
         return;
       }
-
-      stgSelectedMessage = null;
-      stgMessagingView = 'list';
-      await loadStgMessagingData();
       showToast('Message deleted.', 'success');
+      await loadStgMessagingData(); // sync with server
     } catch {
       showToast('Network error.', 'error');
+      await loadStgMessagingData();
     }
   });
 }
@@ -9741,8 +10602,26 @@ function renderStgComposeView(container) {
       stgReplyToMessage = null;
       stgSelectedMessage = null;
       stgMessagingView = 'list';
-      await loadStgMessagingData();
+
+      // Optimistically add sent message to stgMessages so Sent folder shows it immediately
+      const recipientUser = stgUsers.find(u => Number(u.id) === Number(recipient_id));
+      const optimisticMsg = {
+        id: result.id,
+        sender_id: Number(user.id),
+        recipient_id: Number(recipient_id),
+        subject,
+        body,
+        is_read: true,
+        created_at: result.created_at || new Date().toISOString(),
+        sender_name: user.full_name || user.email || 'You',
+        sender_email: user.email || '',
+        recipient_name: recipientUser ? (recipientUser.full_name || recipientUser.email) : 'Unknown',
+        recipient_email: recipientUser ? (recipientUser.email || '') : '',
+      };
+      stgMessages = [optimisticMsg, ...stgMessages.filter(m => Number(m.id) !== Number(result.id))];
+
       showToast('Message sent successfully.', 'success');
+      await loadStgMessagingData(); // sync with server
     } catch (err) {
       showToast('Network error.', 'error');
     } finally {
@@ -9776,6 +10655,8 @@ async function sendRequestNotification(requestType, details) {
     });
     // Silently reload inbox so the new thread appears immediately
     if (stgMessageFolder === 'inbox') loadStgMessagingData();
+    // Reload unified inbox if visible
+    if (document.getElementById('utInboxMount')?.closest('.stg-panel.active')) loadUnifiedInbox();
     // Reload My Requests table if the full-page view is currently open
     const reqMount = document.getElementById('stgRequestsMount');
     if (reqMount) loadMyRequests();
@@ -9783,46 +10664,30 @@ async function sendRequestNotification(requestType, details) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   MY REQUESTS — full-page loader (replaces mainContent)
-   Same pattern as loadDashboard(), loadMap(), etc.
+   MY REQUESTS — redirects to Unified Inbox → Requests filter
+   Kept for backward-compat (called from request forms, cancel, etc.)
 ═══════════════════════════════════════════════════════════ */
 function loadMyRequestsPage() {
-  mainContent.innerHTML = `
-    <div class="myreq-page">
-
-      <!-- Page header -->
-      <div class="myreq-page-header">
-        <div class="myreq-page-header-left">
-          <button class="myreq-back-btn" id="myReqBackBtn">
-            <i class="ri-arrow-left-line"></i> Back to Settings
-          </button>
-          <div>
-            <h2 class="myreq-title"><i class="ri-file-list-3-line"></i> My Requests</h2>
-            <p class="myreq-subtitle">Track your leave, ID, salary, and files requests</p>
-          </div>
-        </div>
-        <button class="stg-outline-btn" id="myReqRefreshBtn">
-          <i class="ri-refresh-line"></i> Refresh
-        </button>
-      </div>
-
-      <!-- Content area -->
-      <div class="myreq-body">
-        <div id="stgRequestsMount">
-          <div class="stg-req-empty">
-            <i class="ri-loader-4-line spin"></i>
-            <span>Loading requests…</span>
-          </div>
-        </div>
-      </div>
-
-    </div>
-  `;
-
-  document.getElementById('myReqBackBtn').addEventListener('click', () => loadSettings());
-  document.getElementById('myReqRefreshBtn').addEventListener('click', () => loadMyRequests());
-
-  loadMyRequests();
+  // Open Settings and activate the Inbox tab with Requests filter
+  loadSettings();
+  requestAnimationFrame(() => {
+    const inboxNavBtn = document.querySelector('.stg-navitem[data-tab="inbox"]');
+    const inboxPanel  = document.getElementById('stg-tab-inbox');
+    if (inboxNavBtn && inboxPanel) {
+      document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
+      inboxNavBtn.classList.add('active');
+      inboxPanel.classList.add('active');
+    }
+    utFilter           = 'requests';
+    utFolder           = 'requests';
+    utStatusFilter     = 'all';
+    utSearch           = '';
+    utSelectedThreadId = null;
+    utSelectedThread   = null;
+    utView             = 'list';
+    loadUnifiedInbox();
+  });
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -9931,24 +10796,25 @@ function renderMyRequestsTable(mount, rows) {
     btn.addEventListener('click', () => {
       const type = btn.dataset.type;
       const tc   = typeConfig[type] || { label: type };
-      // Set filter BEFORE loading settings so messaging picks it up
-      stgMessageFolder   = 'inbox';
-      stgSelectedMessage = null;
-      stgReplyToMessage  = null;
-      stgMessagingView   = 'list';
-      stgRequestFilter   = tc.label;
-      // Load settings page, then programmatically switch to messaging tab
+      // Open unified inbox with Requests filter
       loadSettings();
-      // After loadSettings() re-renders the DOM, activate the messaging tab
       requestAnimationFrame(() => {
-        const msgNavBtn = document.querySelector('.stg-navitem[data-tab="messaging"]');
-        const msgPanel  = document.getElementById('stg-tab-messaging');
-        if (msgNavBtn && msgPanel) {
+        const inboxNavBtn = document.querySelector('.stg-navitem[data-tab="inbox"]');
+        const inboxPanel  = document.getElementById('stg-tab-inbox');
+        if (inboxNavBtn && inboxPanel) {
           document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
           document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
-          msgNavBtn.classList.add('active');
-          msgPanel.classList.add('active');
+          inboxNavBtn.classList.add('active');
+          inboxPanel.classList.add('active');
         }
+        utFilter           = 'requests';
+        utFolder           = 'requests';
+        utStatusFilter     = 'all';
+        utSearch           = '';
+        utSelectedThreadId = null;
+        utSelectedThread   = null;
+        utView             = 'list';
+        loadUnifiedInbox();
       });
     });
   });
