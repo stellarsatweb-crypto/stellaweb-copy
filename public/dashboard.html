@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NOC Dashboard</title>
+
+  <!-- Premium fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/remixicon/fonts/remixicon.css" rel="stylesheet">
+
+  <link rel="stylesheet" href="noc-dashboard.css">
+  <script defer src="noc-dashboard.js"></script>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+
+    <!-- Logo + status indicator -->
+    <div class="logo">
+      <img src="logo.png" alt="Logo" class="logo-img">
+      <div class="sidebar-status">
+        <span class="sidebar-status-dot"></span>
+        <span class="sidebar-status-label">Online</span>
+      </div>
+    </div>
+
+    <!-- Navigation menu (rendered by JS) -->
+    <ul class="menu" id="sidebarMenu"></ul>
+
+    <!-- Collapse / expand toggle -->
+    <button id="toggleSidebar" class="collapse-btn" title="Toggle sidebar">
+      <i class="ri-arrow-left-s-line"></i>
+    </button>
+
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+    <div id="mainContent"></div>
+  </main>
+
+</div>
+
+</body>
+</html>

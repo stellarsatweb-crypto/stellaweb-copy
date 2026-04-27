@@ -1,0 +1,4381 @@
+const path = require('path');
+const express = require('express');
+const cors = require('cors');
+const bcrypt = require('bcryptjs');
+const { Pool } = require('pg');
+const ExcelJS = require('exceljs');
+const multer  = require('multer');
+
+const app = express();
+const PORT = Number(process.env.PORT) || 3001;
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json());
+app.options('*', cors());
+app.use(express.static(path.join(__dirname, 'public')));
+
+/* ================= POSTGRES CONNECTION ================= */
+
+const pool = new Pool({
+  user: 'postgres',
+  host: 'localhost',
+  database: 'demo',
+  password: '12345',
+  port: 5432,
+});
+
+pool.connect()
+  .then(() => console.log('Connected to PostgreSQL ✅'))
+  .catch(err => { console.error('Database connection error ❌', err); process.exit(1); });
+
+/* ================= CREATE TABLE ================= */
+
+const createTable = `
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  id_no         CITEXT UNIQUE NOT NULL,
+  full_name     CITEXT NOT NULL,
+  email         CITEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role          CITEXT NOT NULL CHECK (LOWER(role) IN ('executive','finance','noc','admin','bidder')),
+  photo         TEXT,
+  created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+pool.query(createTable)
+  .then(() => console.log('Users table ready ✅'))
+  .catch(err => console.error('Table creation error:', err));
+
+const createProbTable = `
+CREATE TABLE IF NOT EXISTS problematic_sites (
+  id SERIAL PRIMARY KEY,
+  "Sitename" TEXT,
+  "Province" TEXT,
+  "Municipality" TEXT,
+  "Region" TEXT,
+  "Status" TEXT,
+  "Cause (Assume)" TEXT,
+  "Remarks" TEXT,
+  "KAD Name" TEXT,
+  "KAD Visit Date" DATE,
+  "Site Online Date" DATE,
+  "Found Problem / Cause in the Site" TEXT,
+  "Solution" TEXT
+);
+`;
+
+(async () => {
+  try {
+    await pool.query(createProbTable);
+    console.log('Problematic sites table ready ✅');
+
+    const migrations = [
+      `ALTER TABLE problematic_sites ALTER COLUMN "Sitename" DROP NOT NULL`,
+      `ALTER TABLE problematic_sites ADD COLUMN IF NOT EXISTS "Region" TEXT`,
+    ];
+    for (const sql of migrations) {
+      try { await pool.query(sql); } catch(e) { /* already applied */ }
+    }
+    console.log('Problematic sites migrations applied ✅');
+  } catch (err) {
+    console.error('Problematic sites setup error:', err.message);
+  }
+})();
+
+const createTicketTable = `
+CREATE TABLE IF NOT EXISTS ticket_information (
+  id SERIAL PRIMARY KEY,
+  subject VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL,
+  airmac_esn VARCHAR(100),
+  status VARCHAR(50) NOT NULL DEFAULT 'Open',
+  department VARCHAR(100) DEFAULT 'NOC Department',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+pool.query(createTicketTable)
+  .then(() => console.log('Ticket table ready ✅'))
+  .catch(err => console.error('Ticket table creation error:', err));
+
+/* ================= IN-APP MESSAGING TABLE ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS in_app_messages (
+        id SERIAL PRIMARY KEY,
+        sender_id INT REFERENCES users(id) ON DELETE SET NULL,
+        recipient_id INT REFERENCES users(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_sender BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_recipient BOOLEAN NOT NULL DEFAULT FALSE,
+        parent_message_id INT REFERENCES in_app_messages(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_recipient
+      ON in_app_messages (recipient_id, created_at DESC)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_sender
+      ON in_app_messages (sender_id, created_at DESC)
+    `);
+
+    console.log('In-app messages table ready ✅');
+
+try {
+  const usersRes = await pool.query(`SELECT id FROM users ORDER BY id ASC LIMIT 2`);
+  if (usersRes.rows.length >= 2) {
+    const userA = usersRes.rows[0].id;
+    const userB = usersRes.rows[1].id;
+
+    const existingMsg = await pool.query(`SELECT id FROM in_app_messages LIMIT 1`);
+    if (!existingMsg.rowCount) {
+      await pool.query(
+        `
+        INSERT INTO in_app_messages (sender_id, recipient_id, subject, body)
+        VALUES
+          ($1, $2, 'Welcome to In-App Messaging', 'This is a sample inbox message.'),
+          ($2, $1, 'Re: Welcome to In-App Messaging', 'Reply message sample for testing.')
+        `,
+        [userA, userB]
+      );
+      console.log('Seeded sample in-app messages ✅');
+    }
+  }
+} catch (seedErr) {
+  console.error('In-app messages seed error:', seedErr.message);
+}
+  } catch (err) {
+    console.error('In-app messages table setup error:', err.message);
+  }
+})();
+
+const financeTableStatements = [
+  `
+    CREATE TABLE IF NOT EXISTS finance_company_income (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'completed',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_company_expenses (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'completed',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_project_expenses (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      project_name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'completed',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_collections (
+      id SERIAL PRIMARY KEY,
+      date DATE NOT NULL,
+      client_name TEXT NOT NULL,
+      project_name TEXT,
+      due_date DATE NOT NULL,
+      amount_due NUMERIC(12,2) NOT NULL DEFAULT 0,
+      amount_collected NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `
+];
+
+(async () => {
+  try {
+    for (const sql of financeTableStatements) await pool.query(sql);
+    await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS lot TEXT`);
+    await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS source TEXT`);
+    await pool.query(`ALTER TABLE finance_company_expenses ADD COLUMN IF NOT EXISTS expense_group TEXT DEFAULT 'expenses'`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_reimburse_requests (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        role TEXT,
+        request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        description TEXT NOT NULL,
+        amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_budget_requests (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        role TEXT,
+        request_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        description TEXT NOT NULL,
+        amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_salary_advances (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        advance_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+        balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+        advance_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('Finance tables ready âœ…');
+  } catch (err) {
+    console.error('Finance setup error:', err.message);
+  }
+})();
+
+const FINANCE_RESOURCES = {
+  company_income: {
+    table: 'finance_company_income',
+    fields: ['date', 'lot', 'source', 'description', 'category', 'amount', 'status', 'notes'],
+    required: ['date', 'source', 'description', 'amount', 'status']
+  },
+  company_expenses: {
+    table: 'finance_company_expenses',
+    fields: ['date', 'expense_group', 'description', 'category', 'amount', 'status', 'notes'],
+    required: ['date', 'expense_group', 'description', 'category', 'amount', 'status']
+  },
+  project_expenses: {
+    table: 'finance_project_expenses',
+    fields: ['date', 'project_name', 'description', 'amount', 'status', 'notes'],
+    required: ['date', 'project_name', 'description', 'amount', 'status']
+  },
+  collections: {
+    table: 'finance_collections',
+    fields: ['date', 'client_name', 'project_name', 'due_date', 'amount_due', 'amount_collected', 'status', 'notes'],
+    required: ['date', 'client_name', 'due_date', 'amount_due', 'amount_collected', 'status']
+  }
+};
+
+function financeRole(req) {
+  return String(req.headers['x-user-role'] || '').trim().toLowerCase();
+}
+
+function financeUserId(req) {
+  const id = Number(req.headers['x-user-id']);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function ensureFinanceAccess(req, res, next) {
+  const role = financeRole(req);
+  if (!['finance', 'admin', 'executive'].includes(role)) {
+    return res.status(403).json({ error: 'Finance access required' });
+  }
+  next();
+}
+
+function getFinanceResource(key) {
+  return FINANCE_RESOURCES[key] || null;
+}
+
+function sanitizeFinancePayload(resource, body = {}) {
+  const payload = {};
+  for (const field of resource.fields) {
+    const raw = body[field];
+    payload[field] = raw === undefined ? null : raw;
+  }
+  for (const field of resource.required) {
+    if (payload[field] === null || payload[field] === '') {
+      throw new Error(`${field} is required`);
+    }
+  }
+  return payload;
+}
+
+/* ================= AUTH ROUTE ================= */
+
+app.post('/api/auth', async (req, res) => {
+  console.log("REQUEST BODY:", req.body);
+  const { action, id_no, full_name, email, password, role } = req.body || {};
+  try {
+    if (!action) return res.status(400).json({ success: false, error: 'Action is required' });
+
+    if (action === 'signup') {
+      if (!id_no || !full_name || !email || !password || !role)
+        return res.status(400).json({ success: false, error: 'All fields are required' });
+      const trimmedId = id_no.trim();
+      const trimmedName = full_name.trim();
+      const trimmedEmail = email.trim().toLowerCase();
+      const existing = await pool.query('SELECT id FROM users WHERE id_no = $1 OR email = $2', [trimmedId, trimmedEmail]);
+      if (existing.rows.length > 0) return res.status(409).json({ success: false, error: 'User already exists' });
+      const hash = await bcrypt.hash(password, 10);
+      const result = await pool.query(
+        `INSERT INTO users (id_no, full_name, email, password_hash, role) VALUES ($1,$2,$3,$4,$5) RETURNING id, id_no, full_name, email, role, created_at`,
+        [trimmedId, trimmedName, trimmedEmail, hash, role]
+      );
+      return res.json({ success: true, user: result.rows[0] });
+    }
+
+    if (action === 'signin') {
+      if (!id_no || !password) return res.status(400).json({ success: false, error: 'ID Number and password are required' });
+      const trimmedId = id_no.trim();
+      const result = await pool.query('SELECT * FROM users WHERE id_no = $1', [trimmedId]);
+      if (result.rows.length === 0) return res.status(401).json({ success: false, error: 'Invalid credentials' });
+      const user = result.rows[0];
+      const validPassword = await bcrypt.compare(password, user.password_hash);
+      if (!validPassword) return res.status(401).json({ success: false, error: 'Invalid credentials' });
+      delete user.password_hash;
+      return res.json({ success: true, user }); // includes photo field
+    }
+
+    return res.status(400).json({ success: false, error: 'Invalid action' });
+  } catch (err) {
+    console.error('API error:', err);
+    return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/* ================= FINANCE ROUTES ================= */
+
+app.get('/api/finance/summary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const [income, companyExpenses, projectExpenses, collections, recentTx, recentCollections] = await Promise.all([
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM finance_company_income WHERE LOWER(status) <> 'cancelled'`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM finance_company_expenses WHERE LOWER(status) <> 'cancelled'`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) AS total FROM finance_project_expenses WHERE LOWER(status) <> 'cancelled'`),
+      pool.query(`
+        SELECT
+          COALESCE(SUM(amount_collected),0) AS collected,
+          COALESCE(SUM(GREATEST(amount_due - amount_collected, 0)),0) AS outstanding
+        FROM finance_collections
+        WHERE LOWER(status) <> 'cancelled'
+      `),
+      pool.query(`
+        SELECT * FROM (
+          SELECT id, date, description, category, amount, status, 'income' AS record_type FROM finance_company_income
+          UNION ALL
+          SELECT id, date, description, category, amount, status, 'company_expense' AS record_type FROM finance_company_expenses
+          UNION ALL
+          SELECT id, date, description, project_name AS category, amount, status, 'project_expense' AS record_type FROM finance_project_expenses
+        ) t
+        ORDER BY date DESC, id DESC
+        LIMIT 8
+      `),
+      pool.query(`
+        SELECT id, date, client_name, project_name, due_date, amount_due, amount_collected, status
+        FROM finance_collections
+        ORDER BY due_date ASC, id DESC
+        LIMIT 8
+      `)
+    ]);
+
+    const totalIncome = Number(income.rows[0]?.total || 0);
+    const companyTotal = Number(companyExpenses.rows[0]?.total || 0);
+    const projectTotal = Number(projectExpenses.rows[0]?.total || 0);
+    const collectionsTotal = Number(collections.rows[0]?.collected || 0);
+    const outstandingTotal = Number(collections.rows[0]?.outstanding || 0);
+
+    res.json({
+      total_income: totalIncome,
+      company_expenses: companyTotal,
+      project_expenses: projectTotal,
+      total_collections: collectionsTotal,
+      outstanding_collections: outstandingTotal,
+      net_cashflow: totalIncome - companyTotal - projectTotal + collectionsTotal,
+      recent_transactions: recentTx.rows,
+      collection_rows: recentCollections.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/report', ensureFinanceAccess, async (req, res) => {
+  try {
+    const totalsPromise = pool.query(`
+      SELECT
+        (SELECT COALESCE(SUM(amount),0) FROM finance_company_income WHERE LOWER(status) <> 'cancelled') AS total_income,
+        (SELECT COALESCE(SUM(amount),0) FROM finance_company_expenses WHERE LOWER(status) <> 'cancelled') AS company_expenses,
+        (SELECT COALESCE(SUM(amount),0) FROM finance_project_expenses WHERE LOWER(status) <> 'cancelled') AS project_expenses,
+        (SELECT COALESCE(SUM(amount_collected),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled') AS total_collections,
+        (SELECT COALESCE(SUM(GREATEST(amount_due - amount_collected, 0)),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled') AS outstanding_collections
+    `);
+
+    const monthlyPromise = pool.query(`
+      WITH monthly AS (
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'income' AS kind
+        FROM finance_company_income
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'company_expenses' AS kind
+        FROM finance_company_expenses
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'project_expenses' AS kind
+        FROM finance_project_expenses
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+        UNION ALL
+        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount_collected) AS amount, 'collections' AS kind
+        FROM finance_collections
+        WHERE LOWER(status) <> 'cancelled'
+        GROUP BY 1
+      )
+      SELECT
+        month_bucket,
+        TO_CHAR(month_bucket, 'Mon YYYY') AS month_label,
+        COALESCE(SUM(CASE WHEN kind='income' THEN amount END),0) AS income,
+        COALESCE(SUM(CASE WHEN kind='company_expenses' THEN amount END),0) AS company_expenses,
+        COALESCE(SUM(CASE WHEN kind='project_expenses' THEN amount END),0) AS project_expenses,
+        COALESCE(SUM(CASE WHEN kind='collections' THEN amount END),0) AS collections
+      FROM monthly
+      GROUP BY month_bucket
+      ORDER BY month_bucket DESC
+      LIMIT 12
+    `);
+
+    const [totalsRes, monthlyRes] = await Promise.all([totalsPromise, monthlyPromise]);
+    const totals = totalsRes.rows[0] || {};
+    const monthly = monthlyRes.rows.map(row => ({
+      ...row,
+      income: Number(row.income || 0),
+      company_expenses: Number(row.company_expenses || 0),
+      project_expenses: Number(row.project_expenses || 0),
+      collections: Number(row.collections || 0),
+      net: Number(row.income || 0) - Number(row.company_expenses || 0) - Number(row.project_expenses || 0) + Number(row.collections || 0)
+    }));
+
+    res.json({
+      totals: {
+        total_income: Number(totals.total_income || 0),
+        company_expenses: Number(totals.company_expenses || 0),
+        project_expenses: Number(totals.project_expenses || 0),
+        total_collections: Number(totals.total_collections || 0),
+        outstanding_collections: Number(totals.outstanding_collections || 0)
+      },
+      monthly
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/employees', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, id_no, full_name, email, role, created_at
+      FROM users
+      ORDER BY full_name ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/records/:resource', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const result = await pool.query(`SELECT * FROM ${resource.table} ORDER BY date DESC, id DESC`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/finance/records/:resource', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const payload = sanitizeFinancePayload(resource, req.body || {});
+    const fields = [...resource.fields, 'created_by'];
+    const values = [...resource.fields.map(field => payload[field]), financeUserId(req)];
+    const placeholders = fields.map((_, idx) => `$${idx + 1}`).join(', ');
+    const result = await pool.query(
+      `INSERT INTO ${resource.table} (${fields.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+      values
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/finance/records/:resource/:id', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const payload = sanitizeFinancePayload(resource, req.body || {});
+    const setClause = [...resource.fields.map((field, idx) => `${field}=$${idx + 1}`), `updated_at=NOW()`].join(', ');
+    const values = [...resource.fields.map(field => payload[field]), req.params.id];
+    const result = await pool.query(
+      `UPDATE ${resource.table} SET ${setClause} WHERE id=$${resource.fields.length + 1} RETURNING *`,
+      values
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Record not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/finance/records/:resource/:id', ensureFinanceAccess, async (req, res) => {
+  const resource = getFinanceResource(req.params.resource);
+  if (!resource) return res.status(404).json({ error: 'Finance resource not found' });
+  try {
+    const result = await pool.query(`DELETE FROM ${resource.table} WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Record not found' });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/employee/reimburse', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, role, request_date, description, amount, status, comment
+      FROM employee_reimburse_requests
+      WHERE employee_name ILIKE $1 OR role ILIKE $1 OR description ILIKE $1
+      ORDER BY request_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/budget', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, role, request_date, description, amount, status, comment
+      FROM employee_budget_requests
+      WHERE employee_name ILIKE $1 OR role ILIKE $1 OR description ILIKE $1
+      ORDER BY request_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/employee/:type/:id/action', ensureFinanceAccess, async (req, res) => {
+  const table = req.params.type === 'reimburse'
+    ? 'employee_reimburse_requests'
+    : req.params.type === 'budget'
+      ? 'employee_budget_requests'
+      : null;
+  if (!table) return res.status(404).json({ error: 'Employee request type not found' });
+  try {
+    const { status, comment } = req.body || {};
+    if (!status) return res.status(400).json({ error: 'status is required' });
+    const result = await pool.query(
+      `UPDATE ${table} SET status=$1, comment=$2 WHERE id=$3 RETURNING *`,
+      [status, comment || null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, advance_amount, balance, advance_date, status
+      FROM employee_salary_advances
+      WHERE employee_name ILIKE $1
+      ORDER BY advance_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM employee_salary_advances WHERE id=$1`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_name, advance_amount, balance, advance_date, status } = req.body || {};
+    if (!employee_name?.trim()) return res.status(400).json({ error: 'employee_name is required' });
+    const result = await pool.query(`
+      INSERT INTO employee_salary_advances (employee_name, advance_amount, balance, advance_date, status)
+      VALUES ($1,$2,$3,$4,$5)
+      RETURNING *
+    `, [
+      employee_name.trim(),
+      Number(advance_amount || 0),
+      Number(balance || 0),
+      advance_date || new Date().toISOString().slice(0, 10),
+      status || 'Pending'
+    ]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_name, advance_amount, balance, advance_date, status } = req.body || {};
+    if (!employee_name?.trim()) return res.status(400).json({ error: 'employee_name is required' });
+    const result = await pool.query(`
+      UPDATE employee_salary_advances
+      SET employee_name=$1, advance_amount=$2, balance=$3, advance_date=$4, status=$5
+      WHERE id=$6
+      RETURNING *
+    `, [
+      employee_name.trim(),
+      Number(advance_amount || 0),
+      Number(balance || 0),
+      advance_date || new Date().toISOString().slice(0, 10),
+      status || 'Pending',
+      req.params.id
+    ]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM employee_salary_advances WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ================= TERMINALS TABLE MAP ================= */
+
+/* ================= REGIONS API ================= */
+
+// GET all regions
+app.get('/api/regions', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM regions ORDER BY lot_number`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new region
+app.post('/api/regions', async (req, res) => {
+  const { region_name } = req.body || {};
+  if (!region_name?.trim()) return res.status(400).json({ error: 'region_name is required' });
+  try {
+    const maxLot = await pool.query(`SELECT COALESCE(MAX(lot_number),0)+1 AS next FROM regions`);
+    const next = maxLot.rows[0].next;
+    const result = await pool.query(
+      `INSERT INTO regions (lot_number, region_name) VALUES ($1, $2) RETURNING *`,
+      [next, region_name.trim().toUpperCase()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Region already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= GET TERMINALS ================= */
+
+app.get('/api/terminals/:region', async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  try {
+    const result = await pool.query(
+      `SELECT * FROM site_inventory WHERE UPPER(region_name) = $1 ORDER BY id`,
+      [region]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('DB ERROR:', err.message);
+    res.status(500).json({ error: 'Database query failed' });
+  }
+});
+
+/* ================= ADD TERMINAL (POST) ================= */
+
+app.post('/api/terminals/:region', async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  const data   = req.body || {};
+  // Always set region_name
+  data.region_name = region;
+  const filteredEntries = Object.entries(data).filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '');
+  if (filteredEntries.length === 0) return res.status(400).json({ error: 'No data provided' });
+  const columns      = filteredEntries.map(([k]) => `"${k}"`).join(', ');
+  const placeholders = filteredEntries.map((_, i) => `$${i + 1}`).join(', ');
+  const values       = filteredEntries.map(([, v]) => v);
+  try {
+    const result = await pool.query(
+      `INSERT INTO site_inventory (${columns}) VALUES (${placeholders}) RETURNING *`,
+      values
+    );
+    return res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('INSERT ERROR:', err.message);
+    return res.status(500).json({ error: 'Failed to insert record: ' + err.message });
+  }
+});
+
+/* ================= IMPORT TERMINALS (CSV/XLSX upload) ================= */
+
+app.post('/api/terminals/:region/import', multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } }).single('file'), async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  try {
+    const ext = req.file.originalname.split('.').pop().toLowerCase();
+    let raw = [];
+
+    // ── Fetch valid DB columns first (used for header detection too) ─────────
+    const colsRes   = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'site_inventory' AND column_name NOT IN ('id','region_name')`
+    );
+    const validCols = colsRes.rows.map(r => r.column_name);
+
+    // ── resolveHeader: map any file header string → exact DB column name ─────
+    // Handles: column reordering, embedded newlines, extra spaces, case differences
+    const normWS = s => String(s).replace(/\s+/g, ' ').trim().toLowerCase();
+    const resolveHeader = (fileHeader) => {
+      const raw = String(fileHeader);
+      const t   = raw.trim();
+      const n   = normWS(raw);
+      if (!t) return null;
+      // 1. Exact match
+      if (validCols.includes(t))                              return t;
+      // 2. Normalized whitespace (collapses \n, \t, multiple spaces)
+      const nm = validCols.find(c => normWS(c) === n);
+      if (nm)                                                 return nm;
+      // 3. Case-insensitive exact
+      const ci = validCols.find(c => c.toLowerCase() === t.toLowerCase());
+      if (ci)                                                 return ci;
+      // 4. Trim trailing/leading spaces then case-insensitive (e.g. "SPARE MODEM USED ")
+      const ts = validCols.find(c => c.trim().toLowerCase() === t.toLowerCase());
+      if (ts)                                                 return ts;
+      return null;
+    };
+
+    // ── Helper: extract plain string from ExcelJS cell value ─────────────────
+    const cellStr = (val) => {
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'object') {
+        if (Array.isArray(val.richText)) return val.richText.map(r => r.text ?? '').join('').trim();
+        if (val.result !== undefined)    return String(val.result).trim();
+        if (val instanceof Date)         return val.toISOString().slice(0, 10);
+        if (val.text !== undefined)      return String(val.text).trim();
+      }
+      return String(val).trim();
+    };
+
+    // ── Helper: score a row as a header candidate ─────────────────────────────
+    // Normalizes all whitespace before matching so "PHASE 1\n ORIGINAL AIRMAC" matches "PHASE 1 ORIGINAL AIRMAC"
+    const normWS2 = s => s.replace(/\s+/g, ' ').trim().toLowerCase();
+    const scoreAsHeader = (cells) => {
+      let score = 0;
+      for (const c of cells) {
+        if (!c.trim()) continue;
+        if (validCols.some(v => normWS2(v) === normWS2(c))) score++;
+      }
+      return score;
+    };
+
+    if (ext === 'csv') {
+      // Full RFC-4180 CSV parser — handles quoted fields with embedded newlines and commas
+      const text   = req.file.buffer.toString('utf8');
+      const fields = [];
+      let cur = '', inQ = false, i = 0;
+      while (i < text.length) {
+        const ch = text[i], nx = text[i + 1];
+        if (ch === '"' && inQ && nx === '"') { cur += '"'; i += 2; continue; }
+        if (ch === '"') { inQ = !inQ; i++; continue; }
+        if (ch === ',' && !inQ) { fields.push(cur); cur = ''; i++; continue; }
+        if ((ch === '\n' || ch === '\r') && !inQ) {
+          // end of record
+          if (ch === '\r' && nx === '\n') i++;
+          fields.push(cur); cur = '';
+          i++;
+          // mark end of record with a sentinel
+          fields.push('\x00ROW\x00');
+          continue;
+        }
+        cur += ch; i++;
+      }
+      if (cur !== '') fields.push(cur);
+
+      // Split fields back into rows using sentinel
+      const allRows = [];
+      let rowBuf = [];
+      for (const f of fields) {
+        if (f === '\x00ROW\x00') { if (rowBuf.length) { allRows.push(rowBuf); rowBuf = []; } }
+        else rowBuf.push(f.trim());
+      }
+      if (rowBuf.length) allRows.push(rowBuf);
+
+      // Find header row by DB-column match score (checks normalized headers)
+      let headerIdx = 0, bestScore = -1;
+      for (let r = 0; r < Math.min(15, allRows.length); r++) {
+        const score = scoreAsHeader(allRows[r]);
+        if (score > bestScore) { bestScore = score; headerIdx = r; }
+      }
+
+      const headers = allRows[headerIdx];
+      raw = allRows.slice(headerIdx + 1)
+        .filter(row => row.some(v => v))
+        .map(vals => {
+          const obj = {};
+          headers.forEach((h, i) => { obj[h] = vals[i] ?? ''; });
+          return obj;
+        });
+
+    } else if (ext === 'xlsx') {
+      const ExcelJS = require('exceljs');
+      const wb      = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.file.buffer);
+
+      const ws = wb.worksheets.find(s => s.rowCount > 0) || wb.worksheets[0];
+      if (!ws) return res.status(400).json({ error: 'No worksheet found in file' });
+
+      // Scan first 15 rows — pick the one with the HIGHEST DB-column match score
+      let headerRowNum = 1, bestScore = -1;
+      for (let r = 1; r <= Math.min(15, ws.rowCount); r++) {
+        const cells = [];
+        ws.getRow(r).eachCell({ includeEmpty: false }, cell => cells.push(cellStr(cell.value)));
+        const score = scoreAsHeader(cells);
+        if (score > bestScore) { bestScore = score; headerRowNum = r; }
+      }
+
+      // Build colIndex map: DB column name → file column index (1-based)
+      // This is what makes order-independent mapping work:
+      // instead of assuming col 1 = first DB col, we match each header by name
+      const headerRow = ws.getRow(headerRowNum);
+      const colIndexMap = {}; // dbColName → excelColNum (1-based)
+      headerRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+        const raw = cellStr(cell.value);
+        if (!raw) return;
+        const dbCol = resolveHeader(raw);
+        if (dbCol) colIndexMap[dbCol] = colNum;
+      });
+
+      // Collect data rows — read each cell by its mapped column index, not position
+      ws.eachRow((row, rowNum) => {
+        if (rowNum <= headerRowNum) return;
+        const obj = {};
+        let hasValue = false;
+        for (const [dbCol, colNum] of Object.entries(colIndexMap)) {
+          const v = cellStr(row.getCell(colNum).value);
+          obj[dbCol] = v;
+          if (v) hasValue = true;
+        }
+        if (hasValue) raw.push(obj);
+      });
+
+    } else {
+      return res.status(400).json({ error: 'Only .csv and .xlsx files are supported. Please convert .xls files to .xlsx first.' });
+    }
+
+    if (!raw.length) return res.status(400).json({ error: 'File has no data rows' });
+
+    // ── For CSV: raw rows use original file header strings as keys
+    //    For XLSX: raw rows already use resolved DB column names as keys
+    //    We normalise both paths here into DB column name → value
+    // ── Header → DB column resolver (used by both CSV and XLSX paths) ─────────
+    // (resolveHeader is defined above in the XLSX block; re-expose for CSV path)
+    const fileHeaders = Object.keys(raw[0]);
+
+    // Check if raw rows already have DB col names as keys (XLSX path sets this directly)
+    // For CSV path, keys are still the raw file header strings — map them now
+    const firstKey = fileHeaders[0];
+    const alreadyMapped = validCols.includes(firstKey) || firstKey === 'region_name';
+
+    let headerMap = {}; // fileHeader → dbCol  (only used for CSV path)
+    if (!alreadyMapped) {
+      for (const fh of fileHeaders) {
+        if (!fh.trim()) continue;
+        const dbCol = resolveHeader(fh);
+        if (dbCol) headerMap[fh] = dbCol;
+      }
+    }
+
+    const mappedCount = alreadyMapped
+      ? Object.keys(raw[0]).filter(k => validCols.includes(k)).length
+      : Object.keys(headerMap).length;
+
+    if (mappedCount === 0) {
+      return res.status(400).json({
+        error: `No columns matched the database schema. File headers found: ${fileHeaders.slice(0, 6).join(', ')}`
+      });
+    }
+
+    // ── Report unmapped file headers back to client ───────────────────────────
+    const unmapped = alreadyMapped ? [] : fileHeaders.filter(fh => fh.trim() && !headerMap[fh]);
+
+    // ── Insert rows ───────────────────────────────────────────────────────────
+    let inserted = 0, skipped = 0;
+    const errors = [];
+
+    for (const row of raw) {
+      const colNames = ['region_name'];
+      const vals     = [region];
+
+      if (alreadyMapped) {
+        // XLSX path: keys are already DB col names
+        for (const [dbCol, v] of Object.entries(row)) {
+          if (dbCol === 'region_name' || dbCol === 'id') continue;
+          if (!validCols.includes(dbCol)) continue;
+          colNames.push(dbCol);
+          vals.push((v === '' || v === null || v === undefined) ? null : String(v).trim());
+        }
+      } else {
+        // CSV path: map via headerMap
+        for (const [fh, dbCol] of Object.entries(headerMap)) {
+          const v = row[fh];
+          colNames.push(dbCol);
+          vals.push((v === '' || v === null || v === undefined) ? null : String(v).trim());
+        }
+      }
+
+      if (vals.slice(1).every(v => v === null || v === '')) { skipped++; continue; }
+
+      const quotedCols   = colNames.map(c => `"${c.replace(/"/g, '""')}"`).join(', ');
+      const placeholders = vals.map((_, i) => `$${i + 1}`).join(', ');
+
+      try {
+        await pool.query(`INSERT INTO site_inventory (${quotedCols}) VALUES (${placeholders})`, vals);
+        inserted++;
+      } catch (rowErr) {
+        skipped++;
+        if (errors.length < 5) errors.push(rowErr.message);
+      }
+    }
+
+    res.json({ success: true, inserted, skipped, total: raw.length, mappedColumns: mappedCount, unmappedColumns: unmapped, errors });
+
+  } catch (err) {
+    console.error('IMPORT ERROR:', err.message, err.stack);
+    res.status(500).json({ error: 'Import failed: ' + err.message });
+  }
+});
+
+
+/* ================= DELETE TERMINAL ================= */
+
+app.delete('/api/terminals/:region', async (req, res) => {
+  const region = decodeURIComponent(req.params.region).toUpperCase();
+  const { ids } = req.body || {};
+  if (!ids || !Array.isArray(ids) || !ids.length)
+    return res.status(400).json({ error: 'ids array is required' });
+  try {
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ');
+    const result = await pool.query(`DELETE FROM site_inventory WHERE id IN (${placeholders})`, ids.map(Number));
+    return res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error('DELETE SQL ERROR:', err.message);
+    return res.status(500).json({ error: 'Failed to delete records: ' + err.message });
+  }
+});
+
+/* ================= EDIT TERMINAL (PUT) ================= */
+
+app.put('/api/terminals/:region/:id', async (req, res) => {
+  const id   = parseInt(req.params.id);
+  const { data } = req.body || {};
+  if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data is required' });
+  const entries = Object.entries(data).filter(([k]) => k !== 'id' && /^[a-zA-Z0-9_ \-"]+$/.test(k));
+  if (!entries.length) return res.status(400).json({ error: 'No valid fields to update' });
+  const setClauses = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(', ');
+  const values     = entries.map(([, v]) => v === '' ? null : v);
+  values.push(id);
+  try {
+    const result = await pool.query(
+      `UPDATE site_inventory SET ${setClauses} WHERE id = $${values.length} RETURNING *`,
+      values
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Record not found' });
+    return res.json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('UPDATE ERROR:', err.message);
+    return res.status(500).json({ error: 'Failed to update record: ' + err.message });
+  }
+});
+
+
+/* ================= PROBLEMATIC SITES — GET ================= */
+
+app.get("/api/problematic-sites", async (req, res) => {
+  try {
+    const region = req.query.region;
+    let result;
+    if (region) {
+      result = await pool.query(
+        `SELECT * FROM problematic_sites WHERE UPPER("Region") = UPPER($1) ORDER BY id DESC`,
+        [region]
+      );
+    } else {
+      result = await pool.query(`SELECT * FROM problematic_sites ORDER BY id DESC`);
+    }
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET problematic-sites error:", err.message);
+    res.status(500).json({ error: "Database query failed" });
+  }
+});
+
+/* ================= PROBLEMATIC SITES — POST ================= */
+
+app.post("/api/problematic-sites", async (req, res) => {
+  console.log("POST problematic-sites body:", JSON.stringify(req.body));
+  const allowed = ["Sitename","Province","Municipality","Region","Status","Cause (Assume)","Remarks",
+    "KAD Name","KAD Visit Date","Site Online Date","Found Problem / Cause in the Site","Solution"];
+
+  const body = req.body || {};
+  const entries = allowed
+    .map(k => [k, body[k]])
+    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "");
+
+  console.log("Entries to insert:", entries.length, entries.map(([k])=>k));
+
+  try {
+    let result;
+    if (entries.length === 0) {
+      result = await pool.query(`INSERT INTO problematic_sites ("Sitename") VALUES (NULL) RETURNING *`);
+    } else {
+      const cols = entries.map(([k]) => `"${k}"`).join(", ");
+      const placeholders = entries.map((_, i) => `$${i + 1}`).join(", ");
+      const values = entries.map(([, v]) => String(v).trim() === "" ? null : v);
+      result = await pool.query(
+        `INSERT INTO problematic_sites (${cols}) VALUES (${placeholders}) RETURNING *`,
+        values
+      );
+    }
+    console.log("INSERT success, id:", result.rows[0]?.id);
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error("POST problematic-sites error:", err.message);
+    res.status(500).json({ error: "Failed to insert: " + err.message });
+  }
+});
+
+/* ================= PROBLEMATIC SITES — EXPORT EXCEL ================= */
+
+app.get("/api/problematic-sites/export-excel", async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM problematic_sites ORDER BY "Region", "Sitename"`);
+    const rows = result.rows;
+
+    const regions = ["Benguet","Ifugao","Ilocos","Kalinga","Pangasinan","Quezon"];
+    const grouped = {};
+    regions.forEach(r => grouped[r] = []);
+    rows.forEach(row => {
+      const r   = row["Region"] || "";
+      const key = regions.find(k => k.toLowerCase() === r.toLowerCase());
+      if (key) grouped[key].push(row);
+    });
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = "NOC Dashboard";
+    wb.created = new Date();
+
+    const columns = [
+      "Sitename","Province","Municipality","Region","Status",
+      "Cause (Assume)","Remarks","KAD Name","KAD Visit Date",
+      "Site Online Date","Found Problem / Cause in the Site","Solution"
+    ];
+
+    const statusColors = {
+      "Online":         { bg: "D5F5E3", fg: "1E8449" },
+      "Offline":        { bg: "FADBD8", fg: "922B21" },
+      "In Progress":    { bg: "FEF9E7", fg: "9A7D0A" },
+      "For Monitoring": { bg: "D6EAF8", fg: "1A5276" },
+    };
+
+    const thin = (c) => ({ style: "thin", color: { argb: c } });
+    const hair = (c) => ({ style: "hair", color: { argb: c } });
+
+    for (const region of regions) {
+      const data = grouped[region];
+      const ws   = wb.addWorksheet(region, {
+        properties: { tabColor: { argb: "FF2F4B85" } }
+      });
+
+      ws.addRow(columns);
+      const headerRow = ws.getRow(1);
+      headerRow.height = 28;
+      headerRow.eachCell(cell => {
+        cell.font      = { name: "Cambria", size: 14, bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F4B85" } };
+        cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+        cell.border    = { top: thin("FFFFFFFF"), bottom: thin("FFFFFFFF"), left: thin("FFFFFFFF"), right: thin("FFFFFFFF") };
+      });
+
+      if (data.length === 0) {
+        ws.addRow(["No records for this region."]);
+        ws.mergeCells(2, 1, 2, columns.length);
+        const emptyCell     = ws.getCell("A2");
+        emptyCell.font      = { name: "Cambria", size: 11, italic: true, color: { argb: "FF8899BB" } };
+        emptyCell.alignment = { horizontal: "center", vertical: "middle" };
+        emptyCell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF0F4FA" } };
+      } else {
+        data.forEach((row, i) => {
+          const rowData = columns.map(col => {
+            const val = row[col];
+            if (val instanceof Date) return val.toISOString().split("T")[0];
+            return val ?? "";
+          });
+          const wsRow  = ws.addRow(rowData);
+          wsRow.height = 20;
+          const sc     = statusColors[row["Status"] || ""];
+          const isEven = i % 2 === 1;
+
+          wsRow.eachCell({ includeEmpty: true }, (cell, colNum) => {
+            cell.alignment = { vertical: "middle", wrapText: true };
+            cell.border    = { top: hair("FFCDD8EE"), bottom: hair("FFCDD8EE"), left: hair("FFCDD8EE"), right: hair("FFCDD8EE") };
+            if (columns[colNum - 1] === "Status" && sc) {
+              cell.font = { name: "Cambria", size: 11, bold: true, color: { argb: "FF" + sc.fg } };
+              cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF" + sc.bg } };
+            } else {
+              cell.font = { name: "Cambria", size: 11 };
+              cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: isEven ? "FFE8EEF8" : "FFFFFFFF" } };
+            }
+          });
+        });
+      }
+
+      const widths = [22, 16, 18, 14, 16, 22, 30, 18, 16, 16, 35, 35];
+      columns.forEach((_, i) => { ws.getColumn(i + 1).width = widths[i] || 20; });
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+    }
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="problematic_sites_${Date.now()}.xlsx"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("Excel export error:", err.message);
+    res.status(500).json({ error: "Failed to export: " + err.message });
+  }
+});
+
+/* ================= PROBLEMATIC SITES — PUT ================= */
+
+app.put("/api/problematic-sites/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+  const allowed = ["Sitename","Province","Municipality","Region","Status","Cause (Assume)","Remarks",
+    "KAD Name","KAD Visit Date","Site Online Date","Found Problem / Cause in the Site","Solution"];
+  const entries = Object.entries(req.body || {}).filter(([k]) => allowed.includes(k));
+  if (entries.length === 0) return res.status(400).json({ error: "No valid fields to update" });
+  const setClauses = entries.map(([k], i) => `"${k}" = $${i + 1}`).join(", ");
+  const values = entries.map(([, v]) => v === "" ? null : v);
+  values.push(id);
+  try {
+    const result = await pool.query(
+      `UPDATE problematic_sites SET ${setClauses} WHERE id = $${values.length} RETURNING *`, values
+    );
+    if (result.rowCount === 0) return res.status(404).json({ error: "Record not found" });
+    res.json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error("PUT problematic-sites error:", err.message);
+    res.status(500).json({ error: "Failed to update: " + err.message });
+  }
+});
+
+/* ================= PROBLEMATIC SITES — DELETE ================= */
+
+app.delete("/api/problematic-sites", async (req, res) => {
+  const { ids } = req.body || {};
+  if (!ids || !Array.isArray(ids) || ids.length === 0)
+    return res.status(400).json({ error: "ids array is required" });
+  const numIds = ids.map(Number).filter(n => !isNaN(n));
+  if (numIds.length === 0) return res.status(400).json({ error: "No valid IDs provided" });
+  try {
+    const result = await pool.query(
+      `DELETE FROM problematic_sites WHERE id = ANY($1::integer[])`, [numIds]
+    );
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error("DELETE problematic-sites error:", err.message);
+    res.status(500).json({ error: "Failed to delete: " + err.message });
+  }
+});
+
+/* ================= TICKETS — GET ================= */
+
+app.get("/api/tickets", async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    let query = "SELECT * FROM ticket_information";
+    const params = [];
+    const conditions = [];
+
+    if (status && status !== "all") {
+      params.push(status);
+      conditions.push(`status = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      conditions.push(`(subject ILIKE $${params.length} OR CAST(id AS TEXT) ILIKE $${params.length})`);
+    }
+    if (conditions.length) query += " WHERE " + conditions.join(" AND ");
+    query += " ORDER BY id DESC";
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("GET /api/tickets error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TICKETS — POST ================= */
+
+app.post("/api/tickets", async (req, res) => {
+  const { subject, description, airmac_esn, status, department } = req.body || {};
+  if (!subject?.trim())      return res.status(400).json({ error: "Subject is required" });
+  if (!description?.trim())  return res.status(400).json({ error: "Description is required" });
+  try {
+    const result = await pool.query(
+      `INSERT INTO ticket_information (subject, description, airmac_esn, status, department)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [subject.trim(), description.trim(), airmac_esn?.trim() || null, status || "Open", department || "NOC Department"]
+    );
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error("POST /api/tickets error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TICKETS — PUT ================= */
+
+app.put("/api/tickets/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+  const { subject, description, airmac_esn, status, department } = req.body || {};
+  try {
+    const result = await pool.query(
+      `UPDATE ticket_information
+       SET subject     = COALESCE($1, subject),
+           description = COALESCE($2, description),
+           airmac_esn  = COALESCE($3, airmac_esn),
+           status      = COALESCE($4, status),
+           department  = COALESCE($5, department)
+       WHERE id = $6
+       RETURNING *`,
+      [subject || null, description || null, airmac_esn ?? null, status || null, department || null, id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "Ticket not found" });
+    res.json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error("PUT /api/tickets/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= TICKETS — DELETE ================= */
+
+app.delete("/api/tickets/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+  try {
+    const result = await pool.query(
+      "DELETE FROM ticket_information WHERE id = $1 RETURNING id", [id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "Ticket not found" });
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    console.error("DELETE /api/tickets/:id error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= LETTERS — SETUP ================= */
+
+// multer required at top of file
+
+const lettersUpload = multer ? multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'letters');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext  = require('path').extname(file.originalname);
+      const base = require('path').basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${Date.now()}_${base}${ext}`);
+    }
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 }
+}) : null;
+
+/* ── Create download_history table ── */
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS download_history (
+        id            SERIAL PRIMARY KEY,
+        file_id       INTEGER,
+        file_name     TEXT NOT NULL,
+        downloaded_by TEXT NOT NULL,
+        downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('download_history table ready ✅');
+  } catch (err) {
+    console.error('download_history table error:', err.message);
+  }
+})();
+
+/* ── GET /api/letters/download-history ── */
+app.get('/api/letters/download-history', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, file_id, file_name, downloaded_by, downloaded_at
+         FROM download_history
+        ORDER BY downloaded_at DESC
+        LIMIT 500`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET download-history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/letters/download-history ── */
+app.post('/api/letters/download-history', async (req, res) => {
+  const { file_id, file_name, downloaded_by } = req.body || {};
+  if (!file_name || !downloaded_by) return res.status(400).json({ error: 'file_name and downloaded_by are required' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO download_history (file_id, file_name, downloaded_by)
+       VALUES ($1, $2, $3) RETURNING *`,
+      [file_id || null, file_name, downloaded_by]
+    );
+    res.status(201).json({ success: true, row: rows[0] });
+  } catch (err) {
+    console.error('POST download-history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/letters/folders ── */
+app.get('/api/letters/folders', async (req, res) => {
+  try {
+    const rawParent = req.query.parent_id;
+    const parentId  = (rawParent !== undefined && rawParent !== '') ? parseInt(rawParent) : null;
+    if (parentId !== null && isNaN(parentId)) return res.status(400).json({ error: 'Invalid parent_id' });
+
+    let result;
+    if (parentId !== null) {
+      result = await pool.query(`
+        SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id) +
+               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id) AS file_count
+          FROM folders f
+         WHERE f.parent_id = $1
+           AND f.id != $1
+         ORDER BY f.folder_name
+      `, [parentId]);
+    } else {
+      result = await pool.query(`
+        SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id) +
+               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id) AS file_count
+          FROM folders f
+         WHERE f.parent_id IS NULL
+         ORDER BY f.folder_name
+      `);
+    }
+    res.json(result.rows);
+  } catch (err) {
+    console.error('GET folders error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/letters/folders ── */
+app.post('/api/letters/folders', async (req, res) => {
+  const { folder_name, parent_id = null } = req.body || {};
+  if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
+      [folder_name.trim(), parent_id]
+    );
+    res.status(201).json({ success: true, folder: result.rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    console.error('POST folders error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── PUT /api/letters/folders/:id ── */
+app.put('/api/letters/folders/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { folder_name } = req.body || {};
+  if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE folders SET folder_name = $1 WHERE id = $2 RETURNING *`,
+      [folder_name.trim(), id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true, folder: result.rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── DELETE /api/letters/folders/:id ── */
+app.delete('/api/letters/folders/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const result = await pool.query(`DELETE FROM folders WHERE id = $1`, [id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/letters/folders/:id/files ── */
+app.get('/api/letters/folders/:id/files', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const q  = req.query.q ? `%${req.query.q}%` : null;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM files
+        WHERE folder_id = $1 ${q ? 'AND file_name ILIKE $2' : ''}
+        ORDER BY created_at DESC`,
+      q ? [id, q] : [id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/letters/uploaders ── */
+app.get('/api/letters/uploaders', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT uploader_name FROM files WHERE uploader_name IS NOT NULL ORDER BY uploader_name`
+    );
+    res.json(result.rows.map(r => r.uploader_name));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/letters/files/recent ── */
+app.get('/api/letters/files/recent', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM files ORDER BY created_at DESC LIMIT 8`);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/letters/files  (multipart upload) ── */
+app.post('/api/letters/files', (req, res, next) => {
+  if (!lettersUpload) return res.status(500).json({ error: 'multer not installed — run: npm install multer' });
+  lettersUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const { folder_id, uploader_name } = req.body || {};
+    if (!folder_id) return res.status(400).json({ error: 'folder_id is required' });
+    if (!req.file)  return res.status(400).json({ error: 'No file received' });
+    const file_path = '/uploads/letters/' + req.file.filename;
+    const file_size = req.file.size;
+    const file_name = req.file.originalname;
+    const ext = require('path').extname(file_name).toLowerCase().replace('.', '');
+    const mimeMap = { pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', txt: 'text', png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', mp4: 'video', webm: 'video', mov: 'video', avi: 'video', mkv: 'video' };
+    const file_type = mimeMap[ext] || ext || req.file.mimetype.split('/')[1]?.slice(0, 50) || 'file';
+    try {
+      const result = await pool.query(
+        `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, last_access)
+         VALUES ($1,$2,$3,$4,$5,$6,NOW()) RETURNING *`,
+        [parseInt(folder_id), uploader_name || null, file_name, file_path, file_size, file_type]
+      );
+      res.status(201).json({ success: true, file: result.rows[0] });
+    } catch (dbErr) {
+      res.status(500).json({ error: dbErr.message });
+    }
+  });
+});
+
+/* ── PUT /api/letters/files/:id ── */
+app.put('/api/letters/files/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { file_name } = req.body || {};
+  if (!file_name?.trim()) return res.status(400).json({ error: 'file_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE files SET file_name = $1 WHERE id = $2 RETURNING *`,
+      [file_name.trim(), id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
+    res.json({ success: true, file: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── DELETE /api/letters/files/:id ── */
+app.delete('/api/letters/files/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const { rows } = await pool.query(`SELECT file_path FROM files WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    await pool.query(`DELETE FROM files WHERE id = $1`, [id]);
+    try {
+      const fs       = require('fs');
+      const filePath = require('path').join(__dirname, 'public', rows[0].file_path);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch { /* file already gone */ }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/letters/files/:id/download ── */
+app.get('/api/letters/files/:id/download', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const downloadedBy = req.query.user || 'Unknown';
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f        = rows[0];
+    const filePath = require('path').join(__dirname, 'public', f.file_path);
+    await pool.query(`UPDATE files SET last_access = NOW() WHERE id = $1`, [id]);
+    // Log download history (fire-and-forget)
+    pool.query(
+      `INSERT INTO download_history (file_id, file_name, downloaded_by) VALUES ($1, $2, $3)`,
+      [id, f.file_name, downloadedBy]
+    ).catch(() => {});
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk' });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/letters/files/:id/copy ── */
+app.post('/api/letters/files/:id/copy', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { target_folder_id } = req.body || {};
+  if (!target_folder_id) return res.status(400).json({ error: 'target_folder_id is required' });
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f = rows[0];
+    const fs   = require('fs');
+    const path = require('path');
+    const ext  = path.extname(f.file_name);
+    const base = path.basename(f.file_name, ext).replace(/\s*\(copy.*\)$/, '').trimEnd();
+    const newFileName = `${base} (copy)${ext}`;
+    const oldPath = path.join(__dirname, 'public', f.file_path);
+    const newFile = `${Date.now()}_${path.basename(f.file_path)}`;
+    const newRelPath = '/uploads/letters/' + newFile;
+    const newAbsPath = path.join(__dirname, 'public', newRelPath);
+    fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+    fs.copyFileSync(oldPath, newAbsPath);
+    const result = await pool.query(
+      `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [parseInt(target_folder_id), f.uploader_name, newFileName, newRelPath, f.file_size, f.file_type]
+    );
+    res.status(201).json({ success: true, file: result.rows[0] });
+  } catch (err) {
+    console.error('Copy file error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/letters/folders/:id/copy ── */
+app.post('/api/letters/folders/:id/copy', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { target_parent_id } = req.body || {};
+  if (!target_parent_id) return res.status(400).json({ error: 'target_parent_id is required' });
+  try {
+    const { rows: folderRows } = await pool.query(`SELECT * FROM folders WHERE id = $1`, [id]);
+    if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
+    const srcFolder = folderRows[0];
+    const newName = srcFolder.folder_name + ' (copy)';
+    const { rows: newFolderRows } = await pool.query(
+      `INSERT INTO folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
+      [newName, parseInt(target_parent_id)]
+    );
+    const newFolderId = newFolderRows[0].id;
+    const { rows: files } = await pool.query(`SELECT * FROM files WHERE folder_id = $1`, [id]);
+    const fs   = require('fs');
+    const path = require('path');
+    for (const f of files) {
+      try {
+        const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
+        const newRelPath = '/uploads/letters/' + newFile;
+        const newAbsPath = path.join(__dirname, 'public', newRelPath);
+        const oldAbsPath = path.join(__dirname, 'public', f.file_path);
+        fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+        fs.copyFileSync(oldAbsPath, newAbsPath);
+        await pool.query(
+          `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [newFolderId, f.uploader_name, f.file_name, newRelPath, f.file_size, f.file_type]
+        );
+      } catch { /* skip files that can't be copied */ }
+    }
+    res.status(201).json({ success: true, folder_id: newFolderId, folder_name: newName });
+  } catch (err) {
+    console.error('Copy folder error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/letters/files/:id/preview ── */
+app.get('/api/letters/files/:id/preview', async (req, res) => {
+  const id = parseInt(req.params.id);
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f        = rows[0];
+    const filePath = require('path').join(__dirname, 'public', f.file_path);
+    const fs       = require('fs');
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
+    const ext = require('path').extname(f.file_name).toLowerCase();
+    const mimeTypes = {
+      '.pdf':  'application/pdf',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',
+      '.webp': 'image/webp',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc':  'application/msword',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls':  'application/vnd.ms-excel',
+      '.mp4':  'video/mp4',
+      '.webm': 'video/webm',
+      '.mov':  'video/quicktime',
+      '.avi':  'video/x-msvideo',
+      '.mkv':  'video/x-matroska',
+    };
+    const mime = mimeTypes[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${f.file_name}"`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    fs.createReadStream(filePath).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ================= START SERVER ================= */
+
+
+/* Safe migration: add department column if it does not exist */
+pool.query(`ALTER TABLE ticket_information ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT 'NOC Department'`).catch(() => {});
+
+/* ================= MAP API ================= */
+
+// GET all sites with lat/long for map plotting
+app.get('/api/terminals/all-sites', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT region_name, "SITENAME", "NO.", "PROVINCE", "REGION",
+             "LAT", "LONG", "PHASE 1 LAT", "PHASE 1 LONG"
+      FROM site_inventory
+      WHERE ("LAT" IS NOT NULL AND "LAT" != '')
+         OR ("PHASE 1 LAT" IS NOT NULL AND "PHASE 1 LAT" != '')
+      ORDER BY region_name, "SITENAME"
+    `);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+/* ================= REPORTS API ================= */
+
+const reportEvidenceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'evidence');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext  = require('path').extname(file.originalname);
+      const name = `evidence_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`;
+      cb(null, name);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//i.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Only image files are allowed'));
+  }
+});
+
+(async () => {
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS other_data (
+        id          SERIAL PRIMARY KEY,
+        date        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        mir         NUMERIC(5,2),
+        ticket      NUMERIC(5,2),
+        sla         NUMERIC(5,2),
+        extra_data  JSONB,
+        created_by  INT REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_projects (
+        id         SERIAL PRIMARY KEY,
+        name       CITEXT NOT NULL UNIQUE,
+        columns    JSONB  NOT NULL DEFAULT '[{"key":"mir","label":"MIR","enabled":true},{"key":"ticket","label":"Ticket","enabled":true},{"key":"sla","label":"SLA","enabled":true}]'::jsonb,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS regional_progress_reports (
+        id          SERIAL PRIMARY KEY,
+        region      CITEXT NOT NULL,
+        date_start  DATE,
+        date_end    DATE,
+        project_id  INT REFERENCES report_projects(id) ON DELETE CASCADE,
+        report_id   INT REFERENCES other_data(id) ON DELETE CASCADE
+      )
+    `);
+
+    const safeAlter = [
+      `ALTER TABLE other_data ADD COLUMN IF NOT EXISTS extra_data JSONB`,
+      `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS date_start DATE`,
+      `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS date_end DATE`,
+      `ALTER TABLE regional_progress_reports ADD COLUMN IF NOT EXISTS project_id INT REFERENCES report_projects(id) ON DELETE CASCADE`,
+      `ALTER TABLE regional_progress_reports DROP COLUMN IF EXISTS deadline`,
+    ];
+    for (const sql of safeAlter) {
+      try { await pool.query(sql); } catch(e) {}
+    }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS report_history (
+        id            SERIAL PRIMARY KEY,
+        region_id     INT REFERENCES regional_progress_reports(id) ON DELETE CASCADE,
+        other_data_id INT REFERENCES other_data(id) ON DELETE CASCADE,
+        created_at    TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`DROP VIEW IF EXISTS regional_progress_view CASCADE`);
+    await pool.query(`
+      CREATE VIEW regional_progress_view AS
+      SELECT r.id, r.region, r.date_start, r.date_end, r.project_id,
+             p.name AS project_name, p.columns AS project_columns,
+             o.mir, o.ticket, o.sla, o.extra_data,
+             ((COALESCE(o.mir,0)+COALESCE(o.ticket,0)+COALESCE(o.sla,0))/3.0)::NUMERIC(5,2) AS progress,
+             u.full_name AS created_by, o.date
+      FROM regional_progress_reports r
+      LEFT JOIN report_projects p ON r.project_id = p.id
+      LEFT JOIN other_data o      ON r.report_id  = o.id
+      LEFT JOIN users u           ON o.created_by = u.id
+    `);
+
+    console.log('Reports schema ready ✅');
+  } catch (err) {
+    console.error('Reports schema error:', err.message);
+  }
+})();
+
+// GET all projects
+app.get('/api/reports/projects', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM report_projects ORDER BY id ASC`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST create project
+app.post('/api/reports/projects', async (req, res) => {
+  const { name, columns } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  try {
+    const defaultCols = [
+      { key: 'mir',    label: 'MIR',    enabled: true },
+      { key: 'ticket', label: 'Ticket', enabled: true },
+      { key: 'sla',    label: 'SLA',    enabled: true },
+    ];
+    const result = await pool.query(
+      `INSERT INTO report_projects (name, columns) VALUES ($1, $2) RETURNING *`,
+      [name.trim(), JSON.stringify(columns || defaultCols)]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Project name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT update project
+app.put('/api/reports/projects/:id', async (req, res) => {
+  const { name, columns } = req.body || {};
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE report_projects SET name=$1, columns=$2 WHERE id=$3 RETURNING *`,
+      [name.trim(), JSON.stringify(columns || []), req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Project not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Project name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE project
+app.delete('/api/reports/projects/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM report_projects WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET all reports (filtered by project_id if provided)
+app.get('/api/reports', async (req, res) => {
+  try {
+    const projectId = req.query.project_id ? parseInt(req.query.project_id) : null;
+    const params    = projectId ? [projectId] : [];
+    const where     = projectId ? 'WHERE r.project_id = $1' : '';
+    const result = await pool.query(`
+      SELECT r.id, r.region, r.date_start, r.date_end, r.project_id, r.report_id,
+             o.mir, o.ticket, o.sla, o.extra_data,
+             ((COALESCE(o.mir,0)+COALESCE(o.ticket,0)+COALESCE(o.sla,0))/3.0)::NUMERIC(5,2) AS progress,
+             u.full_name AS created_by, o.date AS last_updated
+      FROM regional_progress_reports r
+      LEFT JOIN other_data o ON r.report_id = o.id
+      LEFT JOIN users u      ON o.created_by = u.id
+      ${where}
+      ORDER BY r.id
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET history for a region
+app.get('/api/reports/:regionId/history', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT o.*, u.full_name AS created_by_name
+      FROM other_data o
+      LEFT JOIN users u ON o.created_by = u.id
+      WHERE o.id IN (
+        SELECT other_data_id FROM report_history WHERE region_id = $1
+        UNION
+        SELECT report_id FROM regional_progress_reports WHERE id = $1
+      )
+      ORDER BY o.date DESC
+    `, [req.params.regionId]);
+    res.json(result.rows);
+  } catch { res.json([]); }
+});
+
+// GET reminders (kept for backward compatibility)
+app.get('/api/reports/:regionId/reminders', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT o.*, u.full_name AS created_by_name
+      FROM other_data o
+      LEFT JOIN users u ON o.created_by = u.id
+      WHERE o.id IN (
+        SELECT other_data_id FROM report_history WHERE region_id = $1
+        UNION
+        SELECT report_id FROM regional_progress_reports WHERE id = $1
+      )
+      ORDER BY o.date DESC
+    `, [req.params.regionId]);
+    res.json(result.rows);
+  } catch { res.json([]); }
+});
+
+// POST new region
+app.post('/api/reports', async (req, res) => {
+  const { region, date_start, date_end, project_id } = req.body || {};
+  if (!region?.trim()) return res.status(400).json({ error: 'region is required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO regional_progress_reports (region, date_start, date_end, project_id)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [region.trim(), date_start || null, date_end || null, project_id || null]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update region
+app.put('/api/reports/:id', async (req, res) => {
+  const { region, date_start, date_end } = req.body || {};
+  try {
+    const result = await pool.query(
+      `UPDATE regional_progress_reports SET region=$1, date_start=$2, date_end=$3 WHERE id=$4 RETURNING *`,
+      [region, date_start || null, date_end || null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE region
+app.delete('/api/reports/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM regional_progress_reports WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new update (other_data) — supports dynamic columns via extra_data
+app.post('/api/reminders', async (req, res) => {
+  const { report_id, created_by, mir, ticket, sla, ...rest } = req.body || {};
+  if (!report_id) return res.status(400).json({ error: 'report_id is required' });
+  const extraData = Object.keys(rest).length ? rest : null;
+  try {
+    const odResult = await pool.query(
+      `INSERT INTO other_data (mir, ticket, sla, extra_data, created_by, date)
+       VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING *`,
+      [
+        mir    != null ? mir    : null,
+        ticket != null ? ticket : null,
+        sla    != null ? sla    : null,
+        extraData ? JSON.stringify(extraData) : null,
+        created_by || null,
+      ]
+    );
+    const newOd = odResult.rows[0];
+
+    await pool.query(
+      `INSERT INTO report_history (region_id, other_data_id) VALUES ($1, $2)`,
+      [report_id, newOd.id]
+    ).catch(() => {});
+
+    await pool.query(
+      `UPDATE regional_progress_reports SET report_id=$1 WHERE id=$2`,
+      [newOd.id, report_id]
+    );
+
+    res.status(201).json(newOd);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// ── User Settings ────────────────────────────────────────────────────────────
+
+// Safe migration: in-app messaging tables
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS in_app_messages (
+        id SERIAL PRIMARY KEY,
+        sender_id INT REFERENCES users(id) ON DELETE SET NULL,
+        recipient_id INT REFERENCES users(id) ON DELETE CASCADE,
+        subject TEXT NOT NULL,
+        body TEXT NOT NULL,
+        is_read BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_sender BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deleted_by_recipient BOOLEAN NOT NULL DEFAULT FALSE,
+        parent_message_id INT REFERENCES in_app_messages(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_recipient
+      ON in_app_messages (recipient_id, created_at DESC)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_in_app_messages_sender
+      ON in_app_messages (sender_id, created_at DESC)
+    `);
+
+    console.log('In-app messaging table ready ✅');
+  } catch (e) {
+    console.error('in-app messaging migration:', e.message);
+  }
+})();
+
+// Multer for profile photos
+const profilePhotoStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = require('path').join(__dirname, 'public', 'uploads', 'photos');
+    require('fs').mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = require('path').extname(file.originalname).toLowerCase();
+    cb(null, `user_${req.params.id}_${Date.now()}${ext}`);
+  }
+});
+const profilePhotoUpload = multer({
+  storage: profilePhotoStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\//i.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Only image files are allowed'));
+  }
+});
+
+// POST upload profile photo
+app.post('/api/users/:id/photo', profilePhotoUpload.single('photo'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const relPath = '/uploads/photos/' + req.file.filename;
+  try {
+    // Delete old photo file if exists
+    const old = await pool.query(`SELECT photo FROM users WHERE id=$1`, [req.params.id]);
+    if (old.rows[0]?.photo) {
+      const oldPath = require('path').join(__dirname, 'public', old.rows[0].photo);
+      require('fs').unlink(oldPath, () => {});
+    }
+    const result = await pool.query(
+      `UPDATE users SET photo=$1 WHERE id=$2 RETURNING id, photo`,
+      [relPath, req.params.id]
+    );
+    res.json({ success: true, photo: relPath, user: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET users list (for recipient picker)
+
+// GET user by id
+app.get('/api/users/:id', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, id_no, full_name, email, role, created_at FROM users WHERE id=$1`,
+      [req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update profile (full_name, email)
+app.put('/api/users/:id', async (req, res) => {
+  const { full_name, email } = req.body;
+  if (!full_name?.trim() || !email?.trim())
+    return res.status(400).json({ error: 'full_name and email are required' });
+  try {
+    const result = await pool.query(
+      `UPDATE users SET full_name=$1, email=$2 WHERE id=$3
+       RETURNING id, id_no, full_name, email, role`,
+      [full_name.trim(), email.trim(), req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+/* ================= IN-APP MESSAGING ================= */
+
+// GET inbox / sent folders
+app.get('/api/messages', async (req, res) => {
+  const userId = Number(req.query.user_id);
+  const folder = String(req.query.folder || 'inbox').trim().toLowerCase();
+
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    let query = '';
+    let params = [userId];
+
+    if (folder === 'sent') {
+      query = `
+        SELECT
+          m.id,
+          m.subject,
+          m.body,
+          m.is_read,
+          m.parent_message_id,
+          m.created_at,
+          sender.id AS sender_id,
+          sender.full_name AS sender_name,
+          sender.email AS sender_email,
+          recipient.id AS recipient_id,
+          recipient.full_name AS recipient_name,
+          recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.sender_id = $1
+          AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE
+        ORDER BY m.created_at DESC, m.id DESC
+      `;
+    } else {
+      query = `
+        SELECT
+          m.id,
+          m.subject,
+          m.body,
+          m.is_read,
+          m.parent_message_id,
+          m.created_at,
+          sender.id AS sender_id,
+          sender.full_name AS sender_name,
+          sender.email AS sender_email,
+          recipient.id AS recipient_id,
+          recipient.full_name AS recipient_name,
+          recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.recipient_id = $1
+          AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE
+        ORDER BY m.created_at DESC, m.id DESC
+      `;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET single message
+app.get('/api/messages/:id', async (req, res) => {
+  const userId = Number(req.query.user_id);
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        m.*,
+        sender.full_name AS sender_name,
+        sender.email AS sender_email,
+        recipient.full_name AS recipient_name,
+        recipient.email AS recipient_email
+      FROM in_app_messages m
+      LEFT JOIN users sender ON sender.id = m.sender_id
+      LEFT JOIN users recipient ON recipient.id = m.recipient_id
+      WHERE m.id = $1
+        AND (
+          (m.sender_id = $2 AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE)
+          OR
+          (m.recipient_id = $2 AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE)
+        )
+      `,
+      [req.params.id, userId]
+    );
+
+    if (!result.rowCount) return res.status(404).json({ error: 'Message not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/messages/system — sends a self-notification (request submission confirmation)
+// Allows sender_id === recipient_id specifically for system/request notifications.
+app.post('/api/messages/system', async (req, res) => {
+  const { sender_id, recipient_id, subject, body, parent_message_id } = req.body || {};
+  const senderIdNum    = Number(sender_id);
+  const recipientIdNum = Number(recipient_id);
+
+  if (!senderIdNum || !recipientIdNum || !String(subject || '').trim() || !String(body || '').trim()) {
+    return res.status(400).json({ error: 'sender_id, recipient_id, subject, and body are required' });
+  }
+
+  try {
+    const userCheck = await pool.query(`SELECT id FROM users WHERE id = $1`, [senderIdNum]);
+    if (!userCheck.rowCount) return res.status(400).json({ error: 'User does not exist.' });
+
+    const result = await pool.query(
+      `INSERT INTO in_app_messages (sender_id, recipient_id, subject, body, parent_message_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [
+        senderIdNum,
+        recipientIdNum,
+        String(subject).trim(),
+        String(body).trim(),
+        parent_message_id ? Number(parent_message_id) : null,
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST send message
+app.post('/api/messages', async (req, res) => {
+  const {
+    sender_id,
+    recipient_id,
+    subject,
+    body,
+    parent_message_id
+  } = req.body || {};
+
+  const senderIdNum = Number(sender_id);
+  const recipientIdNum = Number(recipient_id);
+
+  if (!senderIdNum || !recipientIdNum || !String(subject || '').trim() || !String(body || '').trim()) {
+    return res.status(400).json({ error: 'sender_id, recipient_id, subject, and body are required' });
+  }
+
+  if (senderIdNum === recipientIdNum) {
+    return res.status(400).json({ error: 'You cannot send a message to yourself.' });
+  }
+
+  try {
+    const usersCheck = await pool.query(
+      `SELECT id FROM users WHERE id = ANY($1::int[])`,
+      [[senderIdNum, recipientIdNum]]
+    );
+
+    if (usersCheck.rowCount < 2) {
+      return res.status(400).json({ error: 'Sender or recipient does not exist.' });
+    }
+
+    const result = await pool.query(
+      `
+      INSERT INTO in_app_messages (
+        sender_id, recipient_id, subject, body, parent_message_id
+      )
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+      `,
+      [
+        senderIdNum,
+        recipientIdNum,
+        String(subject).trim(),
+        String(body).trim(),
+        parent_message_id ? Number(parent_message_id) : null
+      ]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT mark read/unread
+app.put('/api/messages/:id/read', async (req, res) => {
+  const { user_id, is_read } = req.body || {};
+  if (!user_id || typeof is_read !== 'boolean') {
+    return res.status(400).json({ error: 'user_id and is_read are required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE in_app_messages
+      SET is_read = $1, updated_at = NOW()
+      WHERE id = $2 AND recipient_id = $3
+      RETURNING *
+      `,
+      [is_read, req.params.id, Number(user_id)]
+    );
+
+    if (!result.rowCount) return res.status(404).json({ error: 'Message not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE soft delete message
+app.delete('/api/messages/:id', async (req, res) => {
+  const userId = Number(req.query.user_id);
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+
+  try {
+    const existing = await pool.query(
+      `SELECT sender_id, recipient_id FROM in_app_messages WHERE id = $1`,
+      [req.params.id]
+    );
+
+    if (!existing.rowCount) return res.status(404).json({ error: 'Message not found' });
+
+    const row = existing.rows[0];
+
+    if (Number(row.sender_id) === userId) {
+      await pool.query(
+        `
+        UPDATE in_app_messages
+        SET is_deleted_by_sender = TRUE, updated_at = NOW()
+        WHERE id = $1
+        `,
+        [req.params.id]
+      );
+    } else if (Number(row.recipient_id) === userId) {
+      await pool.query(
+        `
+        UPDATE in_app_messages
+        SET is_deleted_by_recipient = TRUE, updated_at = NOW()
+        WHERE id = $1
+        `,
+        [req.params.id]
+      );
+    } else {
+      return res.status(403).json({ error: 'Not allowed' });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT change password
+// GET users list (for messaging recipient picker)
+app.get('/api/users', async (req, res) => {
+  try {
+    const currentUserId = Number(req.query.exclude || 0);
+
+    const result = await pool.query(
+      `
+      SELECT id, full_name, email, role
+      FROM users
+      WHERE ($1 = 0 OR id <> $1)
+      ORDER BY full_name ASC, email ASC
+      `,
+      [currentUserId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT change password
+app.put('/api/users/:id/password', async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!current_password || !new_password)
+    return res.status(400).json({ error: 'Both passwords are required' });
+  try {
+    const userRes = await pool.query(`SELECT password_hash FROM users WHERE id=$1`, [req.params.id]);
+    if (!userRes.rowCount) return res.status(404).json({ error: 'User not found' });
+    const match = await bcrypt.compare(current_password, userRes.rows[0].password_hash);
+    if (!match) return res.status(401).json({ error: 'Current password is incorrect' });
+    const hash = await bcrypt.hash(new_password, 10);
+    await pool.query(`UPDATE users SET password_hash=$1 WHERE id=$2`, [hash, req.params.id]);
+    res.json({ success: true });  
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Leave Requests ───────────────────────────────────────────────────────────
+
+(async () => {
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leave_requests (
+        id             SERIAL PRIMARY KEY,
+        employee_id    INT REFERENCES users(id) ON DELETE SET NULL,
+        department     CITEXT,
+        position       CITEXT,
+        leave_type     CITEXT NOT NULL DEFAULT 'vacation' CHECK (
+                         LOWER(leave_type) IN ('vacation','sick','emergency','maternity','paternity','others')
+                       ),
+        start_date     DATE NOT NULL,
+        end_date       DATE NOT NULL,
+        number_of_days NUMERIC(5,1),
+        reason         CITEXT,
+        attachment     TEXT,
+        status         CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                         LOWER(status) IN ('pending','approved','rejected','cancelled')
+                       ),
+        remarks        TEXT,
+        submitted_at   TIMESTAMP DEFAULT NOW(),
+        updated_at     TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS leave_requests_history (
+        history_id     SERIAL PRIMARY KEY,
+        request_id     INT,
+        employee_name  CITEXT,
+        employee_id_no CITEXT,
+        department     CITEXT,
+        position       CITEXT,
+        leave_type     CITEXT,
+        start_date     DATE,
+        end_date       DATE,
+        number_of_days NUMERIC(5,1),
+        reason         CITEXT,
+        attachment     TEXT,
+        status         CITEXT,
+        remarks        TEXT,
+        submitted_at   TIMESTAMP,
+        updated_at     TIMESTAMP,
+        change_type    VARCHAR(10) CHECK (change_type IN ('INSERT','UPDATE')),
+        saved_at       TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Recreate view
+    await pool.query(`DROP VIEW IF EXISTS leave_requests_full CASCADE`);
+    await pool.query(`
+      CREATE VIEW leave_requests_full AS
+      SELECT
+        lr.id,
+        e.full_name       AS employee_name,
+        e.id_no           AS employee_id_no,
+        lr.department,
+        lr.position,
+        lr.leave_type,
+        lr.start_date,
+        lr.end_date,
+        lr.number_of_days,
+        lr.reason,
+        lr.attachment,
+        lr.status,
+        lr.remarks,
+        lr.submitted_at,
+        lr.updated_at
+      FROM leave_requests lr
+      LEFT JOIN users e ON lr.employee_id = e.id
+      ORDER BY lr.submitted_at DESC
+    `);
+
+    // Auto-calculate days + updated_at trigger
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION fn_calculate_leave_days()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        IF NEW.number_of_days IS NULL THEN
+          NEW.number_of_days := (NEW.end_date - NEW.start_date) + 1;
+        END IF;
+        NEW.updated_at := NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS trg_calculate_leave_days ON leave_requests`);
+    await pool.query(`
+      CREATE TRIGGER trg_calculate_leave_days
+      BEFORE INSERT OR UPDATE ON leave_requests
+      FOR EACH ROW EXECUTE FUNCTION fn_calculate_leave_days()
+    `);
+
+    // History trigger
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION fn_save_leave_history()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        INSERT INTO leave_requests_history (
+          request_id, employee_name, employee_id_no,
+          department, position, leave_type,
+          start_date, end_date, number_of_days,
+          reason, attachment, status,
+          remarks, submitted_at, updated_at, change_type
+        )
+        SELECT
+          v.id, v.employee_name, v.employee_id_no,
+          v.department, v.position, v.leave_type,
+          v.start_date, v.end_date, v.number_of_days,
+          v.reason, v.attachment, v.status,
+          v.remarks, v.submitted_at, v.updated_at, TG_OP
+        FROM leave_requests_full v
+        WHERE v.id = NEW.id;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS trg_leave_requests_history ON leave_requests`);
+    await pool.query(`
+      CREATE TRIGGER trg_leave_requests_history
+      AFTER INSERT OR UPDATE ON leave_requests
+      FOR EACH ROW EXECUTE FUNCTION fn_save_leave_history()
+    `);
+
+        await pool.query(`
+      CREATE TABLE IF NOT EXISTS id_requests (
+        id            SERIAL PRIMARY KEY,
+        requested_by  INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date  DATE NOT NULL DEFAULT CURRENT_DATE,
+        department    CITEXT,
+        id_type       CITEXT NOT NULL CHECK (
+                        LOWER(id_type) IN ('company id','access card','visitor id','temporary id','other')
+                      ),
+        purpose       TEXT NOT NULL,
+        status        CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                        LOWER(status) IN ('pending','approved','processing','released','rejected','cancelled')
+                      ),
+        remarks       TEXT,
+        created_at    TIMESTAMP DEFAULT NOW(),
+        updated_at    TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS salary_increase_requests (
+        id               SERIAL PRIMARY KEY,
+        requested_by     INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date     DATE NOT NULL DEFAULT CURRENT_DATE,
+        department       CITEXT,
+        current_salary   NUMERIC(12,2),
+        requested_salary NUMERIC(12,2) NOT NULL,
+        effective_date   DATE NOT NULL,
+        justification    TEXT NOT NULL,
+        status           CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                           LOWER(status) IN ('pending','approved','rejected','cancelled')
+                         ),
+        remarks          TEXT,
+        created_at       TIMESTAMP DEFAULT NOW(),
+        updated_at       TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+  CREATE TABLE IF NOT EXISTS files_requests (
+    id               SERIAL PRIMARY KEY,
+    requested_by     INT REFERENCES users(id) ON DELETE SET NULL,
+    request_date     DATE NOT NULL DEFAULT CURRENT_DATE,
+    department       CITEXT,
+    document_name    TEXT NOT NULL,
+    purpose          TEXT NOT NULL,
+    request_action   CITEXT NOT NULL CHECK (
+                       LOWER(request_action) IN ('pickup','return')
+                     ),
+    copy_type        CITEXT NOT NULL CHECK (
+                       LOWER(copy_type) IN ('original','copy')
+                     ),
+    proof_of_return  TEXT,
+    status           CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                       LOWER(status) IN ('pending','approved','released','returned','rejected','cancelled')
+                     ),
+    created_at       TIMESTAMP DEFAULT NOW(),
+    updated_at       TIMESTAMP DEFAULT NOW()
+  )
+`);
+
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION fn_touch_request_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at := NOW();
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+
+    await pool.query(`DROP TRIGGER IF EXISTS trg_touch_id_requests ON id_requests`);
+    await pool.query(`
+      CREATE TRIGGER trg_touch_id_requests
+      BEFORE UPDATE ON id_requests
+      FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+    `);
+
+    await pool.query(`DROP TRIGGER IF EXISTS trg_touch_salary_increase_requests ON salary_increase_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_salary_increase_requests
+  BEFORE UPDATE ON salary_increase_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+await pool.query(`DROP TRIGGER IF EXISTS trg_touch_files_requests ON files_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_files_requests
+  BEFORE UPDATE ON files_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+    console.log('leave_requests + extra request schemas ready ✅');
+} catch(e) { console.error('leave_requests error:', e.message); }
+})();
+
+// Multer for leave attachments
+const leaveAttachStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = require('path').join(__dirname, 'public', 'uploads', 'leaves');
+    require('fs').mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ext = require('path').extname(file.originalname).toLowerCase();
+    cb(null, `leave_${req.params.id}_${Date.now()}${ext}`);
+  }
+});
+const leaveUpload = multer({ storage: leaveAttachStorage, limits: { fileSize: 10 * 1024 * 1024 } });
+
+// GET all leave requests for a user (via view)
+app.get('/api/users/:id/leaves', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM leave_requests_full WHERE employee_id_no =
+        (SELECT id_no FROM users WHERE id = $1)
+       ORDER BY submitted_at DESC`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET all leave requests (admin view)
+app.get('/api/leaves', async (req, res) => {
+  try {
+    const { status } = req.query;
+    const where = status ? `WHERE LOWER(status) = '${status.toLowerCase()}'` : '';
+    const result = await pool.query(`SELECT * FROM leave_requests_full ${where}`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+// POST new leave request
+app.post('/api/users/:id/leaves', leaveUpload.single('attachment'), async (req, res) => {
+  const { department, position, leave_type, start_date, end_date, number_of_days, reason } = req.body;
+  if (!start_date || !end_date) return res.status(400).json({ error: 'Start and end date are required' });
+  if (!leave_type)              return res.status(400).json({ error: 'Leave type is required' });
+  const attachPath = req.file ? '/uploads/leaves/' + req.file.filename : null;
+  try {
+    const result = await pool.query(
+      `INSERT INTO leave_requests
+         (employee_id, department, position, leave_type, start_date, end_date, number_of_days, reason, attachment)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.params.id, department||null, position||null,
+       leave_type.toLowerCase(), start_date, end_date,
+       number_of_days||null, reason||null, attachPath]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update leave status (admin)
+app.put('/api/leaves/:id/status', async (req, res) => {
+  const { status, remarks } = req.body;
+  const allowed = ['pending','approved','rejected','cancelled'];
+  if (!allowed.includes(status?.toLowerCase()))
+    return res.status(400).json({ error: 'Invalid status' });
+  try {
+    const result = await pool.query(
+      `UPDATE leave_requests SET status=$1, remarks=$2 WHERE id=$3 RETURNING *`,
+      [status, remarks||null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE / cancel a leave request
+app.delete('/api/leaves/:id', async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE leave_requests SET status='cancelled' WHERE id=$1`,
+      [req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/users/:id/id-requests', async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    id_type,
+    purpose,
+    remarks
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (!String(id_type || '').trim()) {
+    return res.status(400).json({ error: 'id_type is required' });
+  }
+  if (!String(purpose || '').trim()) {
+    return res.status(400).json({ error: 'purpose is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO id_requests
+       (requested_by, request_date, department, id_type, purpose, remarks)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        String(id_type).trim().toLowerCase(),
+        String(purpose).trim(),
+        String(remarks || '').trim() || null
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/id-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/:id/salary-increase-requests', async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    current_salary,
+    requested_salary,
+    effective_date,
+    justification,
+    remarks
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (requested_salary === undefined || requested_salary === null || requested_salary === '') {
+    return res.status(400).json({ error: 'requested_salary is required' });
+  }
+  if (!effective_date) {
+    return res.status(400).json({ error: 'effective_date is required' });
+  }
+  if (!String(justification || '').trim()) {
+    return res.status(400).json({ error: 'justification is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO salary_increase_requests
+       (requested_by, request_date, department, current_salary, requested_salary, effective_date, justification, remarks)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        current_salary === '' || current_salary == null ? null : Number(current_salary),
+        Number(requested_salary),
+        effective_date,
+        String(justification).trim(),
+        String(remarks || '').trim() || null
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/salary-increase-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const filesRequestProofUpload = multer({
+  storage: multer.diskStorage({
+    destination: function (req, file, cb) {
+      cb(null, path.join(__dirname, 'public', 'uploads', 'files-requests'));
+    },
+    filename: function (req, file, cb) {
+      const safe = String(file.originalname || 'proof')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '');
+      cb(null, `${Date.now()}-${safe}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+app.post('/api/users/:id/files-requests', filesRequestProofUpload.single('proof_of_return'), async (req, res) => {
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    document_name,
+    purpose,
+    request_action,
+    copy_type
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (!String(document_name || '').trim()) {
+    return res.status(400).json({ error: 'document_name is required' });
+  }
+  if (!String(purpose || '').trim()) {
+    return res.status(400).json({ error: 'purpose is required' });
+  }
+  if (!String(request_action || '').trim()) {
+    return res.status(400).json({ error: 'request_action is required' });
+  }
+  if (!String(copy_type || '').trim()) {
+    return res.status(400).json({ error: 'copy_type is required' });
+  }
+
+  const normalizedAction = String(request_action).trim().toLowerCase();
+  const normalizedCopyType = String(copy_type).trim().toLowerCase();
+
+  if (!['pickup', 'return'].includes(normalizedAction)) {
+    return res.status(400).json({ error: 'Invalid request_action' });
+  }
+  if (!['original', 'copy'].includes(normalizedCopyType)) {
+    return res.status(400).json({ error: 'Invalid copy_type' });
+  }
+  if (normalizedAction === 'return' && !req.file) {
+    return res.status(400).json({ error: 'proof_of_return is required for return action' });
+  }
+
+  try {
+    const proofPath = req.file ? `/uploads/files-requests/${req.file.filename}` : null;
+
+    const result = await pool.query(
+      `INSERT INTO files_requests
+       (requested_by, request_date, department, document_name, purpose, request_action, copy_type, proof_of_return)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        String(document_name).trim(),
+        String(purpose).trim(),
+        normalizedAction,
+        normalizedCopyType,
+        proofPath
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/files-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── My Requests — unified view for a single user ────────────────────────────
+// GET /api/users/:id/my-requests
+// Returns all leave, id, salary-increase, and files requests for the user,
+// merged into one array sorted by created_at DESC.
+app.get('/api/users/:id/my-requests', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  try {
+    const [leaves, idReqs, salaryReqs, filesReqs] = await Promise.all([
+      pool.query(
+        `SELECT id, 'leave' AS type, leave_type AS subtype,
+                reason AS summary,
+                status, submitted_at AS created_at, updated_at
+         FROM leave_requests
+         WHERE employee_id = $1
+         ORDER BY submitted_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'id' AS type, id_type AS subtype,
+                purpose AS summary,
+                status, created_at, updated_at
+         FROM id_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'salary' AS type, 'salary increase' AS subtype,
+                justification AS summary,
+                status, created_at, updated_at
+         FROM salary_increase_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'files' AS type, document_name AS subtype,
+                purpose AS summary,
+                status, created_at, updated_at
+         FROM files_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+    ]);
+
+    const all = [
+      ...leaves.rows,
+      ...idReqs.rows,
+      ...salaryReqs.rows,
+      ...filesReqs.rows,
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    res.json(all);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/users/:id/my-requests/:type/:requestId/cancel
+// Cancels a pending request of a given type owned by the user.
+app.put('/api/users/:id/my-requests/:type/:requestId/cancel', async (req, res) => {
+  const userId     = Number(req.params.id);
+  const requestId  = Number(req.params.requestId);
+  const type       = String(req.params.type || '').trim().toLowerCase();
+
+  if (!Number.isFinite(userId) || userId <= 0 || !Number.isFinite(requestId) || requestId <= 0) {
+    return res.status(400).json({ error: 'Invalid user or request id' });
+  }
+
+  const tableMap = {
+    leave:  { table: 'leave_requests',           ownerCol: 'employee_id'  },
+    id:     { table: 'id_requests',              ownerCol: 'requested_by' },
+    salary: { table: 'salary_increase_requests', ownerCol: 'requested_by' },
+    files:  { table: 'files_requests',           ownerCol: 'requested_by' },
+  };
+
+  const meta = tableMap[type];
+  if (!meta) return res.status(400).json({ error: 'Invalid request type' });
+
+  try {
+    const check = await pool.query(
+      `SELECT id, status FROM ${meta.table} WHERE id = $1 AND ${meta.ownerCol} = $2`,
+      [requestId, userId]
+    );
+    if (!check.rowCount) return res.status(404).json({ error: 'Request not found' });
+    if (check.rows[0].status.toLowerCase() !== 'pending') {
+      return res.status(400).json({ error: 'Only pending requests can be cancelled' });
+    }
+
+    await pool.query(
+      `UPDATE ${meta.table} SET status = 'Cancelled', updated_at = NOW() WHERE id = $1`,
+      [requestId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Unified Threads — merged inbox + requests view ──────────────────────────
+// GET /api/users/:id/threads?filter=all|requests|messages&status=all|pending|approved|rejected&search=...
+// Returns all messages and requests as unified thread objects, sorted by created_at DESC.
+app.get('/api/users/:id/threads', async (req, res) => {
+  const userId = Number(req.params.id);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+
+  const filter = String(req.query.filter || 'all').trim().toLowerCase();
+  const statusFilter = String(req.query.status || 'all').trim().toLowerCase();
+  const search = String(req.query.search || '').trim().toLowerCase();
+
+  try {
+    const results = [];
+
+    // ── Fetch messages (inbox + sent) ──────────────────────────────────────
+    if (filter === 'all' || filter === 'messages') {
+      const msgRes = await pool.query(`
+        SELECT
+          m.id, m.subject, m.body, m.is_read, m.parent_message_id,
+          m.created_at, m.updated_at,
+          sender.id AS sender_id, sender.full_name AS sender_name, sender.email AS sender_email,
+          recipient.id AS recipient_id, recipient.full_name AS recipient_name, recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE (m.recipient_id = $1 AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE)
+           OR (m.sender_id = $1 AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE)
+        ORDER BY m.created_at DESC
+      `, [userId]);
+
+      for (const m of msgRes.rows) {
+        const isSender = Number(m.sender_id) === userId;
+        const thread = {
+          thread_id: `msg_${m.id}`,
+          type: 'message',
+          status: null,
+          title: m.subject || '(No subject)',
+          summary: String(m.body || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+          sender_name: isSender ? 'You' : (m.sender_name || m.sender_email || 'System'),
+          sender_id: m.sender_id,
+          recipient_id: m.recipient_id,
+          recipient_name: m.recipient_name || m.recipient_email || 'Unknown',
+          is_read: isSender ? true : m.is_read,  // sent messages are always "read" by sender
+          created_at: m.created_at,
+          updated_at: m.updated_at || m.created_at,
+          raw: m,
+        };
+        if (search && !thread.title.toLowerCase().includes(search) && !thread.summary.toLowerCase().includes(search)) continue;
+        results.push(thread);
+      }
+    }
+
+    // ── Fetch requests ──────────────────────────────────────────────────────
+    if (filter === 'all' || filter === 'requests') {
+      const [leaves, idReqs, salaryReqs, filesReqs] = await Promise.all([
+        pool.query(
+          `SELECT id, 'leave' AS req_type, leave_type AS subtype, reason AS summary,
+                  status, submitted_at AS created_at, updated_at, employee_id AS owner_id
+           FROM leave_requests WHERE employee_id = $1 ORDER BY submitted_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'id' AS req_type, id_type AS subtype, purpose AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM id_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'salary' AS req_type, 'salary increase' AS subtype, justification AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM salary_increase_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'files' AS req_type, document_name AS subtype, purpose AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM files_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+      ]);
+
+      const typeLabels = { leave: 'Leave Request', id: 'ID Request', salary: 'Salary Increase', files: 'Files Request' };
+      const allReqs = [...leaves.rows, ...idReqs.rows, ...salaryReqs.rows, ...filesReqs.rows];
+
+      for (const r of allReqs) {
+        const statusLower = (r.status || 'pending').toLowerCase();
+        if (statusFilter !== 'all' && statusLower !== statusFilter) continue;
+
+        const label = typeLabels[r.req_type] || r.req_type;
+        const title = `[${label}]${r.subtype ? ` — ${r.subtype}` : ''}`;
+        const summary = String(r.summary || '').slice(0, 120);
+
+        if (search && !title.toLowerCase().includes(search) && !summary.toLowerCase().includes(search)) continue;
+
+        results.push({
+          thread_id: `req_${r.req_type}_${r.id}`,
+          type: 'request',
+          req_type: r.req_type,
+          status: r.status || 'Pending',
+          title,
+          summary,
+          sender_name: 'You',
+          sender_id: userId,
+          is_read: true,
+          created_at: r.created_at,
+          updated_at: r.updated_at || r.created_at,
+          raw: r,
+        });
+      }
+    }
+
+    // Sort by created_at DESC
+    results.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/:id/threads/:threadId — fetch thread messages for a request or message
+app.get('/api/users/:id/threads/:threadId', async (req, res) => {
+  const userId = Number(req.params.id);
+  const threadId = String(req.params.threadId || '');
+
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+
+  try {
+    // ── Message thread ─────────────────────────────────────────────────────
+    if (threadId.startsWith('msg_')) {
+      const msgId = Number(threadId.replace('msg_', ''));
+      const result = await pool.query(`
+        SELECT m.*,
+          sender.full_name AS sender_name, sender.email AS sender_email,
+          recipient.full_name AS recipient_name, recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
+      `, [msgId, userId]);
+
+      if (!result.rowCount) return res.status(404).json({ error: 'Thread not found' });
+      const root = result.rows[0];
+
+      // Fetch thread replies (same parent chain)
+      const replies = await pool.query(`
+        SELECT m.*,
+          sender.full_name AS sender_name, sender.email AS sender_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        WHERE m.parent_message_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
+        ORDER BY m.created_at ASC
+      `, [msgId, userId]);
+
+      return res.json({
+        thread_id: threadId,
+        type: 'message',
+        title: root.subject || '(No subject)',
+        messages: [
+          { id: root.id, sender_name: root.sender_name || 'Unknown', body: root.body, created_at: root.created_at, is_system: false },
+          ...replies.rows.map(r => ({ id: r.id, sender_name: r.sender_name || 'Unknown', body: r.body, created_at: r.created_at, is_system: false }))
+        ],
+        raw: root,
+      });
+    }
+
+    // ── Request thread ─────────────────────────────────────────────────────
+    if (threadId.startsWith('req_')) {
+      const parts = threadId.replace('req_', '').split('_');
+      const reqType = parts[0];
+      const reqId = Number(parts[1]);
+
+      const tableMap = {
+        leave:  { table: 'leave_requests',           ownerCol: 'employee_id',  label: 'Leave Request'    },
+        id:     { table: 'id_requests',              ownerCol: 'requested_by', label: 'ID Request'       },
+        salary: { table: 'salary_increase_requests', ownerCol: 'requested_by', label: 'Salary Increase'  },
+        files:  { table: 'files_requests',           ownerCol: 'requested_by', label: 'Files Request'    },
+      };
+      const meta = tableMap[reqType];
+      if (!meta) return res.status(400).json({ error: 'Invalid request type' });
+
+      const result = await pool.query(
+        `SELECT * FROM ${meta.table} WHERE id = $1 AND ${meta.ownerCol} = $2`,
+        [reqId, userId]
+      );
+      if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+      const req_row = result.rows[0];
+
+      // Build synthetic thread messages
+      const messages = [];
+      const summary = req_row.justification || req_row.reason || req_row.purpose || req_row.document_name || '';
+      const details = Object.entries(req_row)
+        .filter(([k]) => !['id', 'updated_at', 'created_at', 'employee_id', 'requested_by', 'owner_id'].includes(k))
+        .map(([k, v]) => v != null ? `${k.replace(/_/g,' ')}: ${v}` : null)
+        .filter(Boolean)
+        .join('\n');
+
+      messages.push({
+        id: `init_${req_row.id}`,
+        sender_name: 'You',
+        body: `${meta.label} submitted.\n\n${details}`,
+        created_at: req_row.created_at || req_row.submitted_at,
+        is_system: false,
+      });
+      messages.push({
+        id: `status_${req_row.id}`,
+        sender_name: 'System',
+        body: `Status: ${req_row.status || 'Pending'}`,
+        created_at: req_row.created_at || req_row.submitted_at,
+        is_system: true,
+        status: req_row.status,
+      });
+      if (req_row.remarks) {
+        messages.push({
+          id: `remark_${req_row.id}`,
+          sender_name: 'Admin',
+          body: req_row.remarks,
+          created_at: req_row.updated_at || req_row.created_at,
+          is_system: false,
+        });
+      }
+      if (req_row.status && req_row.status.toLowerCase() !== 'pending') {
+        messages.push({
+          id: `resolved_${req_row.id}`,
+          sender_name: 'System',
+          body: `Status changed to: ${req_row.status}`,
+          created_at: req_row.updated_at || req_row.created_at,
+          is_system: true,
+          status: req_row.status,
+        });
+      }
+
+      const subtype = req_row.leave_type || req_row.id_type || req_row.document_name || '';
+      return res.json({
+        thread_id: threadId,
+        type: 'request',
+        req_type: reqType,
+        status: req_row.status || 'Pending',
+        title: `[${meta.label}]${subtype ? ` — ${subtype}` : ''}`,
+        messages,
+        raw: req_row,
+      });
+    }
+
+    return res.status(400).json({ error: 'Invalid thread id' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Dashboard Stats ─────────────────────────────────────────────────────────
+
+app.get('/api/dashboard/stats', async (req, res) => {
+  try {
+    const [sites, active, prob, tickets, openTickets, recentTickets, probByStatus, sitesByRegion] = await Promise.all([
+      // Total terminals (sum across all region tables)
+      pool.query(`
+        SELECT COALESCE(SUM(row_count),0) AS total FROM (
+          SELECT COUNT(*) AS row_count FROM terminals
+        ) t
+      `).catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Active sites (is_active = true in terminals)
+      pool.query(`SELECT COUNT(*) AS total FROM terminals WHERE is_active = true`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Problematic sites count
+      pool.query(`SELECT COUNT(*) AS total FROM problematic_sites`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Total tickets
+      pool.query(`SELECT COUNT(*) AS total FROM ticket_information`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Open tickets
+      pool.query(`SELECT COUNT(*) AS total FROM ticket_information WHERE LOWER(status) = 'open'`)
+        .catch(() => ({ rows: [{ total: 0 }] })),
+
+      // Recent 5 tickets
+      pool.query(`
+        SELECT id, subject, status, department, created_at
+        FROM ticket_information
+        ORDER BY created_at DESC LIMIT 5
+      `).catch(() => ({ rows: [] })),
+
+      // Problematic sites by status
+      pool.query(`
+        SELECT "Status" AS status, COUNT(*) AS count
+        FROM problematic_sites
+        GROUP BY "Status"
+        ORDER BY count DESC
+      `).catch(() => ({ rows: [] })),
+
+      // Sites per region (from regions table)
+      pool.query(`
+        SELECT region_name, COUNT(*) AS count
+        FROM regions
+        GROUP BY region_name
+        ORDER BY region_name
+      `).catch(() => ({ rows: [] })),
+    ]);
+
+    res.json({
+      totalSites:       parseInt(sites.rows[0]?.total) || 0,
+      activeSites:      parseInt(active.rows[0]?.total) || 0,
+      problematicSites: parseInt(prob.rows[0]?.total) || 0,
+      totalTickets:     parseInt(tickets.rows[0]?.total) || 0,
+      openTickets:      parseInt(openTickets.rows[0]?.total) || 0,
+      recentTickets:    recentTickets.rows,
+      probByStatus:     probByStatus.rows,
+      sitesByRegion:    sitesByRegion.rows,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Map / Network Sites ─────────────────────────────────────────────────────
+
+// network_sites + network_devices migration
+(async () => {
+  try {
+    // network_sites columns
+    const siteAlters = [
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS is_active    BOOLEAN DEFAULT FALSE`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS project_name TEXT DEFAULT 'DICT438'`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS modem        TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS transceiver  TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS dish         TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS province     CITEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS created_by_name  TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS installed_by     TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS repaired_by      TEXT`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS date_installed   DATE`,
+      `ALTER TABLE network_sites ADD COLUMN IF NOT EXISTS acceptance_date  DATE`,
+    ];
+    for (const sql of siteAlters) { try { await pool.query(sql); } catch(e) {} }
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS network_site_history (
+        id SERIAL PRIMARY KEY,
+        site_name CITEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        actor_name TEXT,
+        notes TEXT,
+        action_date TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // network_devices table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS network_devices (
+        id            SERIAL PRIMARY KEY,
+        site_id       INT REFERENCES network_sites(id) ON DELETE CASCADE,
+        site_name     CITEXT,
+        device_name   CITEXT NOT NULL,
+        device_type   CITEXT,
+        serial_number CITEXT,
+        mac_address   CITEXT,
+        model         CITEXT,
+        license_due   DATE,
+        is_active     BOOLEAN DEFAULT TRUE,
+        province      CITEXT,
+        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    const devAlters = [
+      `ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS device_type CITEXT`,
+      `ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS is_active   BOOLEAN DEFAULT TRUE`,
+      `ALTER TABLE network_devices ADD COLUMN IF NOT EXISTS license_due DATE`,
+    ];
+    for (const sql of devAlters) { try { await pool.query(sql); } catch(e) {} }
+
+    console.log('network_sites + network_devices ready ✅');
+  } catch(e) { console.error('Map migration error:', e.message); }
+})();
+
+async function logNetworkSiteHistory(siteName, actionType, actorName = null, notes = null) {
+  try {
+    await pool.query(
+      `INSERT INTO network_site_history (site_name, action_type, actor_name, notes)
+       VALUES ($1, $2, $3, $4)`,
+      [siteName, actionType, actorName, notes]
+    );
+  } catch (err) {
+    console.error('Map history log error:', err.message);
+  }
+}
+
+// GET all network_sites with full details + joined devices + terminal row
+app.get('/api/map/sites', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        ns.id, ns.site_name, ns.municipality, ns.province,
+        ns.lat, ns.long, ns.ip, ns.mac, ns.contacts, ns.email,
+        ns.is_active, ns.project_name,
+        ns.modem, ns.transceiver, ns.dish,
+        ns.created_by_name, ns.installed_by, ns.repaired_by, ns.date_installed, ns.acceptance_date,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id',          nd.id,
+              'device_name', nd.device_name,
+              'device_type', nd.device_type,
+              'model',       nd.model,
+              'serial',      nd.serial_number,
+              'serial_number', nd.serial_number,
+              'mac_address', nd.mac_address,
+              'license_due', nd.license_due,
+              'is_active',   nd.is_active
+            )
+            ORDER BY nd.device_name
+          ) FILTER (WHERE nd.id IS NOT NULL), '[]'
+        ) AS devices
+      FROM network_sites ns
+      LEFT JOIN network_devices nd ON nd.site_id = ns.id
+      GROUP BY ns.id
+      ORDER BY ns.province, ns.site_name
+    `);
+
+    const historyResult = await pool.query(`
+      SELECT site_name, action_type, actor_name, notes, action_date
+      FROM network_site_history
+      ORDER BY action_date DESC
+    `);
+    const historyMap = new Map();
+    for (const row of historyResult.rows) {
+      const key = String(row.site_name || '').toLowerCase();
+      if (!historyMap.has(key)) historyMap.set(key, []);
+      if (historyMap.get(key).length < 12) historyMap.get(key).push(row);
+    }
+
+    // For each site, fetch its matching terminal row from site_inventory
+    // Try both the raw site_name and with the VSTG2- prefix stripped
+    const siteNames = result.rows.map(r => r.site_name);
+    const strippedNames = result.rows.map(r => r.site_name.replace(/^VSTG2-/i, ''));
+    const allLookups = [...new Set([...siteNames, ...strippedNames])];
+    let terminalMap = {};
+    if (allLookups.length) {
+      const tResult = await pool.query(
+        `SELECT * FROM site_inventory WHERE LOWER("SITENAME") = ANY($1::text[])`,
+        [allLookups.map(s => s.toLowerCase())]
+      );
+      for (const row of tResult.rows) {
+        if (row['SITENAME']) {
+          terminalMap[row['SITENAME']] = row;
+          terminalMap[row['SITENAME'].toLowerCase()] = row;
+        }
+      }
+    }
+
+    const rows = result.rows.map(r => {
+      const key = r.site_name.toLowerCase();
+      const strippedKey = r.site_name.replace(/^VSTG2-/i, '').toLowerCase();
+      const terminal = terminalMap[key] || terminalMap[strippedKey] || null;
+      return { ...r, terminal, history: historyMap.get(key) || historyMap.get(strippedKey) || [] };
+    });
+
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/map/sites', async (req, res) => {
+  const {
+    site_name, municipality, province, lat, long: lng, ip, mac, contacts, email,
+    is_active, project_name, modem, transceiver, dish,
+    created_by_name, installed_by, repaired_by, date_installed, acceptance_date
+  } = req.body || {};
+
+  if (!String(site_name || '').trim()) {
+    return res.status(400).json({ error: 'site_name is required' });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO network_sites
+        (site_name, municipality, province, lat, long, ip, mac, contacts, email, is_active, project_name, modem, transceiver, dish,
+         created_by_name, installed_by, repaired_by, date_installed, acceptance_date)
+       VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+       RETURNING *`,
+      [
+        String(site_name).trim(),
+        municipality || null,
+        province || null,
+        lat ?? null,
+        lng ?? null,
+        ip || null,
+        mac || null,
+        contacts || null,
+        email || null,
+        typeof is_active === 'boolean' ? is_active : false,
+        project_name || 'DICT438',
+        modem || null,
+        transceiver || null,
+        dish || null,
+        created_by_name || null,
+        installed_by || null,
+        repaired_by || null,
+        date_installed || null,
+        acceptance_date || null
+      ]
+    );
+    await logNetworkSiteHistory(
+      String(site_name).trim(),
+      'created',
+      created_by_name || installed_by || null,
+      `Project: ${project_name || 'DICT438'}`
+    );
+    res.status(201).json({ ...result.rows[0], devices: [], history: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/map/sites/import', async (req, res) => {
+  const sites = Array.isArray(req.body?.sites) ? req.body.sites : [];
+  if (!sites.length) return res.status(400).json({ error: 'No sites provided' });
+
+  let inserted = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const raw of sites) {
+    const siteName = String(raw.site_name || '').trim();
+    if (!siteName) {
+      skipped++;
+      errors.push('A row was skipped because site_name is missing.');
+      continue;
+    }
+
+    try {
+      const exists = await pool.query(`SELECT 1 FROM network_sites WHERE LOWER(site_name)=LOWER($1)`, [siteName]);
+      if (exists.rowCount) {
+        skipped++;
+        continue;
+      }
+
+      await pool.query(
+        `INSERT INTO network_sites
+          (site_name, municipality, province, lat, long, ip, mac, contacts, email, is_active, project_name, modem, transceiver, dish,
+           created_by_name, installed_by, repaired_by, date_installed, acceptance_date)
+         VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+        [
+          siteName,
+          raw.municipality || null,
+          raw.province || null,
+          raw.lat ? Number(raw.lat) : null,
+          raw.long ? Number(raw.long) : null,
+          raw.ip || null,
+          raw.mac || null,
+          raw.contacts || null,
+          raw.email || null,
+          String(raw.is_active || '').toLowerCase() === 'true' || raw.is_active === true,
+          raw.project_name || 'DICT438',
+          raw.modem || null,
+          raw.transceiver || null,
+          raw.dish || null,
+          raw.created_by_name || null,
+          raw.installed_by || null,
+          raw.repaired_by || null,
+          raw.date_installed || null,
+          raw.acceptance_date || null
+        ]
+      );
+      await logNetworkSiteHistory(siteName, 'imported', raw.created_by_name || raw.installed_by || null, 'Imported from bulk upload');
+      inserted++;
+    } catch (err) {
+      skipped++;
+      errors.push(`${siteName}: ${err.message}`);
+    }
+  }
+
+  res.json({ inserted, skipped, errors: errors.slice(0, 10) });
+});
+
+// PUT activate/deactivate a site
+app.put('/api/map/sites/:siteName/status', async (req, res) => {
+  const { is_active } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_sites SET is_active=$1 WHERE site_name=$2 RETURNING *`,
+      [is_active, req.params.siteName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    await logNetworkSiteHistory(req.params.siteName, is_active ? 'activated' : 'deactivated', null, null);
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update lat/long for a site
+app.put('/api/map/sites/:siteName/coords', async (req, res) => {
+  const { lat, long } = req.body;
+  if (lat == null || long == null) return res.status(400).json({ error: 'lat and long are required' });
+  try {
+    const result = await pool.query(
+      `UPDATE network_sites SET lat=$1, long=$2 WHERE site_name=$3 RETURNING *`,
+      [parseFloat(lat), parseFloat(long), req.params.siteName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT edit site details
+app.put('/api/map/sites/:siteName/edit', async (req, res) => {
+  const {
+    ip, mac, lat, long: lng, contacts, email, modem, transceiver, dish,
+    municipality, province, project_name, created_by_name, installed_by, repaired_by, date_installed, acceptance_date
+  } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_sites
+       SET ip=$1, mac=$2, lat=$3, long=$4, contacts=$5, email=$6, modem=$7, transceiver=$8, dish=$9,
+           municipality=$10, province=$11, project_name=$12, created_by_name=$13, installed_by=$14, repaired_by=$15, date_installed=$16, acceptance_date=$17
+       WHERE site_name=$18 RETURNING *`,
+      [
+        ip||null, mac||null, lat||null, lng||null, contacts||null, email||null, modem||null, transceiver||null, dish||null,
+        municipality || null, province || null, project_name || 'DICT438', created_by_name || null, installed_by || null, repaired_by || null, date_installed || null, acceptance_date || null,
+        req.params.siteName
+      ]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Site not found' });
+    await logNetworkSiteHistory(req.params.siteName, 'updated', repaired_by || created_by_name || null, 'Site details updated');
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT bulk activate/deactivate filtered sites
+app.put('/api/map/sites/bulk-status', async (req, res) => {
+  const { site_names, is_active } = req.body;
+  if (!Array.isArray(site_names) || !site_names.length)
+    return res.status(400).json({ error: 'site_names array required' });
+  try {
+    const placeholders = site_names.map((_, i) => `$${i + 2}`).join(',');
+    const result = await pool.query(
+      `UPDATE network_sites SET is_active=$1 WHERE site_name IN (${placeholders}) RETURNING site_name, is_active`,
+      [is_active, ...site_names]
+    );
+    res.json({ updated: result.rowCount, rows: result.rows });
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT update device status
+app.put('/api/map/devices/:id/status', async (req, res) => {
+  const { is_active } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_devices SET is_active=$1 WHERE id=$2 RETURNING *`,
+      [is_active, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Device not found' });
+    res.json(result.rows[0]);
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT edit device details
+app.put('/api/map/devices/:id/edit', async (req, res) => {
+  const { device_name, device_type, serial_number, mac_address, model, license_due } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE network_devices
+       SET device_name=$1, device_type=$2, serial_number=$3,
+           mac_address=$4, model=$5, license_due=$6
+       WHERE id=$7 RETURNING *`,
+      [device_name||null, device_type||null, serial_number||null,
+       mac_address||null, model||null, license_due||null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Device not found' });
+    res.json(result.rows[0]);
+  } catch(err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Ticket Replies ──────────────────────────────────────────────────────────
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ticket_replies (
+        id         SERIAL PRIMARY KEY,
+        ticket_id  INT NOT NULL REFERENCES ticket_information(id) ON DELETE CASCADE,
+        user_id    INT REFERENCES users(id) ON DELETE SET NULL,
+        message    TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('ticket_replies table ready ✅');
+  } catch (err) {
+    console.error('ticket_replies error:', err.message);
+  }
+})();
+
+// GET replies for a ticket
+app.get('/api/tickets/:ticketId/replies', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT r.*, u.full_name
+      FROM ticket_replies r
+      LEFT JOIN users u ON r.user_id = u.id
+      WHERE r.ticket_id = $1
+      ORDER BY r.created_at ASC
+    `, [req.params.ticketId]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST new reply
+app.post('/api/tickets/:ticketId/replies', async (req, res) => {
+  const { message, user_id } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Message is required' });
+  try {
+    const result = await pool.query(`
+      INSERT INTO ticket_replies (ticket_id, user_id, message)
+      VALUES ($1, $2, $3) RETURNING *
+    `, [req.params.ticketId, user_id || null, message.trim()]);
+    const row = result.rows[0];
+    if (row.user_id) {
+      const u = await pool.query('SELECT full_name FROM users WHERE id=$1', [row.user_id]);
+      if (u.rows[0]) Object.assign(row, u.rows[0]);
+    }
+    res.status(201).json(row);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PUT edit a reply
+app.put('/api/replies/:id', async (req, res) => {
+  const { message } = req.body;
+  if (!message?.trim()) return res.status(400).json({ error: 'Message is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE ticket_replies SET message=$1 WHERE id=$2 RETURNING *`,
+      [message.trim(), req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE a reply
+app.delete('/api/replies/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM ticket_replies WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE other_data record
+app.delete('/api/reminders/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM other_data WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+
+/* ================= ACCEPTANCE ================= */
+
+const acceptanceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const type = req.path.includes('images') ? 'images'
+                 : req.path.includes('videos') ? 'videos' : 'files';
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'acceptance', type);
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext  = require('path').extname(file.originalname);
+      const base = require('path').basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${Date.now()}_${base}${ext}`);
+    }
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ext = require('path').extname(file.originalname).toLowerCase();
+    const mime = String(file.mimetype || '').toLowerCase();
+
+    const imageExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+    const videoExts = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'];
+    const docExts   = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.txt', '.csv', '.zip', '.rar'];
+
+    if (req.path.includes('/images')) {
+      if (mime.startsWith('image/') || imageExts.includes(ext)) return cb(null, true);
+      return cb(new Error('Invalid file type'));
+    }
+
+    if (req.path.includes('/videos')) {
+      if (mime.startsWith('video/') || videoExts.includes(ext)) return cb(null, true);
+      return cb(new Error('Invalid file type'));
+    }
+
+    if (docExts.includes(ext)) return cb(null, true);
+    return cb(new Error('Invalid file type'));
+  }
+});
+
+// Setup tables
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_sites (
+        id          SERIAL PRIMARY KEY,
+        site_name   CITEXT NOT NULL,
+        status      CITEXT NOT NULL DEFAULT 'Pending' CHECK (LOWER(status) IN ('pending','done')),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        updated_at  TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_files (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        file_name   CITEXT NOT NULL,
+        file_path   TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_images (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        image_name  CITEXT NOT NULL,
+        image_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_videos (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        video_name  CITEXT NOT NULL,
+        video_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        duration    VARCHAR(20),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_progress (
+        id           SERIAL PRIMARY KEY,
+        project_name CITEXT NOT NULL UNIQUE,
+        progress     NUMERIC(5,2) DEFAULT 0,
+        updated_at   TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    console.log('Acceptance tables ready ✅');
+  } catch(e) { console.error('Acceptance setup error:', e.message); }
+})();
+
+// GET all projects with progress
+app.get('/api/acceptance/projects', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        pp.project_name,
+        pp.progress,
+        COUNT(ps.id) AS total_sites,
+        COUNT(ps.id) FILTER (WHERE LOWER(ps.status)='done')    AS done_sites,
+        COUNT(ps.id) FILTER (WHERE LOWER(ps.status)='pending') AS pending_sites
+      FROM project_progress pp
+      LEFT JOIN project_sites ps ON ps.project_name = pp.project_name
+      GROUP BY pp.project_name, pp.progress, pp.updated_at
+      ORDER BY pp.project_name
+    `);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET sites for a project
+app.get('/api/acceptance/sites', async (req, res) => {
+  const { project, q } = req.query;
+  try {
+    let query = `
+      SELECT ps.*, u.full_name AS uploader_name,
+        (SELECT COUNT(*) FROM project_files  WHERE site_id=ps.id) AS file_count,
+        (SELECT COUNT(*) FROM project_images WHERE site_id=ps.id) AS image_count,
+        (SELECT COUNT(*) FROM project_videos WHERE site_id=ps.id) AS video_count
+      FROM project_sites ps
+      LEFT JOIN users u ON u.id = ps.uploaded_by
+    `;
+    const params = [];
+    const where = [];
+    if (project) { params.push(project); where.push(`ps.project_name = $${params.length}`); }
+    if (q)       { params.push(`%${q}%`); where.push(`ps.site_name ILIKE $${params.length}`); }
+    if (where.length) query += ' WHERE ' + where.join(' AND ');
+    query += ' ORDER BY ps.site_name';
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST add site
+app.post('/api/acceptance/sites', async (req, res) => {
+  const { site_name, status, uploaded_by, project_name, installer_name } = req.body || {};
+  if (!site_name?.trim())    return res.status(400).json({ error: 'site_name required' });
+  if (!project_name?.trim()) return res.status(400).json({ error: 'project_name required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_sites (project_name, site_name, status, uploaded_by, installer_name, acceptance_date)
+ VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+[
+  project_name.trim(),
+  site_name.trim(),
+  status || 'Pending',
+  uploaded_by || null,
+  installer_name || null,
+  null
+]
+    );
+    // Ensure project_progress entry exists
+    await pool.query(
+      `INSERT INTO project_progress (project_name) VALUES ($1) ON CONFLICT DO NOTHING`,
+      [project_name.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT update site status
+app.put('/api/acceptance/sites/:id', async (req, res) => {
+  const { status, installer_name } = req.body || {};
+  try {
+    const result = await pool.query(
+      `UPDATE project_sites
+       SET status=$1,
+           installer_name=COALESCE($2, installer_name),
+           acceptance_date=$3,
+           updated_at=NOW()
+       WHERE id=$4
+       RETURNING *`,
+      [
+  status,
+  installer_name || null,
+  ((status || '').toLowerCase() === 'done' ? new Date().toISOString().slice(0, 10) : null),
+  req.params.id
+]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/acceptance/sites/import-json', async (req, res) => {
+  const projectName = String(req.body?.project_name || '').trim();
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+  const uploadedBy = req.body?.uploaded_by || null;
+
+  if (!projectName) return res.status(400).json({ error: 'project_name required' });
+  if (!rows.length) return res.status(400).json({ error: 'No rows provided' });
+
+  let inserted = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (const row of rows) {
+    const siteName = String(row.site_name || '').trim();
+    if (!siteName) {
+      skipped++;
+      errors.push('A row was skipped because site_name is missing.');
+      continue;
+    }
+    try {
+      const exists = await pool.query(
+        `SELECT 1 FROM project_sites WHERE project_name = $1 AND LOWER(site_name) = LOWER($2)`,
+        [projectName, siteName]
+      );
+      if (exists.rowCount) {
+        skipped++;
+        continue;
+      }
+
+      const normalizedStatus = String(row.status || 'Pending').toLowerCase() === 'done' ? 'Done' : 'Pending';
+      await pool.query(
+        `INSERT INTO project_sites (project_name, site_name, status, uploaded_by, installer_name, acceptance_date)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          projectName,
+          siteName,
+          normalizedStatus,
+          uploadedBy,
+          row.installer_name || null,
+          row.acceptance_date || (normalizedStatus === 'Done' ? new Date().toISOString().slice(0, 10) : null)
+        ]
+      );
+      inserted++;
+    } catch (err) {
+      skipped++;
+      errors.push(`${siteName}: ${err.message}`);
+    }
+  }
+
+  await pool.query(
+    `INSERT INTO project_progress (project_name) VALUES ($1) ON CONFLICT DO NOTHING`,
+    [projectName]
+  );
+
+  res.json({ inserted, skipped, errors: errors.slice(0, 10) });
+});
+
+app.delete('/api/acceptance/sites/bulk-delete', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+  if (!ids.length) return res.status(400).json({ error: 'ids required' });
+  try {
+    const placeholders = ids.map((_, idx) => `$${idx + 1}`).join(',');
+    const result = await pool.query(`DELETE FROM project_sites WHERE id IN (${placeholders})`, ids);
+    res.json({ deleted: result.rowCount });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE site
+app.delete('/api/acceptance/sites/:id', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM project_sites WHERE id=$1`, [req.params.id]);
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET media for a site
+app.get('/api/acceptance/sites/:id/media', async (req, res) => {
+  try {
+    const [files, images, videos] = await Promise.all([
+      pool.query(`SELECT f.*, u.full_name AS uploader_name FROM project_files f LEFT JOIN users u ON u.id=f.uploaded_by WHERE f.site_id=$1 ORDER BY f.uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT i.*, u.full_name AS uploader_name FROM project_images i LEFT JOIN users u ON u.id=i.uploaded_by WHERE i.site_id=$1 ORDER BY i.uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT v.*, u.full_name AS uploader_name FROM project_videos v LEFT JOIN users u ON u.id=v.uploaded_by WHERE v.site_id=$1 ORDER BY v.uploaded_at DESC`, [req.params.id]),
+    ]);
+    res.json({ files: files.rows, images: images.rows, videos: videos.rows });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST upload file
+app.post('/api/acceptance/sites/:id/files', (req, res) => {
+  acceptanceUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+
+    const { uploaded_by } = req.body || {};
+    try {
+      const result = await pool.query(
+        `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, req.file.originalname, '/uploads/acceptance/files/'+req.file.filename,
+         (req.file.size/1024).toFixed(2), uploaded_by||null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
+});
+
+// POST upload image
+app.post('/api/acceptance/sites/:id/images', (req, res) => {
+  acceptanceUpload.single('image')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+
+    const { uploaded_by } = req.body || {};
+    try {
+      const result = await pool.query(
+        `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, req.file.originalname, '/uploads/acceptance/images/'+req.file.filename,
+         (req.file.size/1024).toFixed(2), uploaded_by||null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
+});
+
+// POST upload video
+app.post('/api/acceptance/sites/:id/videos', (req, res) => {
+  acceptanceUpload.single('video')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message || 'Invalid file type' });
+    if (!req.file) return res.status(400).json({ error: 'No file' });
+
+    const { uploaded_by } = req.body || {};
+    try {
+      const result = await pool.query(
+        `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [req.params.id, req.file.originalname, '/uploads/acceptance/videos/'+req.file.filename,
+         (req.file.size/1024).toFixed(2), uploaded_by||null]
+      );
+      res.status(201).json(result.rows[0]);
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
+});
+
+// DELETE media
+app.delete('/api/acceptance/files/:id',  async (req, res) => { try { await pool.query(`DELETE FROM project_files  WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+app.delete('/api/acceptance/images/:id', async (req, res) => { try { await pool.query(`DELETE FROM project_images WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+app.delete('/api/acceptance/videos/:id', async (req, res) => { try { await pool.query(`DELETE FROM project_videos WHERE id=$1`, [req.params.id]); res.json({ success: true }); } catch(e) { res.status(500).json({ error: e.message }); } });
+
+app.delete('/api/acceptance/media/bulk-delete', async (req, res) => {
+  const type = String(req.body?.type || '').trim().toLowerCase();
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+
+  if (!ids.length) return res.status(400).json({ error: 'ids required' });
+
+  const tableMap = {
+    files: 'project_files',
+    images: 'project_images',
+    videos: 'project_videos'
+  };
+
+  const table = tableMap[type];
+  if (!table) return res.status(400).json({ error: 'Invalid media type' });
+
+  try {
+    const placeholders = ids.map((_, idx) => `$${idx + 1}`).join(',');
+    const result = await pool.query(`DELETE FROM ${table} WHERE id IN (${placeholders})`, ids);
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET all project_progress for progress view
+app.get('/api/acceptance/progress', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM project_progress ORDER BY project_name`);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST create/update project
+app.post('/api/acceptance/projects', async (req, res) => {
+  const { project_name } = req.body || {};
+  if (!project_name?.trim()) return res.status(400).json({ error: 'project_name required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO project_progress (project_name) VALUES ($1)
+       ON CONFLICT (project_name) DO UPDATE SET updated_at=NOW() RETURNING *`,
+      [project_name.trim()]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ================= ACCEPTANCE ================= */
+
+const multerAcc = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'acceptance');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'))
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 }
+});
+
+// Auto-create acceptance tables
+(async () => {
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_sites (
+        id          SERIAL PRIMARY KEY,
+        site_name   CITEXT NOT NULL,
+        status      CITEXT NOT NULL DEFAULT 'Pending' CHECK (LOWER(status) IN ('pending','done')),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        updated_at  TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_files (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        file_name   CITEXT NOT NULL,
+        file_path   TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_images (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        image_name  CITEXT NOT NULL,
+        image_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_videos (
+        id          SERIAL PRIMARY KEY,
+        site_id     INT NOT NULL REFERENCES project_sites(id) ON DELETE CASCADE,
+        video_name  CITEXT NOT NULL,
+        video_path  TEXT NOT NULL,
+        file_size   NUMERIC(10,2),
+        uploaded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        uploaded_at TIMESTAMP DEFAULT NOW()
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS project_progress (
+        id           SERIAL PRIMARY KEY,
+        project_name CITEXT NOT NULL UNIQUE,
+        progress     NUMERIC(5,2) DEFAULT 0,
+        updated_at   TIMESTAMP DEFAULT NOW()
+      )`);
+    console.log('Acceptance tables ready ✅');
+  } catch(e) { console.error('Acceptance setup error:', e.message); }
+})();
+
+// (duplicate routes removed — canonical versions defined above)
+
+(async () => {
+  try {
+    await pool.query(`ALTER TABLE project_sites ADD COLUMN IF NOT EXISTS installer_name TEXT`);
+    await pool.query(`ALTER TABLE project_sites ADD COLUMN IF NOT EXISTS acceptance_date DATE`);
+  } catch (e) {
+    console.error('Acceptance column migration error:', e.message);
+  }
+})();
+
+// POST upload file
+app.post('/api/acceptance/files', multerAcc.array('file'), async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+
+  const { site_id, uploaded_by } = req.body;
+
+  try {
+    const inserted = [];
+    for (const file of files) {
+      const result = await pool.query(
+        `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [
+          site_id,
+          file.originalname,
+          '/uploads/acceptance/' + file.filename,
+          (file.size / 1024).toFixed(2),
+          uploaded_by || null
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    res.status(201).json({ uploaded: inserted.length, items: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST upload image
+app.post('/api/acceptance/images', multerAcc.array('image'), async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+
+  const { site_id, uploaded_by } = req.body;
+
+  try {
+    const inserted = [];
+    for (const file of files) {
+      const result = await pool.query(
+        `INSERT INTO project_images (site_id, image_name, image_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [
+          site_id,
+          file.originalname,
+          '/uploads/acceptance/' + file.filename,
+          (file.size / 1024).toFixed(2),
+          uploaded_by || null
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    res.status(201).json({ uploaded: inserted.length, items: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST upload video
+app.post('/api/acceptance/videos', multerAcc.array('video'), async (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ error: 'No file' });
+
+  const { site_id, uploaded_by } = req.body;
+
+  try {
+    const inserted = [];
+    for (const file of files) {
+      const result = await pool.query(
+        `INSERT INTO project_videos (site_id, video_name, video_path, file_size, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [
+          site_id,
+          file.originalname,
+          '/uploads/acceptance/' + file.filename,
+          (file.size / 1024).toFixed(2),
+          uploaded_by || null
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    res.status(201).json({ uploaded: inserted.length, items: inserted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET files for a site
+app.get('/api/acceptance/sites/:id/files', async (req, res) => {
+  try {
+    const [files, images, videos] = await Promise.all([
+      pool.query(`SELECT *, 'file' AS type FROM project_files WHERE site_id=$1 ORDER BY uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT *, 'image' AS type FROM project_images WHERE site_id=$1 ORDER BY uploaded_at DESC`, [req.params.id]),
+      pool.query(`SELECT *, 'video' AS type FROM project_videos WHERE site_id=$1 ORDER BY uploaded_at DESC`, [req.params.id]),
+    ]);
+    res.json({ files: files.rows, images: images.rows, videos: videos.rows });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const os = require('os');
+
+function getLocalIP() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+}
+
+const HOST = '0.0.0.0';
+
+const server = app.listen(PORT, HOST, () => {
+  const localIP = getLocalIP();
+  console.log('');
+  console.log('┌─────────────────────────────────────────────┐');
+  console.log('│           Server is now running!             │');
+  console.log('├─────────────────────────────────────────────┤');
+  console.log(`│  Local:    http://localhost:${PORT}             │`);
+  console.log(`│  Network:  http://${localIP}:${PORT}         │`);
+  console.log('├─────────────────────────────────────────────┤');
+  console.log('│  Share the Network URL with LAN devices      │');
+  console.log('└─────────────────────────────────────────────┘');
+  console.log('');
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') console.error(`❌ Port ${PORT} is already in use. Free it or change PORT in your environment.`);
+  else console.error('Server error:', err);
+  process.exit(1);
+});

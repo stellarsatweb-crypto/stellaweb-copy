@@ -1,0 +1,224 @@
+@import url("./dashboard.css");
+
+/* =====================================================
+   FINANCE SIDEBAR — Match NOC sidebar exactly
+   Resets all body.finance-role overrides on the
+   sidebar so it uses the shared dashboard.css styles.
+   Only menu CONTENT (items) differs, not the design.
+   ===================================================== */
+
+/* Sidebar dimensions — same as NOC */
+body.finance-role .sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: #0f1e38;
+  padding: 22px 16px;
+  position: fixed;
+  border-radius: 0 20px 20px 0;
+  box-shadow: 4px 0 32px rgba(0,0,0,0.18);
+}
+
+body.finance-role .sidebar.collapsed {
+  width: var(--sidebar-w-collapsed);
+  min-width: var(--sidebar-w-collapsed);
+  border-radius: 0 16px 16px 0;
+}
+
+body.finance-role.dark .sidebar {
+  background: #060e1e;
+}
+
+/* Main content offset — same as NOC */
+body.finance-role .main {
+  margin-left: var(--sidebar-w);
+  padding: 28px 32px;
+  background: #f0f4f8;
+}
+
+body.finance-role.sidebar-collapsed .main {
+  margin-left: var(--sidebar-w-collapsed);
+}
+
+body.finance-role.dark .main {
+  background: #0b1121;
+}
+
+/* Logo — same as NOC */
+body.finance-role .logo {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+body.finance-role .logo-img {
+  width: 200px;
+  max-width: 100%;
+  filter: brightness(1.4) drop-shadow(0 2px 8px rgba(255,255,255,0.15));
+  transition: width 0.32s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+}
+
+body.finance-role .sidebar.collapsed .logo-img {
+  width: 40px;
+}
+
+/* Menu list — same as NOC */
+body.finance-role .menu {
+  list-style: none;
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Menu items — same as NOC */
+body.finance-role .menu li {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: rgba(255,255,255,0.65);
+  margin-bottom: 0;
+  overflow: hidden;
+  transform: none;
+  transition:
+    background  0.18s ease,
+    color       0.18s ease,
+    padding     0.32s cubic-bezier(0.4,0,0.2,1);
+}
+
+body.finance-role .menu li:hover {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.92);
+  transform: none;
+  border-radius: 10px;
+}
+
+/* Icons — same as NOC */
+body.finance-role .menu li i {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+  transition: transform 0.2s ease;
+}
+
+/* Labels — same as NOC */
+body.finance-role .menu li span {
+  opacity: 1;
+  max-width: 180px;
+  overflow: hidden;
+  transition: opacity 0.22s ease, max-width 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.finance-role .sidebar.collapsed .menu li span {
+  opacity: 0;
+  max-width: 0;
+}
+
+/* Active item — same as NOC */
+body.finance-role .menu li.active {
+  background: linear-gradient(135deg, rgba(99,130,255,0.25), rgba(59,130,246,0.15));
+  color: #fff;
+  font-weight: 600;
+  border: 1px solid rgba(99,130,255,0.2);
+  box-shadow: 0 2px 10px rgba(59,130,246,0.1);
+  border-radius: 10px;
+  margin-right: 0;
+  margin-left: 0;
+  padding-right: 12px;
+  padding-left: 12px;
+  overflow: hidden;
+}
+
+body.finance-role.dark .menu li.active {
+  background: linear-gradient(135deg, rgba(99,130,255,0.2), rgba(59,130,246,0.12));
+  color: #93c5fd;
+  border-color: rgba(147,197,253,0.15);
+}
+
+body.finance-role .menu li.active i {
+  color: #7cb3ff;
+}
+
+body.finance-role.dark .menu li.active i {
+  color: #93c5fd;
+}
+
+/* Collapsed active state — same as NOC */
+body.finance-role .sidebar.collapsed .menu li {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+body.finance-role .sidebar.collapsed .menu li.active {
+  width: 42px;
+  height: 42px;
+  margin: 1px auto;
+  border-radius: 10px;
+  justify-content: center;
+  padding: 0;
+}
+
+/* Collapse button — same as NOC */
+body.finance-role .collapse-btn {
+  position: static;
+  bottom: auto;
+  left: auto;
+  align-self: center;
+  flex-shrink: 0;
+  margin-top: 12px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.12);
+  cursor: pointer;
+  background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.7);
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+  transform: none;
+  box-shadow: none;
+}
+
+body.finance-role .collapse-btn:hover {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.22);
+  color: white;
+  transform: none;
+  box-shadow: none;
+}
+
+body.finance-role .collapse-btn i {
+  display: block;
+  transition: transform 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body.finance-role .sidebar.collapsed .collapse-btn {
+  left: auto;
+  transform: none;
+}
+
+body.finance-role .sidebar.collapsed .collapse-btn i {
+  transform: rotate(180deg);
+}
+
+body.finance-role.dark .collapse-btn {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.08);
+}
+
+body.finance-role.dark .collapse-btn:hover {
+  background: rgba(255,255,255,0.1);
+}

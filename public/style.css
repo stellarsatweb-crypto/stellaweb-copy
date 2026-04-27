@@ -1,0 +1,206 @@
+body {
+  margin: 0;
+  height: 100vh;
+  font-family: 'Segoe UI', sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: url("background.png") no-repeat center center/cover;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(2px);
+  z-index: 0;
+}
+
+/* LOGO */
+.logo-container {
+  position: absolute;
+  top: 30px;
+  left: 40px;
+  z-index: 2;
+}
+
+.logo-container img {
+  height: 55px;
+}
+
+/* CARD */
+.card {
+  width: 420px;
+  padding: 45px 40px;
+  border-radius: 25px;
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(15px);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.25);
+  text-align: center;
+  position: relative;
+  z-index: 1;
+}
+
+.card h1 {
+  margin-bottom: 30px;
+  font-size: 28px;
+  color: #1e293b;
+}
+
+/* INPUTS */
+.field {
+  margin-bottom: 20px;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  height: 55px;
+  padding: 0 20px;
+  border-radius: 30px;
+  border: none;
+  outline: none;
+  font-size: 16px;
+  background: #e5e7eb;
+  box-sizing: border-box;
+}
+
+.field input:focus,
+.field select:focus {
+  box-shadow: 0 0 0 3px rgba(30,58,138,0.25);
+}
+
+/* PASSWORD */
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 55px;
+}
+
+.toggle-password {
+  position: absolute;
+  right: 22px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+  font-size: 18px;
+  background: none;
+  border: none;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: #475569;
+  transition: color 0.3s ease;
+}
+
+.toggle-password:hover {
+  color: #1e3a8a;
+}
+
+.toggle-password svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* SELECT ARROW */
+.field select {
+  padding-right: 55px;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg fill='%23475569' height='20' viewBox='0 0 24 24' width='20' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 22px center;
+  background-size: 18px;
+}
+
+/* REMEMBER */
+.extra-options {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 14px;
+  margin-bottom: 25px;
+}
+
+.remember {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remember input {
+  accent-color: #1e3a8a;
+}
+
+.forgot {
+  text-decoration: none;
+  color: #1e3a8a;
+}
+
+.forgot:hover {
+  text-decoration: underline;
+}
+
+/* BUTTON */
+button[type="submit"] {
+  width: 100%;
+  height: 55px;
+  border-radius: 30px;
+  border: none;
+  background: #2c3e8f;
+  color: white;
+  font-size: 17px;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+button[type="submit"]:hover {
+  background: #1f2e6e;
+}
+
+/* SWITCH */
+.switch-text {
+  margin-top: 20px;
+  font-size: 15px;
+}
+
+#toggle-btn {
+  color: #1e3a8a;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.form-container {
+  transition: all 0.4s ease;
+}
+
+.slide-left {
+  animation: slideLeft 0.4s forwards;
+}
+
+.slide-right {
+  animation: slideRight 0.4s forwards;
+}
+
+@keyframes slideLeft {
+  from { opacity: 0; transform: translateX(40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideRight {
+  from { opacity: 0; transform: translateX(-40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+#message {
+  margin-top: 15px;
+  font-size: 14px;
+}
