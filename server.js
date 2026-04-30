@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -8,13 +9,17 @@ const multer  = require('multer');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3001;
+const messagingPresence = new Map();
+const messagingTyping = new Map();
+const PRESENCE_TTL_MS = 45000;
+const TYPING_TTL_MS = 3500;
 
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 app.options('*', cors());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -103,6 +108,345 @@ pool.query(createTicketTable)
   .then(() => console.log('Ticket table ready ✅'))
   .catch(err => console.error('Ticket table creation error:', err));
 
+/* ================= INVENTORY MANAGEMENT ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inventory_items (
+        id SERIAL PRIMARY KEY,
+        serial_no CITEXT UNIQUE NOT NULL,
+        category CITEXT NOT NULL,
+        item_code CITEXT,
+        brand CITEXT,
+        model CITEXT,
+        description TEXT,
+        date_received DATE,
+        received_by CITEXT,
+        site_id CITEXT,
+        site_name CITEXT,
+        deployed_at DATE,
+        deployed_by CITEXT,
+        purchase_date DATE,
+        price NUMERIC(12,2),
+        supplier CITEXT,
+        purchase_order_no CITEXT,
+        condition CITEXT DEFAULT 'Good',
+        status CITEXT NOT NULL DEFAULT 'In Stock',
+        project_name CITEXT,
+        project_id CITEXT,
+        created_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inventory_activities (
+        id SERIAL PRIMARY KEY,
+        item_id INT,
+        item_label CITEXT NOT NULL,
+        action CITEXT NOT NULL,
+        site CITEXT,
+        actor CITEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inventory_items_status ON inventory_items (status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inventory_items_category ON inventory_items (category)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inventory_items_created ON inventory_items (created_at DESC)`);
+    await pool.query(`ALTER TABLE inventory_items ADD COLUMN IF NOT EXISTS module TEXT NOT NULL DEFAULT 'noc'`);
+    await pool.query(`ALTER TABLE inventory_activities ADD COLUMN IF NOT EXISTS module TEXT NOT NULL DEFAULT 'noc'`);
+    await pool.query(`ALTER TABLE inventory_items DROP CONSTRAINT IF EXISTS inventory_items_serial_no_key`);
+    await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_items_module_serial ON inventory_items (module, serial_no)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inventory_items_module ON inventory_items (module)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_inventory_activities_module ON inventory_activities (module)`);
+    console.log('Inventory tables ready');
+  } catch (err) {
+    console.error('Inventory setup error:', err.message);
+  }
+})();
+
+const INVENTORY_FIELDS = [
+  'serial_no', 'category', 'item_code', 'brand', 'model', 'description',
+  'date_received', 'received_by', 'site_id', 'site_name', 'deployed_at', 'deployed_by',
+  'purchase_date', 'price', 'supplier', 'purchase_order_no', 'condition', 'status',
+  'project_name', 'project_id', 'created_by'
+];
+
+function cleanInventoryPayload(body = {}, isCreate = false) {
+  const payload = {};
+  for (const field of INVENTORY_FIELDS) {
+    if (!(field in body)) continue;
+    let value = body[field];
+    if (typeof value === 'string') value = value.trim();
+    if (value === '') value = null;
+    payload[field] = value;
+  }
+  if (isCreate) {
+    payload.status = payload.status || 'In Stock';
+    payload.condition = payload.condition || 'Good';
+  }
+  if (payload.price != null) {
+    const n = Number(payload.price);
+    payload.price = Number.isFinite(n) ? n : null;
+  }
+  if (payload.created_by != null) {
+    const n = Number(payload.created_by);
+    payload.created_by = Number.isFinite(n) ? n : null;
+  }
+  return payload;
+}
+
+async function logInventoryActivity(item, action, actor = null, module = 'noc') {
+  if (!item) return;
+  const label = item.serial_no || item.item_code || item.model || `Item #${item.id}`;
+  await pool.query(
+    `INSERT INTO inventory_activities (item_id, item_label, action, site, actor, module)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [item.id || null, label, action, item.site_name || item.site_id || null, actor || null, module]
+  );
+}
+
+app.get('/api/inventory/items', async (req, res) => {
+  try {
+    const where = [`module = 'noc'`];
+    const params = [];
+    const addParam = value => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      const p = addParam(`%${q}%`);
+      where.push(`(
+        serial_no ILIKE ${p} OR category ILIKE ${p} OR item_code ILIKE ${p} OR brand ILIKE ${p} OR
+        model ILIKE ${p} OR site_name ILIKE ${p} OR project_name ILIKE ${p}
+      )`);
+    }
+
+    const status = String(req.query.status || '').trim();
+    if (status && status.toLowerCase() !== 'all') {
+      where.push(`LOWER(status) = LOWER(${addParam(status)})`);
+    }
+
+    if (req.query.date_from) where.push(`COALESCE(date_received, created_at::date) >= ${addParam(req.query.date_from)}`);
+    if (req.query.date_to) where.push(`COALESCE(date_received, created_at::date) <= ${addParam(req.query.date_to)}`);
+
+    const result = await pool.query(`
+      SELECT * FROM inventory_items
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY updated_at DESC, id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/inventory/summary', async (req, res) => {
+  try {
+    const [total, byStatus, byCategory, recent] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS count FROM inventory_items WHERE module = 'noc'`),
+      pool.query(`SELECT COALESCE(status, 'Unknown') AS status, COUNT(*)::int AS count FROM inventory_items WHERE module = 'noc' GROUP BY status ORDER BY status`),
+      pool.query(`SELECT COALESCE(category, 'Uncategorized') AS category, COUNT(*)::int AS count FROM inventory_items WHERE module = 'noc' GROUP BY category ORDER BY count DESC, category LIMIT 8`),
+      pool.query(`SELECT * FROM inventory_activities WHERE module = 'noc' ORDER BY created_at DESC, id DESC LIMIT 8`)
+    ]);
+    res.json({
+      totalItems: total.rows[0]?.count || 0,
+      byStatus: byStatus.rows,
+      byCategory: byCategory.rows,
+      recentActivities: recent.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/inventory/items', async (req, res) => {
+  try {
+    const payload = cleanInventoryPayload(req.body || {}, true);
+    payload.module = 'noc';
+    if (!payload.serial_no) return res.status(400).json({ error: 'Serial number is required' });
+    if (!payload.category) return res.status(400).json({ error: 'Category is required' });
+
+    const fields = Object.keys(payload).filter(k => payload[k] !== undefined);
+    const values = fields.map(k => payload[k]);
+    const placeholders = fields.map((_, i) => `$${i + 1}`).join(', ');
+    const result = await pool.query(
+      `INSERT INTO inventory_items (${fields.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+      values
+    );
+    await logInventoryActivity(result.rows[0], 'Added', req.body?.actor_name || null, 'noc');
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    const status = err.code === '23505' ? 409 : 500;
+    res.status(status).json({ error: err.code === '23505' ? 'Serial number already exists' : err.message });
+  }
+});
+
+app.put('/api/inventory/items/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid item id' });
+    const payload = cleanInventoryPayload(req.body || {});
+    delete payload.created_by;
+    const fields = Object.keys(payload);
+    if (!fields.length) return res.status(400).json({ error: 'No fields to update' });
+    if ('serial_no' in payload && !payload.serial_no) return res.status(400).json({ error: 'Serial number is required' });
+    if ('category' in payload && !payload.category) return res.status(400).json({ error: 'Category is required' });
+
+    const values = fields.map(k => payload[k]);
+    const setSql = fields.map((field, i) => `${field} = $${i + 1}`).join(', ');
+    values.push(id);
+    const result = await pool.query(
+      `UPDATE inventory_items SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = $${values.length} AND module = 'noc' RETURNING *`,
+      values
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Inventory item not found' });
+    await logInventoryActivity(result.rows[0], 'Updated', req.body?.actor_name || null, 'noc');
+    res.json(result.rows[0]);
+  } catch (err) {
+    const status = err.code === '23505' ? 409 : 500;
+    res.status(status).json({ error: err.code === '23505' ? 'Serial number already exists' : err.message });
+  }
+});
+
+app.delete('/api/inventory/items/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid item id' });
+    const existing = await pool.query(`SELECT * FROM inventory_items WHERE id=$1 AND module = 'noc'`, [id]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'Inventory item not found' });
+    await pool.query(`DELETE FROM inventory_items WHERE id=$1 AND module = 'noc'`, [id]);
+    await logInventoryActivity(existing.rows[0], 'Deleted', req.query.actor || null, 'noc');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/inventory/items', ensureFinanceAccess, async (req, res) => {
+  try {
+    const where = [`module = 'finance'`];
+    const params = [];
+    const addParam = value => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+
+    const q = String(req.query.q || '').trim();
+    if (q) {
+      const p = addParam(`%${q}%`);
+      where.push(`(
+        serial_no ILIKE ${p} OR category ILIKE ${p} OR item_code ILIKE ${p} OR brand ILIKE ${p} OR
+        model ILIKE ${p} OR site_name ILIKE ${p} OR project_name ILIKE ${p}
+      )`);
+    }
+
+    const status = String(req.query.status || '').trim();
+    if (status && status.toLowerCase() !== 'all') {
+      where.push(`LOWER(status) = LOWER(${addParam(status)})`);
+    }
+
+    if (req.query.date_from) where.push(`COALESCE(date_received, created_at::date) >= ${addParam(req.query.date_from)}`);
+    if (req.query.date_to) where.push(`COALESCE(date_received, created_at::date) <= ${addParam(req.query.date_to)}`);
+
+    const result = await pool.query(`
+      SELECT * FROM inventory_items
+      WHERE ${where.join(' AND ')}
+      ORDER BY updated_at DESC, id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/finance/inventory/summary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const [total, byStatus, byCategory, recent] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int AS count FROM inventory_items WHERE module = 'finance'`),
+      pool.query(`SELECT COALESCE(status, 'Unknown') AS status, COUNT(*)::int AS count FROM inventory_items WHERE module = 'finance' GROUP BY status ORDER BY status`),
+      pool.query(`SELECT COALESCE(category, 'Uncategorized') AS category, COUNT(*)::int AS count FROM inventory_items WHERE module = 'finance' GROUP BY category ORDER BY count DESC, category LIMIT 8`),
+      pool.query(`SELECT * FROM inventory_activities WHERE module = 'finance' ORDER BY created_at DESC, id DESC LIMIT 8`)
+    ]);
+    res.json({
+      totalItems: total.rows[0]?.count || 0,
+      byStatus: byStatus.rows,
+      byCategory: byCategory.rows,
+      recentActivities: recent.rows
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/finance/inventory/items', ensureFinanceAccess, async (req, res) => {
+  try {
+    const payload = cleanInventoryPayload(req.body || {}, true);
+    payload.module = 'finance';
+    if (!payload.serial_no) return res.status(400).json({ error: 'Serial number is required' });
+    if (!payload.category) return res.status(400).json({ error: 'Category is required' });
+
+    const fields = Object.keys(payload).filter(k => payload[k] !== undefined);
+    const values = fields.map(k => payload[k]);
+    const placeholders = fields.map((_, i) => `$${i + 1}`).join(', ');
+    const result = await pool.query(
+      `INSERT INTO inventory_items (${fields.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+      values
+    );
+    await logInventoryActivity(result.rows[0], 'Added', req.body?.actor_name || null, 'finance');
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    const status = err.code === '23505' ? 409 : 500;
+    res.status(status).json({ error: err.code === '23505' ? 'Serial number already exists in Finance inventory' : err.message });
+  }
+});
+
+app.put('/api/finance/inventory/items/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid item id' });
+    const payload = cleanInventoryPayload(req.body || {});
+    delete payload.created_by;
+    const fields = Object.keys(payload);
+    if (!fields.length) return res.status(400).json({ error: 'No fields to update' });
+    if ('serial_no' in payload && !payload.serial_no) return res.status(400).json({ error: 'Serial number is required' });
+    if ('category' in payload && !payload.category) return res.status(400).json({ error: 'Category is required' });
+
+    const values = fields.map(k => payload[k]);
+    const setSql = fields.map((field, i) => `${field} = $${i + 1}`).join(', ');
+    values.push(id);
+    const result = await pool.query(
+      `UPDATE inventory_items SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = $${values.length} AND module = 'finance' RETURNING *`,
+      values
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Finance inventory item not found' });
+    await logInventoryActivity(result.rows[0], 'Updated', req.body?.actor_name || null, 'finance');
+    res.json(result.rows[0]);
+  } catch (err) {
+    const status = err.code === '23505' ? 409 : 500;
+    res.status(status).json({ error: err.code === '23505' ? 'Serial number already exists in Finance inventory' : err.message });
+  }
+});
+
+app.delete('/api/finance/inventory/items/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid item id' });
+    const existing = await pool.query(`SELECT * FROM inventory_items WHERE id=$1 AND module = 'finance'`, [id]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'Finance inventory item not found' });
+    await pool.query(`DELETE FROM inventory_items WHERE id=$1 AND module = 'finance'`, [id]);
+    await logInventoryActivity(existing.rows[0], 'Deleted', req.query.actor || null, 'finance');
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* ================= IN-APP MESSAGING TABLE ================= */
 
 (async () => {
@@ -132,6 +476,21 @@ pool.query(createTicketTable)
       CREATE INDEX IF NOT EXISTS idx_in_app_messages_sender
       ON in_app_messages (sender_id, created_at DESC)
     `);
+
+    await pool.query(`
+      ALTER TABLE in_app_messages
+      ADD COLUMN IF NOT EXISTS seen_at TIMESTAMP
+    `);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS group_id TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS group_name TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS recipient_ids TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS group_photo TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS is_group_seed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_name TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_path TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_type TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_in_app_messages_group ON in_app_messages (group_id, created_at DESC)`);
 
     console.log('In-app messages table ready ✅');
 
@@ -228,8 +587,15 @@ const financeTableStatements = [
   try {
     for (const sql of financeTableStatements) await pool.query(sql);
     await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS lot TEXT`);
+    await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS project_name TEXT`);
     await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS source TEXT`);
+    await pool.query(`ALTER TABLE finance_company_income ADD COLUMN IF NOT EXISTS or_number TEXT`);
     await pool.query(`ALTER TABLE finance_company_expenses ADD COLUMN IF NOT EXISTS expense_group TEXT DEFAULT 'expenses'`);
+    await pool.query(`ALTER TABLE finance_company_expenses ADD COLUMN IF NOT EXISTS vendor TEXT`);
+    await pool.query(`ALTER TABLE finance_project_expenses ADD COLUMN IF NOT EXISTS type TEXT DEFAULT 'expenses'`);
+    await pool.query(`ALTER TABLE finance_project_expenses ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Materials'`);
+    await pool.query(`ALTER TABLE finance_project_expenses ADD COLUMN IF NOT EXISTS vendor TEXT`);
+    await pool.query(`ALTER TABLE finance_collections ADD COLUMN IF NOT EXISTS or_number TEXT`);
     await pool.query(`
       CREATE TABLE IF NOT EXISTS employee_reimburse_requests (
         id SERIAL PRIMARY KEY,
@@ -241,6 +607,30 @@ const financeTableStatements = [
         status TEXT NOT NULL DEFAULT 'Pending',
         comment TEXT,
         created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS finance_collection_payments (
+        id SERIAL PRIMARY KEY,
+        collection_id INT NOT NULL REFERENCES finance_collections(id) ON DELETE CASCADE,
+        amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS finance_contributions (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        employee_share NUMERIC(12,2) NOT NULL DEFAULT 0,
+        employer_share NUMERIC(12,2) NOT NULL DEFAULT 0,
+        due_date DATE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'Unpaid',
+        recorded_by INT REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
       )
     `);
     await pool.query(`
@@ -267,6 +657,113 @@ const financeTableStatements = [
         created_at TIMESTAMP DEFAULT NOW()
       )
     `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS employee_salary_advance_payments (
+        id SERIAL PRIMARY KEY,
+        advance_id INT NOT NULL REFERENCES employee_salary_advances(id) ON DELETE CASCADE,
+        amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+        date DATE NOT NULL DEFAULT CURRENT_DATE,
+        status TEXT NOT NULL DEFAULT 'Pending',
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS finance_employee_salaries (
+        id SERIAL PRIMARY KEY,
+        employee_name TEXT NOT NULL,
+        position TEXT,
+        department TEXT,
+        current_salary NUMERIC(12,2) NOT NULL DEFAULT 0,
+        salary_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        period_start DATE,
+        period_end DATE,
+        status TEXT NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_departments (
+      id SERIAL PRIMARY KEY,
+      name TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_positions (
+      id SERIAL PRIMARY KEY,
+      title TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_employees (
+      id SERIAL PRIMARY KEY,
+      full_name TEXT NOT NULL,
+      email TEXT UNIQUE,
+      position_id INT REFERENCES finance_positions(id) ON DELETE SET NULL,
+      department_id INT REFERENCES finance_departments(id) ON DELETE SET NULL,
+      hired_date DATE DEFAULT CURRENT_DATE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_reimbursements (
+      id SERIAL PRIMARY KEY,
+      employee_id INT REFERENCES finance_employees(id) ON DELETE CASCADE,
+      date DATE NOT NULL DEFAULT CURRENT_DATE,
+      description TEXT,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'Pending',
+      comments TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_budget_requests (
+      id SERIAL PRIMARY KEY,
+      employee_id INT REFERENCES finance_employees(id) ON DELETE CASCADE,
+      date DATE NOT NULL DEFAULT CURRENT_DATE,
+      description TEXT,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'Pending',
+      comments TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_salary_advances (
+      id SERIAL PRIMARY KEY,
+      employee_id INT REFERENCES finance_employees(id) ON DELETE CASCADE,
+      amount_borrowed NUMERIC(12,2) NOT NULL DEFAULT 0,
+      remaining_balance NUMERIC(12,2) NOT NULL DEFAULT 0,
+      date_borrowed DATE NOT NULL DEFAULT CURRENT_DATE,
+      status TEXT NOT NULL DEFAULT 'Pending',
+      remarks TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS finance_salary_advance_payments (
+      id SERIAL PRIMARY KEY,
+      advance_id INT NOT NULL REFERENCES finance_salary_advances(id) ON DELETE CASCADE,
+      amount_paid NUMERIC(12,2) NOT NULL DEFAULT 0,
+      date DATE NOT NULL DEFAULT CURRENT_DATE,
+      status TEXT NOT NULL DEFAULT 'Paid',
+      created_at TIMESTAMP DEFAULT NOW()
+    )`);
+    await pool.query(`INSERT INTO finance_departments (name)
+      VALUES ('Finance'), ('NOC'), ('Operations')
+      ON CONFLICT (name) DO NOTHING`);
+    await pool.query(`INSERT INTO finance_positions (title)
+      VALUES ('Finance Officer'), ('Accountant'), ('NOC Engineer'), ('Staff')
+      ON CONFLICT (title) DO NOTHING`);
+    await pool.query(`ALTER TABLE finance_employee_salaries ADD COLUMN IF NOT EXISTS employee_id INT REFERENCES finance_employees(id) ON DELETE CASCADE`);
+    await pool.query(`ALTER TABLE finance_employee_salaries ADD COLUMN IF NOT EXISTS date DATE`);
+    await pool.query(`UPDATE finance_employee_salaries SET date=COALESCE(date, salary_date, CURRENT_DATE)`);
+    await pool.query(`
+      INSERT INTO finance_employees (full_name, email, position_id, department_id)
+      SELECT full_name::TEXT, email::TEXT,
+             (SELECT id FROM finance_positions WHERE title='Staff' LIMIT 1),
+             (SELECT id FROM finance_departments WHERE name='Finance' LIMIT 1)
+      FROM users u
+      WHERE NOT EXISTS (
+        SELECT 1 FROM finance_employees fe
+        WHERE LOWER(COALESCE(fe.email, '')) = LOWER(COALESCE(u.email::TEXT, ''))
+      )
+      ON CONFLICT (email) DO NOTHING
+    `);
     console.log('Finance tables ready âœ…');
   } catch (err) {
     console.error('Finance setup error:', err.message);
@@ -276,22 +773,22 @@ const financeTableStatements = [
 const FINANCE_RESOURCES = {
   company_income: {
     table: 'finance_company_income',
-    fields: ['date', 'lot', 'source', 'description', 'category', 'amount', 'status', 'notes'],
+    fields: ['date', 'lot', 'project_name', 'source', 'description', 'category', 'amount', 'status', 'or_number', 'notes'],
     required: ['date', 'source', 'description', 'amount', 'status']
   },
   company_expenses: {
     table: 'finance_company_expenses',
-    fields: ['date', 'expense_group', 'description', 'category', 'amount', 'status', 'notes'],
+    fields: ['date', 'expense_group', 'description', 'category', 'vendor', 'amount', 'status', 'notes'],
     required: ['date', 'expense_group', 'description', 'category', 'amount', 'status']
   },
   project_expenses: {
     table: 'finance_project_expenses',
-    fields: ['date', 'project_name', 'description', 'amount', 'status', 'notes'],
-    required: ['date', 'project_name', 'description', 'amount', 'status']
+    fields: ['date', 'project_name', 'type', 'description', 'category', 'vendor', 'amount', 'status', 'notes'],
+    required: ['date', 'project_name', 'type', 'description', 'category', 'amount', 'status']
   },
   collections: {
     table: 'finance_collections',
-    fields: ['date', 'client_name', 'project_name', 'due_date', 'amount_due', 'amount_collected', 'status', 'notes'],
+    fields: ['date', 'client_name', 'project_name', 'or_number', 'due_date', 'amount_due', 'amount_collected', 'status', 'notes'],
     required: ['date', 'client_name', 'due_date', 'amount_due', 'amount_collected', 'status']
   }
 };
@@ -329,6 +826,134 @@ function sanitizeFinancePayload(resource, body = {}) {
     }
   }
   return payload;
+}
+
+function buildFinanceIncomeDateFilter(period = 'year', from = '', to = '', params = [], dateColumn = 'date') {
+  if (from) {
+    params.push(from);
+    const fromSql = `${dateColumn} >= $${params.length}`;
+    if (to) {
+      params.push(to);
+      return `${fromSql} AND ${dateColumn} <= $${params.length}`;
+    }
+    return fromSql;
+  }
+  if (to) {
+    params.push(to);
+    return `${dateColumn} <= $${params.length}`;
+  }
+  if (period === 'all') return '';
+  if (period === 'day' || period === 'today') return `${dateColumn} = CURRENT_DATE`;
+  if (period === 'week') return `${dateColumn} >= date_trunc('week', CURRENT_DATE)::date`;
+  if (period === 'month') return `${dateColumn} >= date_trunc('month', CURRENT_DATE)::date`;
+  return `EXTRACT(YEAR FROM ${dateColumn}) = EXTRACT(YEAR FROM CURRENT_DATE)`;
+}
+
+function normalizeFinanceIncomeStatus(status) {
+  const s = String(status || 'received').trim().toLowerCase();
+  if (s === 'completed' || s === 'paid') return 'received';
+  if (['received', 'pending', 'cancelled'].includes(s)) return s;
+  return 'pending';
+}
+
+function financeIncomeSelectSql() {
+  return `
+    SELECT
+      id,
+      date,
+      TO_CHAR(date, 'Mon - DD - YYYY') AS date_formatted,
+      COALESCE(project_name, lot) AS project_name,
+      COALESCE(project_name, lot) AS lot,
+      source,
+      description,
+      category,
+      amount,
+      status,
+      or_number,
+      notes,
+      created_at,
+      updated_at
+    FROM finance_company_income
+  `;
+}
+
+function normalizeFinanceExpenseType(type) {
+  const t = String(type || 'expenses').trim().toLowerCase();
+  return ['expenses', 'purchases', 'overhead'].includes(t) ? t : 'expenses';
+}
+
+function normalizeFinanceExpenseStatus(status) {
+  const s = String(status || 'pending').trim().toLowerCase();
+  if (s === 'completed' || s === 'approved') return 'paid';
+  if (['paid', 'unpaid', 'pending', 'cancelled'].includes(s)) return s;
+  return 'pending';
+}
+
+function financeExpenseSelectSql() {
+  return `
+    SELECT
+      id,
+      expense_group AS type,
+      expense_group,
+      date,
+      category,
+      description,
+      vendor,
+      amount,
+      status,
+      notes,
+      created_at,
+      updated_at
+    FROM finance_company_expenses
+  `;
+}
+
+function normalizeProjectExpenseType(type) {
+  const t = String(type || 'expenses').trim().toLowerCase();
+  return ['expenses', 'purchases'].includes(t) ? t : 'expenses';
+}
+
+function normalizeProjectExpenseStatus(status) {
+  const s = String(status || 'pending').trim().toLowerCase();
+  if (s === 'completed' || s === 'paid') return 'approved';
+  if (['approved', 'pending', 'rejected'].includes(s)) return s;
+  return 'pending';
+}
+
+function normalizeCollectionStatus(status) {
+  const s = String(status || 'Pending').trim().toLowerCase();
+  if (s === 'approved' || s === 'paid') return 'Approved';
+  if (s === 'decline' || s === 'declined' || s === 'rejected') return 'Decline';
+  return 'Pending';
+}
+
+function financeProjectExpenseSelectSql() {
+  return `
+    SELECT id, date, project_name, type, description, category, vendor, amount, status, notes, created_at, updated_at
+    FROM finance_project_expenses
+  `;
+}
+
+function financeCollectionsSelectSql() {
+  return `
+    SELECT
+      id,
+      date,
+      client_name AS client,
+      client_name,
+      project_name AS project,
+      project_name,
+      or_number,
+      amount_due,
+      amount_collected,
+      GREATEST(amount_due - amount_collected, 0) AS balance,
+      due_date,
+      status,
+      notes,
+      created_at,
+      updated_at
+    FROM finance_collections
+  `;
 }
 
 /* ================= AUTH ROUTE ================= */
@@ -375,6 +1000,686 @@ app.post('/api/auth', async (req, res) => {
 });
 
 /* ================= FINANCE ROUTES ================= */
+
+app.get('/api/income/sources', ensureFinanceAccess, async (req, res) => {
+  try {
+    const defaults = ['Service Fee', 'Installation Fee', 'Subscription', 'Maintenance', 'Client Payment', 'Other'];
+    const result = await pool.query(`
+      SELECT DISTINCT source AS name
+      FROM finance_company_income
+      WHERE source IS NOT NULL AND BTRIM(source) <> ''
+      ORDER BY source
+    `);
+    const names = Array.from(new Set([...defaults, ...result.rows.map(r => r.name).filter(Boolean)]));
+    res.json(names.map((name, idx) => ({ id: idx + 1, name })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/income', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', search = '', project_name = '', lot = '', source = '', from = '', to = '' } = req.query;
+    const params = [];
+    const conditions = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    if (dateFilter) conditions.push(dateFilter);
+    const projectFilter = project_name || lot;
+    if (projectFilter) {
+      params.push(`%${projectFilter}%`);
+      conditions.push(`COALESCE(project_name, lot, '') ILIKE $${params.length}`);
+    }
+    if (source) {
+      params.push(`%${source}%`);
+      conditions.push(`COALESCE(source, '') ILIKE $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      const n = params.length;
+      conditions.push(`(
+        COALESCE(project_name, lot, '') ILIKE $${n}
+        OR COALESCE(source, '') ILIKE $${n}
+        OR COALESCE(description, '') ILIKE $${n}
+        OR COALESCE(or_number, '') ILIKE $${n}
+      )`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const result = await pool.query(`${financeIncomeSelectSql()} ${where} ORDER BY date DESC, id DESC`, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/income/projects', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', search = '', project_name = '', lot = '', source = '', from = '', to = '' } = req.query;
+    const params = [];
+    const conditions = [`COALESCE(project_name, lot, '') <> ''`];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    if (dateFilter) conditions.push(dateFilter);
+    const projectFilter = project_name || lot;
+    if (projectFilter) {
+      params.push(`%${projectFilter}%`);
+      conditions.push(`COALESCE(project_name, lot, '') ILIKE $${params.length}`);
+    }
+    if (source) {
+      params.push(`%${source}%`);
+      conditions.push(`COALESCE(source, '') ILIKE $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      const n = params.length;
+      conditions.push(`(
+        COALESCE(project_name, lot, '') ILIKE $${n}
+        OR COALESCE(source, '') ILIKE $${n}
+        OR COALESCE(description, '') ILIKE $${n}
+        OR COALESCE(or_number, '') ILIKE $${n}
+      )`);
+    }
+    const result = await pool.query(`${financeIncomeSelectSql()} WHERE ${conditions.join(' AND ')} ORDER BY date DESC, id DESC`, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/income/project', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, project_name, lot, source, description, amount, status, or_number, category, notes } = req.body || {};
+    if (!date || !source?.trim() || !amount) return res.status(400).json({ error: 'date, source, and amount are required' });
+    const projectName = project_name || lot || null;
+    const result = await pool.query(`
+      INSERT INTO finance_company_income (date, project_name, lot, source, description, category, amount, status, or_number, notes, created_by)
+      VALUES ($1,$2,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING *
+    `, [
+      date,
+      projectName,
+      source.trim(),
+      description || null,
+      category || source.trim(),
+      Number(amount || 0),
+      normalizeFinanceIncomeStatus(status),
+      or_number || null,
+      notes || null,
+      financeUserId(req)
+    ]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/income', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, source, description, amount, status, or_number, category, notes } = req.body || {};
+    if (!date || !source?.trim() || !amount) return res.status(400).json({ error: 'date, source, and amount are required' });
+    const result = await pool.query(`
+      INSERT INTO finance_company_income (date, project_name, lot, source, description, category, amount, status, or_number, notes, created_by)
+      VALUES ($1,NULL,NULL,$2,$3,$4,$5,$6,$7,$8,$9)
+      RETURNING *
+    `, [
+      date,
+      source.trim(),
+      description || null,
+      category || source.trim(),
+      Number(amount || 0),
+      normalizeFinanceIncomeStatus(status),
+      or_number || null,
+      notes || null,
+      financeUserId(req)
+    ]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/income/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, project_name, lot, source, description, amount, status, or_number, category, notes } = req.body || {};
+    if (!date || !source?.trim() || !amount) return res.status(400).json({ error: 'date, source, and amount are required' });
+    const projectName = project_name || lot || null;
+    const result = await pool.query(`
+      UPDATE finance_company_income
+      SET date=$1, project_name=$2, lot=$2, source=$3, description=$4, category=$5, amount=$6, status=$7, or_number=$8, notes=$9, updated_at=NOW()
+      WHERE id=$10
+      RETURNING *
+    `, [
+      date,
+      projectName,
+      source.trim(),
+      description || null,
+      category || source.trim(),
+      Number(amount || 0),
+      normalizeFinanceIncomeStatus(status),
+      or_number || null,
+      notes || null,
+      req.params.id
+    ]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Income record not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/income/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_company_income WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Income record not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/income/kpi', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', from = '', to = '' } = req.query;
+    const params = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    const where = dateFilter ? `WHERE ${dateFilter}` : '';
+    const result = await pool.query(`
+      SELECT
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status) IN ('received','completed','paid')), 0) AS received_total,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status) = 'pending'), 0) AS pending_total,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status) = 'cancelled'), 0) AS cancelled_total,
+        COALESCE(SUM(amount), 0) AS total
+      FROM finance_company_income ${where}
+    `, params);
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/income/monthly', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', from = '', to = '' } = req.query;
+    const params = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    const where = dateFilter ? `WHERE ${dateFilter}` : '';
+    const result = await pool.query(`
+      SELECT TO_CHAR(DATE_TRUNC('month', date), 'Mon') AS month, SUM(amount) AS total
+      FROM finance_company_income
+      ${where}
+      GROUP BY DATE_TRUNC('month', date)
+      ORDER BY DATE_TRUNC('month', date)
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/income/by-project', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', from = '', to = '' } = req.query;
+    const params = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    const extra = dateFilter ? `AND ${dateFilter}` : '';
+    const result = await pool.query(`
+      SELECT COALESCE(project_name, lot, 'General') AS label, SUM(amount) AS amount
+      FROM finance_company_income
+      WHERE COALESCE(project_name, lot, '') <> '' ${extra}
+      GROUP BY COALESCE(project_name, lot, 'General')
+      ORDER BY COALESCE(project_name, lot, 'General')
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/projects', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT DISTINCT COALESCE(project_name, lot) AS project_name
+      FROM finance_company_income
+      WHERE COALESCE(project_name, lot, '') <> ''
+      ORDER BY project_name
+    `);
+    res.json(result.rows.map((r, idx) => ({ id: idx + 1, project_name: r.project_name })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/expenses/kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', from = '', to = '' } = req.query;
+    const params = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    const where = dateFilter ? `WHERE ${dateFilter}` : '';
+    const [expenseResult, contributionResult] = await Promise.all([
+      pool.query(`
+        SELECT
+          COALESCE(SUM(amount), 0) AS grand_total,
+          COALESCE(SUM(amount) FILTER (WHERE expense_group = 'expenses'), 0) AS expenses_total,
+          COALESCE(SUM(amount) FILTER (WHERE expense_group = 'purchases'), 0) AS purchases_total,
+          COALESCE(SUM(amount) FILTER (WHERE expense_group = 'overhead'), 0) AS overhead_total
+        FROM finance_company_expenses ${where}
+      `, params),
+      pool.query(`SELECT COALESCE(SUM(employee_share + employer_share), 0) AS contribution_total FROM finance_contributions`)
+    ]);
+    const row = expenseResult.rows[0] || {};
+    res.json({
+      grand_total: Number(row.grand_total || 0),
+      expenses_total: Number(row.expenses_total || 0),
+      purchases_total: Number(row.purchases_total || 0),
+      overhead_total: Number(row.overhead_total || 0),
+      contribution_total: Number(contributionResult.rows[0]?.contribution_total || 0)
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/expenses/monthly', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', from = '', to = '' } = req.query;
+    const params = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    const where = dateFilter ? `WHERE ${dateFilter}` : '';
+    const result = await pool.query(`
+      SELECT TO_CHAR(DATE_TRUNC('month', date), 'Mon') AS month_label, SUM(amount) AS total
+      FROM finance_company_expenses
+      ${where}
+      GROUP BY DATE_TRUNC('month', date)
+      ORDER BY DATE_TRUNC('month', date)
+    `, params);
+    res.json(result.rows.map(r => ({ ...r, total: Number(r.total || 0) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/expenses/recent', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { period = 'year', from = '', to = '', cat = '', status = '', search = '' } = req.query;
+    const params = [];
+    const conditions = [];
+    const dateFilter = buildFinanceIncomeDateFilter(period, from, to, params, 'date');
+    if (dateFilter) conditions.push(dateFilter);
+    if (cat) {
+      params.push(normalizeFinanceExpenseType(cat));
+      conditions.push(`expense_group = $${params.length}`);
+    }
+    if (status) {
+      params.push(normalizeFinanceExpenseStatus(status));
+      conditions.push(`LOWER(status) = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      const n = params.length;
+      conditions.push(`(description ILIKE $${n} OR category ILIKE $${n} OR COALESCE(vendor, '') ILIKE $${n})`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const result = await pool.query(`${financeExpenseSelectSql()} ${where} ORDER BY date DESC, id DESC LIMIT 50`, params);
+    res.json(result.rows.map(r => ({ ...r, amount: Number(r.amount || 0) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/expenses/sub-kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const type = normalizeFinanceExpenseType(req.query.type);
+    const result = await pool.query(`
+      SELECT
+        COALESCE(SUM(amount), 0) AS total,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status) = 'paid'), 0) AS paid,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status) = 'unpaid'), 0) AS unpaid,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status) = 'pending'), 0) AS pending
+      FROM finance_company_expenses
+      WHERE expense_group = $1
+    `, [type]);
+    const row = result.rows[0] || {};
+    res.json({ total: Number(row.total || 0), paid: Number(row.paid || 0), unpaid: Number(row.unpaid || 0), pending: Number(row.pending || 0) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/expenses/list', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { type = 'expenses', cat = '', status = '', search = '' } = req.query;
+    const params = [normalizeFinanceExpenseType(type)];
+    const conditions = ['expense_group = $1'];
+    if (cat) {
+      params.push(cat);
+      conditions.push(`category = $${params.length}`);
+    }
+    if (status) {
+      params.push(normalizeFinanceExpenseStatus(status));
+      conditions.push(`LOWER(status) = $${params.length}`);
+    }
+    if (search) {
+      params.push(`%${search}%`);
+      const n = params.length;
+      conditions.push(`(description ILIKE $${n} OR category ILIKE $${n} OR COALESCE(vendor, '') ILIKE $${n})`);
+    }
+    const result = await pool.query(`${financeExpenseSelectSql()} WHERE ${conditions.join(' AND ')} ORDER BY date DESC, id DESC`, params);
+    res.json(result.rows.map(r => ({ ...r, amount: Number(r.amount || 0) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/expenses', ensureFinanceAccess, async (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const params = [];
+    const where = search
+      ? `WHERE description ILIKE $1 OR category ILIKE $1 OR COALESCE(vendor, '') ILIKE $1`
+      : '';
+    if (search) params.push(`%${search}%`);
+    const result = await pool.query(`${financeExpenseSelectSql()} ${where} ORDER BY date DESC, id DESC`, params);
+    res.json(result.rows.map(r => ({ ...r, amount: Number(r.amount || 0) })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/expenses', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, desc, description, cat, category, vendor, amount, status, type, expense_group, notes } = req.body || {};
+    const group = normalizeFinanceExpenseType(type || expense_group);
+    const cleanDescription = description || desc;
+    const cleanCategory = category || cat;
+    if (!date || !cleanDescription?.trim() || !cleanCategory?.trim() || !amount) {
+      return res.status(400).json({ error: 'date, category, description, and amount are required' });
+    }
+    const result = await pool.query(`
+      INSERT INTO finance_company_expenses (expense_group, date, category, description, vendor, amount, status, notes, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      RETURNING *
+    `, [group, date, cleanCategory.trim(), cleanDescription.trim(), vendor || null, Number(amount || 0), normalizeFinanceExpenseStatus(status), notes || null, financeUserId(req)]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/expenses/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, desc, description, cat, category, vendor, amount, status, type, expense_group, notes } = req.body || {};
+    const group = normalizeFinanceExpenseType(type || expense_group);
+    const cleanDescription = description || desc;
+    const cleanCategory = category || cat;
+    if (!date || !cleanDescription?.trim() || !cleanCategory?.trim() || !amount) {
+      return res.status(400).json({ error: 'date, category, description, and amount are required' });
+    }
+    const result = await pool.query(`
+      UPDATE finance_company_expenses
+      SET expense_group=$1, date=$2, category=$3, description=$4, vendor=$5, amount=$6, status=$7, notes=$8, updated_at=NOW()
+      WHERE id=$9
+      RETURNING *
+    `, [group, date, cleanCategory.trim(), cleanDescription.trim(), vendor || null, Number(amount || 0), normalizeFinanceExpenseStatus(status), notes || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Expense record not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/expenses/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_company_expenses WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Expense record not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/contributions/kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        COALESCE(SUM(employee_share + employer_share), 0) AS grand_total,
+        COALESCE(SUM(employee_share + employer_share) FILTER (WHERE status = 'Paid'), 0) AS total_paid,
+        COALESCE(SUM(employee_share + employer_share) FILTER (WHERE status = 'Unpaid'), 0) AS total_unpaid,
+        COALESCE(SUM(employee_share + employer_share) FILTER (WHERE status = 'Overdue'), 0) AS total_overdue
+      FROM finance_contributions
+    `);
+    res.json(result.rows[0] || { grand_total: 0, total_paid: 0, total_unpaid: 0, total_overdue: 0 });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/contributions', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { type = '', status = '', search = '' } = req.query;
+    const params = [];
+    const conditions = [];
+    if (type) { params.push(type); conditions.push(`type = $${params.length}`); }
+    if (status) { params.push(status); conditions.push(`status = $${params.length}`); }
+    if (search) { params.push(`%${search}%`); conditions.push(`name ILIKE $${params.length}`); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const result = await pool.query(`
+      SELECT id, name, type, employee_share, employer_share, (employee_share + employer_share) AS total, due_date, status, created_at
+      FROM finance_contributions
+      ${where}
+      ORDER BY due_date DESC, name ASC
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/contributions', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { name, type, employee_share, employer_share, due_date, status } = req.body || {};
+    if (!name?.trim() || !type?.trim() || employee_share == null || employer_share == null || !due_date) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    const result = await pool.query(`
+      INSERT INTO finance_contributions (name, type, employee_share, employer_share, due_date, status, recorded_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      RETURNING *
+    `, [name.trim(), type.trim(), Number(employee_share || 0), Number(employer_share || 0), due_date, status || 'Unpaid', financeUserId(req)]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/contributions/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { name, type, employee_share, employer_share, due_date, status } = req.body || {};
+    if (!name?.trim() || !type?.trim() || employee_share == null || employer_share == null || !due_date) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    const result = await pool.query(`
+      UPDATE finance_contributions
+      SET name=$1, type=$2, employee_share=$3, employer_share=$4, due_date=$5, status=$6, updated_at=NOW()
+      WHERE id=$7
+      RETURNING *
+    `, [name.trim(), type.trim(), Number(employee_share || 0), Number(employer_share || 0), due_date, status || 'Unpaid', req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Contribution not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/contributions/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_contributions WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Contribution not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/project-expenses/kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const type = normalizeProjectExpenseType(req.query.type);
+    const result = await pool.query(`
+      SELECT
+        COALESCE(SUM(amount),0) AS total,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status)='approved'),0) AS approved,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status)='pending'),0) AS pending,
+        COALESCE(SUM(amount) FILTER (WHERE LOWER(status)='rejected'),0) AS rejected
+      FROM finance_project_expenses
+      WHERE type=$1
+    `, [type]);
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/project-expenses/chart', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT type, TO_CHAR(date_trunc('month', date), 'Mon YYYY') AS month_label, TO_CHAR(date_trunc('month', date), 'YYYY-MM') AS month_key, SUM(amount) AS total
+      FROM finance_project_expenses
+      GROUP BY type, date_trunc('month', date)
+      ORDER BY month_key
+    `);
+    res.json({
+      purchases: result.rows.filter(r => r.type === 'purchases'),
+      expenses: result.rows.filter(r => r.type === 'expenses')
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/project-expenses/recent', ensureFinanceAccess, async (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const params = [];
+    const where = search ? `WHERE project_name ILIKE $1 OR description ILIKE $1 OR category ILIKE $1 OR COALESCE(vendor,'') ILIKE $1` : '';
+    if (search) params.push(`%${search}%`);
+    const result = await pool.query(`${financeProjectExpenseSelectSql()} ${where} ORDER BY date DESC, id DESC LIMIT 50`, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/project-expenses/list', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { type = 'expenses', cat = '', status = '', search = '' } = req.query;
+    const params = [normalizeProjectExpenseType(type)];
+    const conditions = ['type=$1'];
+    if (cat) { params.push(cat); conditions.push(`category=$${params.length}`); }
+    if (status) { params.push(normalizeProjectExpenseStatus(status)); conditions.push(`LOWER(status)=$${params.length}`); }
+    if (search) { params.push(`%${search}%`); conditions.push(`(project_name ILIKE $${params.length} OR description ILIKE $${params.length} OR COALESCE(vendor,'') ILIKE $${params.length})`); }
+    const result = await pool.query(`${financeProjectExpenseSelectSql()} WHERE ${conditions.join(' AND ')} ORDER BY date DESC, id DESC`, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/project-expenses', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`${financeProjectExpenseSelectSql()} ORDER BY date DESC, id DESC`);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/project-expenses', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, project, project_name, desc, description, cat, category, vendor, amount, status, type, notes } = req.body || {};
+    const cleanProject = project_name || project;
+    const cleanDescription = description || desc;
+    const cleanCategory = category || cat || 'Materials';
+    if (!date || !cleanProject?.trim() || !cleanDescription?.trim() || !amount) return res.status(400).json({ error: 'date, project, description, and amount are required' });
+    const result = await pool.query(`
+      INSERT INTO finance_project_expenses (date, project_name, type, description, category, vendor, amount, status, notes, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      RETURNING *
+    `, [date, cleanProject.trim(), normalizeProjectExpenseType(type), cleanDescription.trim(), cleanCategory, vendor || null, Number(amount || 0), normalizeProjectExpenseStatus(status), notes || null, financeUserId(req)]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/project-expenses/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, project, project_name, desc, description, cat, category, vendor, amount, status, type, notes } = req.body || {};
+    const cleanProject = project_name || project;
+    const cleanDescription = description || desc;
+    const cleanCategory = category || cat || 'Materials';
+    if (!date || !cleanProject?.trim() || !cleanDescription?.trim() || !amount) return res.status(400).json({ error: 'date, project, description, and amount are required' });
+    const result = await pool.query(`
+      UPDATE finance_project_expenses
+      SET date=$1, project_name=$2, type=$3, description=$4, category=$5, vendor=$6, amount=$7, status=$8, notes=$9, updated_at=NOW()
+      WHERE id=$10
+      RETURNING *
+    `, [date, cleanProject.trim(), normalizeProjectExpenseType(type), cleanDescription.trim(), cleanCategory, vendor || null, Number(amount || 0), normalizeProjectExpenseStatus(status), notes || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Project expense not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/project-expenses/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_project_expenses WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Project expense not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/collections/kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT COUNT(*)::int AS total_records,
+             COALESCE(SUM(amount_due),0) AS total_due,
+             COALESCE(SUM(amount_collected),0) AS total_collected,
+             COALESCE(SUM(GREATEST(amount_due - amount_collected,0)),0) AS total_balance
+      FROM finance_collections
+    `);
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/collections/chart-data', ensureFinanceAccess, async (req, res) => {
+  try {
+    const [projects, status] = await Promise.all([
+      pool.query(`SELECT COALESCE(project_name,'General') AS project, SUM(amount_due) AS total_due, SUM(amount_collected) AS total_collected FROM finance_collections GROUP BY project_name ORDER BY project`),
+      pool.query(`SELECT status, COUNT(*) AS cnt FROM finance_collections GROUP BY status`)
+    ]);
+    const statusMap = { Approved: 0, Pending: 0, Decline: 0 };
+    status.rows.forEach(r => { statusMap[normalizeCollectionStatus(r.status)] = Number(r.cnt || 0); });
+    res.json({ projects: projects.rows, status: statusMap });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/collections', ensureFinanceAccess, async (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const params = [];
+    const where = search ? `WHERE client_name ILIKE $1 OR COALESCE(project_name,'') ILIKE $1 OR COALESCE(or_number,'') ILIKE $1` : '';
+    if (search) params.push(`%${search}%`);
+    const result = await pool.query(`${financeCollectionsSelectSql()} ${where} ORDER BY date DESC, id DESC`, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/collections', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, client, client_name, project, project_name, or_number, due, amount_due, collected, amount_collected, status, notes } = req.body || {};
+    const cleanClient = client_name || client;
+    const dueAmount = Number(amount_due ?? due ?? 0);
+    const collectedAmount = Number(amount_collected ?? collected ?? 0);
+    if (!date || !cleanClient?.trim() || dueAmount < 0) return res.status(400).json({ error: 'date, client, and amount_due are required' });
+    const result = await pool.query(`
+      INSERT INTO finance_collections (date, client_name, project_name, or_number, due_date, amount_due, amount_collected, status, notes, created_by)
+      VALUES ($1,$2,$3,$4,$1,$5,$6,$7,$8,$9)
+      RETURNING *
+    `, [date, cleanClient.trim(), project_name || project || null, or_number || null, dueAmount, collectedAmount, normalizeCollectionStatus(status), notes || null, financeUserId(req)]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/collections/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { date, client, client_name, project, project_name, or_number, due, amount_due, collected, amount_collected, status, notes } = req.body || {};
+    const cleanClient = client_name || client;
+    const dueAmount = Number(amount_due ?? due ?? 0);
+    const collectedAmount = amount_collected ?? collected;
+    if (!date || !cleanClient?.trim() || dueAmount < 0) return res.status(400).json({ error: 'date, client, and amount_due are required' });
+    const result = await pool.query(`
+      UPDATE finance_collections
+      SET date=$1, client_name=$2, project_name=$3, or_number=$4, due_date=$1, amount_due=$5,
+          amount_collected=COALESCE($6, amount_collected), status=$7, notes=$8, updated_at=NOW()
+      WHERE id=$9
+      RETURNING *
+    `, [date, cleanClient.trim(), project_name || project || null, or_number || null, dueAmount, collectedAmount == null ? null : Number(collectedAmount), normalizeCollectionStatus(status), notes || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Collection not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/collections/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_collections WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Collection not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/collections/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT id, collection_id, amount_paid, date, status FROM finance_collection_payments WHERE collection_id=$1 ORDER BY date ASC, id ASC`, [req.params.id]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/collections/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const amount = Number(req.body?.amount_paid || 0);
+    if (amount <= 0) return res.status(400).json({ error: 'amount_paid must be positive' });
+    const payment = await pool.query(`INSERT INTO finance_collection_payments (collection_id, amount_paid, date, status) VALUES ($1,$2,$3,$4) RETURNING *`, [req.params.id, amount, req.body?.date || new Date().toISOString().slice(0,10), req.body?.status || 'Pending']);
+    await pool.query(`UPDATE finance_collections SET amount_collected = amount_collected + $1, updated_at=NOW() WHERE id=$2`, [amount, req.params.id]);
+    const col = await pool.query(`${financeCollectionsSelectSql()} WHERE id=$1`, [req.params.id]);
+    res.json({ payment: payment.rows[0], collection: col.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/collections/payments/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const existing = await pool.query(`SELECT collection_id, amount_paid FROM finance_collection_payments WHERE id=$1`, [req.params.id]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'Payment not found' });
+    const row = existing.rows[0];
+    await pool.query(`DELETE FROM finance_collection_payments WHERE id=$1`, [req.params.id]);
+    await pool.query(`UPDATE finance_collections SET amount_collected=GREATEST(amount_collected - $1, 0), updated_at=NOW() WHERE id=$2`, [row.amount_paid, row.collection_id]);
+    const col = await pool.query(`${financeCollectionsSelectSql()} WHERE id=$1`, [row.collection_id]);
+    res.json({ success: true, collection: col.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 app.get('/api/finance/summary', ensureFinanceAccess, async (req, res) => {
   try {
@@ -429,76 +1734,122 @@ app.get('/api/finance/summary', ensureFinanceAccess, async (req, res) => {
   }
 });
 
+async function getFinanceReportData(req) {
+  const year = Number(req.query.year) || new Date().getFullYear();
+  const month = req.query.month ? Number(req.query.month) : null;
+  const bucket = month ? 'day' : 'month';
+  const labelFmt = month ? 'Mon DD' : 'Mon YYYY';
+  const params = [year];
+  const monthClause = month ? `AND EXTRACT(MONTH FROM date) = $2` : '';
+  if (month) params.push(month);
+  const dateWhere = `EXTRACT(YEAR FROM date) = $1 ${monthClause}`;
+
+  const totalsPromise = pool.query(`
+    SELECT
+      (SELECT COALESCE(SUM(amount),0) FROM finance_company_income WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}) AS total_income,
+      (SELECT COALESCE(SUM(amount),0) FROM finance_company_expenses WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}) AS company_expenses,
+      (SELECT COALESCE(SUM(amount),0) FROM finance_project_expenses WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}) AS project_expenses,
+      (SELECT COALESCE(SUM(amount_collected),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}) AS total_collections,
+      (SELECT COALESCE(SUM(GREATEST(amount_due - amount_collected, 0)),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}) AS outstanding_collections
+  `, params);
+
+  const monthlyPromise = pool.query(`
+    WITH monthly AS (
+      SELECT date_trunc('${bucket}', date)::date AS month_bucket, SUM(amount) AS amount, 'income' AS kind
+      FROM finance_company_income
+      WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}
+      GROUP BY 1
+      UNION ALL
+      SELECT date_trunc('${bucket}', date)::date AS month_bucket, SUM(amount) AS amount, 'company_expenses' AS kind
+      FROM finance_company_expenses
+      WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}
+      GROUP BY 1
+      UNION ALL
+      SELECT date_trunc('${bucket}', date)::date AS month_bucket, SUM(amount) AS amount, 'project_expenses' AS kind
+      FROM finance_project_expenses
+      WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}
+      GROUP BY 1
+      UNION ALL
+      SELECT date_trunc('${bucket}', date)::date AS month_bucket, SUM(amount_collected) AS amount, 'collections' AS kind
+      FROM finance_collections
+      WHERE LOWER(status) <> 'cancelled' AND ${dateWhere}
+      GROUP BY 1
+    )
+    SELECT
+      month_bucket,
+      TO_CHAR(month_bucket, $${params.length + 1}) AS month_label,
+      COALESCE(SUM(CASE WHEN kind='income' THEN amount END),0) AS income,
+      COALESCE(SUM(CASE WHEN kind='company_expenses' THEN amount END),0) AS company_expenses,
+      COALESCE(SUM(CASE WHEN kind='project_expenses' THEN amount END),0) AS project_expenses,
+      COALESCE(SUM(CASE WHEN kind='collections' THEN amount END),0) AS collections
+    FROM monthly
+    GROUP BY month_bucket
+    ORDER BY month_bucket DESC
+    LIMIT 31
+  `, [...params, labelFmt]);
+
+  const [totalsRes, monthlyRes] = await Promise.all([totalsPromise, monthlyPromise]);
+  const totals = totalsRes.rows[0] || {};
+  const monthly = monthlyRes.rows.map(row => ({
+    ...row,
+    income: Number(row.income || 0),
+    company_expenses: Number(row.company_expenses || 0),
+    project_expenses: Number(row.project_expenses || 0),
+    collections: Number(row.collections || 0),
+    total_expenses: Number(row.company_expenses || 0) + Number(row.project_expenses || 0),
+    net: Number(row.income || 0) - Number(row.company_expenses || 0) - Number(row.project_expenses || 0)
+  }));
+
+  return {
+    year,
+    month,
+    totals: {
+      total_income: Number(totals.total_income || 0),
+      company_expenses: Number(totals.company_expenses || 0),
+      project_expenses: Number(totals.project_expenses || 0),
+      total_collections: Number(totals.total_collections || 0),
+      outstanding_collections: Number(totals.outstanding_collections || 0),
+      net_income: Number(totals.total_income || 0) - Number(totals.company_expenses || 0) - Number(totals.project_expenses || 0)
+    },
+    monthly
+  };
+}
+
 app.get('/api/finance/report', ensureFinanceAccess, async (req, res) => {
   try {
-    const totalsPromise = pool.query(`
-      SELECT
-        (SELECT COALESCE(SUM(amount),0) FROM finance_company_income WHERE LOWER(status) <> 'cancelled') AS total_income,
-        (SELECT COALESCE(SUM(amount),0) FROM finance_company_expenses WHERE LOWER(status) <> 'cancelled') AS company_expenses,
-        (SELECT COALESCE(SUM(amount),0) FROM finance_project_expenses WHERE LOWER(status) <> 'cancelled') AS project_expenses,
-        (SELECT COALESCE(SUM(amount_collected),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled') AS total_collections,
-        (SELECT COALESCE(SUM(GREATEST(amount_due - amount_collected, 0)),0) FROM finance_collections WHERE LOWER(status) <> 'cancelled') AS outstanding_collections
-    `);
-
-    const monthlyPromise = pool.query(`
-      WITH monthly AS (
-        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'income' AS kind
-        FROM finance_company_income
-        WHERE LOWER(status) <> 'cancelled'
-        GROUP BY 1
-        UNION ALL
-        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'company_expenses' AS kind
-        FROM finance_company_expenses
-        WHERE LOWER(status) <> 'cancelled'
-        GROUP BY 1
-        UNION ALL
-        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount) AS amount, 'project_expenses' AS kind
-        FROM finance_project_expenses
-        WHERE LOWER(status) <> 'cancelled'
-        GROUP BY 1
-        UNION ALL
-        SELECT date_trunc('month', date)::date AS month_bucket, SUM(amount_collected) AS amount, 'collections' AS kind
-        FROM finance_collections
-        WHERE LOWER(status) <> 'cancelled'
-        GROUP BY 1
-      )
-      SELECT
-        month_bucket,
-        TO_CHAR(month_bucket, 'Mon YYYY') AS month_label,
-        COALESCE(SUM(CASE WHEN kind='income' THEN amount END),0) AS income,
-        COALESCE(SUM(CASE WHEN kind='company_expenses' THEN amount END),0) AS company_expenses,
-        COALESCE(SUM(CASE WHEN kind='project_expenses' THEN amount END),0) AS project_expenses,
-        COALESCE(SUM(CASE WHEN kind='collections' THEN amount END),0) AS collections
-      FROM monthly
-      GROUP BY month_bucket
-      ORDER BY month_bucket DESC
-      LIMIT 12
-    `);
-
-    const [totalsRes, monthlyRes] = await Promise.all([totalsPromise, monthlyPromise]);
-    const totals = totalsRes.rows[0] || {};
-    const monthly = monthlyRes.rows.map(row => ({
-      ...row,
-      income: Number(row.income || 0),
-      company_expenses: Number(row.company_expenses || 0),
-      project_expenses: Number(row.project_expenses || 0),
-      collections: Number(row.collections || 0),
-      net: Number(row.income || 0) - Number(row.company_expenses || 0) - Number(row.project_expenses || 0) + Number(row.collections || 0)
-    }));
-
-    res.json({
-      totals: {
-        total_income: Number(totals.total_income || 0),
-        company_expenses: Number(totals.company_expenses || 0),
-        project_expenses: Number(totals.project_expenses || 0),
-        total_collections: Number(totals.total_collections || 0),
-        outstanding_collections: Number(totals.outstanding_collections || 0)
-      },
-      monthly
-    });
+    res.json(await getFinanceReportData(req));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+app.get('/api/report/kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const report = await getFinanceReportData(req);
+    res.json({
+      total_income: report.totals.total_income,
+      comp_expenses: report.totals.company_expenses,
+      proj_expenses: report.totals.project_expenses,
+      total_collections: report.totals.total_collections,
+      net_income: report.totals.net_income
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/report/monthly', ensureFinanceAccess, async (req, res) => {
+  try {
+    const report = await getFinanceReportData(req);
+    res.json(report.monthly.map(row => ({
+      period: row.month_bucket,
+      month_label: row.month_label,
+      total_income: row.income,
+      total_comp_expenses: row.company_expenses,
+      total_proj_expenses: row.project_expenses,
+      total_expenses: row.total_expenses,
+      total_collections: row.collections,
+      net_income: row.net
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/finance/employees', ensureFinanceAccess, async (req, res) => {
@@ -506,6 +1857,20 @@ app.get('/api/finance/employees', ensureFinanceAccess, async (req, res) => {
     const result = await pool.query(`
       SELECT id, id_no, full_name, email, role, created_at
       FROM users
+      ORDER BY full_name ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/employee/list', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, full_name, email, role AS position, role AS department
+      FROM users
+      WHERE LOWER(COALESCE(role, '')) <> 'finance'
       ORDER BY full_name ASC
     `);
     res.json(result.rows);
@@ -571,6 +1936,342 @@ app.delete('/api/finance/records/:resource/:id', ensureFinanceAccess, async (req
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+async function financeResolveEmployeeId({ employee_id, full_name, role }) {
+  if (employee_id) return Number(employee_id);
+  const name = String(full_name || '').trim();
+  if (!name) return null;
+  const found = await pool.query(`SELECT id FROM finance_employees WHERE LOWER(full_name)=LOWER($1) LIMIT 1`, [name]);
+  if (found.rowCount) return found.rows[0].id;
+  const pos = await pool.query(`SELECT id FROM finance_positions WHERE LOWER(title)=LOWER($1) LIMIT 1`, [String(role || 'Staff')]);
+  const dept = await pool.query(`SELECT id FROM finance_departments WHERE name='Finance' LIMIT 1`);
+  const inserted = await pool.query(`
+    INSERT INTO finance_employees (full_name, position_id, department_id)
+    VALUES ($1,$2,$3)
+    RETURNING id
+  `, [name, pos.rows[0]?.id || null, dept.rows[0]?.id || null]);
+  return inserted.rows[0].id;
+}
+
+app.get('/api/employees', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT e.id, e.full_name, e.email, e.hired_date,
+             p.title AS position, d.name AS department
+      FROM finance_employees e
+      LEFT JOIN finance_positions p ON p.id=e.position_id
+      LEFT JOIN finance_departments d ON d.id=e.department_id
+      ORDER BY e.full_name
+    `);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/reimburse', ensureFinanceAccess, async (req, res) => {
+  try {
+    const params = [`%${String(req.query.search || '').trim()}%`];
+    const status = String(req.query.status || '').trim();
+    const statusSql = status ? ` AND r.status=$2` : '';
+    if (status) params.push(status);
+    const result = await pool.query(`
+      SELECT r.id, e.full_name AS name, e.full_name AS employee_name,
+             p.title AS role, p.title AS roles, r.date, r.description,
+             r.amount, r.status, r.comments
+      FROM finance_reimbursements r
+      JOIN finance_employees e ON e.id=r.employee_id
+      LEFT JOIN finance_positions p ON p.id=e.position_id
+      WHERE (e.full_name ILIKE $1 OR COALESCE(p.title,'') ILIKE $1 OR COALESCE(r.description,'') ILIKE $1)
+      ${statusSql}
+      ORDER BY r.date DESC, r.id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/reimburse', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, full_name, role, date, description, amount, status, comments } = req.body || {};
+    const resolvedId = await financeResolveEmployeeId({ employee_id, full_name, role });
+    if (!resolvedId) return res.status(400).json({ error: 'employee is required' });
+    const result = await pool.query(`
+      INSERT INTO finance_reimbursements (employee_id, date, description, amount, status, comments)
+      VALUES ($1,$2,$3,$4,$5,$6)
+      RETURNING *
+    `, [resolvedId, date || new Date().toISOString().slice(0, 10), description || '', Number(amount || 0), status || 'Pending', comments || null]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/reimburse/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, full_name, role, date, description, amount, status, comments } = req.body || {};
+    const resolvedId = await financeResolveEmployeeId({ employee_id, full_name, role });
+    if (!resolvedId) return res.status(400).json({ error: 'employee is required' });
+    const result = await pool.query(`
+      UPDATE finance_reimbursements
+      SET employee_id=$1, date=$2, description=$3, amount=$4, status=$5, comments=$6, updated_at=NOW()
+      WHERE id=$7
+      RETURNING *
+    `, [resolvedId, date, description || '', Number(amount || 0), status || 'Pending', comments || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/budget', ensureFinanceAccess, async (req, res) => {
+  try {
+    const params = [`%${String(req.query.search || '').trim()}%`];
+    const status = String(req.query.status || '').trim();
+    const statusSql = status ? ` AND br.status=$2` : '';
+    if (status) params.push(status);
+    const result = await pool.query(`
+      SELECT br.id, e.full_name AS name, e.full_name AS employee_name,
+             p.title AS role, p.title AS roles, br.date, br.description,
+             br.amount, br.status, br.comments
+      FROM finance_budget_requests br
+      JOIN finance_employees e ON e.id=br.employee_id
+      LEFT JOIN finance_positions p ON p.id=e.position_id
+      WHERE (e.full_name ILIKE $1 OR COALESCE(p.title,'') ILIKE $1 OR COALESCE(br.description,'') ILIKE $1)
+      ${statusSql}
+      ORDER BY br.date DESC, br.id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/budget', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, full_name, role, date, description, amount, status, comments } = req.body || {};
+    const resolvedId = await financeResolveEmployeeId({ employee_id, full_name, role });
+    if (!resolvedId) return res.status(400).json({ error: 'employee is required' });
+    const result = await pool.query(`
+      INSERT INTO finance_budget_requests (employee_id, date, description, amount, status, comments)
+      VALUES ($1,$2,$3,$4,$5,$6)
+      RETURNING *
+    `, [resolvedId, date || new Date().toISOString().slice(0, 10), description || '', Number(amount || 0), status || 'Pending', comments || null]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/budget/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, full_name, role, date, description, amount, status, comments } = req.body || {};
+    const resolvedId = await financeResolveEmployeeId({ employee_id, full_name, role });
+    if (!resolvedId) return res.status(400).json({ error: 'employee is required' });
+    const result = await pool.query(`
+      UPDATE finance_budget_requests
+      SET employee_id=$1, date=$2, description=$3, amount=$4, status=$5, comments=$6, updated_at=NOW()
+      WHERE id=$7
+      RETURNING *
+    `, [resolvedId, date, description || '', Number(amount || 0), status || 'Pending', comments || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/employee/:type/:id/action', ensureFinanceAccess, async (req, res) => {
+  const table = req.params.type === 'reimburse'
+    ? 'finance_reimbursements'
+    : req.params.type === 'budget'
+      ? 'finance_budget_requests'
+      : req.params.type === 'salary'
+        ? 'finance_salary_advances'
+        : null;
+  if (!table) return res.status(404).json({ error: 'Employee request type not found' });
+  try {
+    const { status, comment } = req.body || {};
+    if (!status) return res.status(400).json({ error: 'status is required' });
+    const commentColumn = table === 'finance_salary_advances' ? 'remarks' : 'comments';
+    const result = await pool.query(
+      `UPDATE ${table} SET status=$1, ${commentColumn}=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
+      [status, comment || null, req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary-advances', ensureFinanceAccess, async (req, res) => {
+  try {
+    const params = [`%${String(req.query.search || '').trim()}%`];
+    const status = String(req.query.status || '').trim();
+    const statusSql = status ? ` AND sa.status=$2` : '';
+    if (status) params.push(status);
+    const result = await pool.query(`
+      SELECT sa.id, e.full_name AS name, e.full_name AS employee_name,
+             sa.amount_borrowed, sa.remaining_balance, sa.date_borrowed,
+             sa.status, sa.remarks, sa.employee_id
+      FROM finance_salary_advances sa
+      JOIN finance_employees e ON e.id=sa.employee_id
+      WHERE e.full_name ILIKE $1 ${statusSql}
+      ORDER BY sa.date_borrowed DESC, sa.id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary-advances/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM finance_salary_advances WHERE id=$1`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/salary-advances', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, full_name, amount_borrowed, remaining_balance, date_borrowed, status } = req.body || {};
+    const resolvedId = await financeResolveEmployeeId({ employee_id, full_name });
+    if (!resolvedId) return res.status(400).json({ error: 'employee is required' });
+    const borrowed = Number(amount_borrowed || 0);
+    const result = await pool.query(`
+      INSERT INTO finance_salary_advances (employee_id, amount_borrowed, remaining_balance, date_borrowed, status)
+      VALUES ($1,$2,$3,$4,$5)
+      RETURNING *
+    `, [resolvedId, borrowed, Number(remaining_balance || borrowed), date_borrowed || new Date().toISOString().slice(0, 10), status || 'Pending']);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/salary-advances/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, full_name, amount_borrowed, remaining_balance, date_borrowed, status } = req.body || {};
+    const resolvedId = await financeResolveEmployeeId({ employee_id, full_name });
+    if (!resolvedId) return res.status(400).json({ error: 'employee is required' });
+    const result = await pool.query(`
+      UPDATE finance_salary_advances
+      SET employee_id=$1, amount_borrowed=$2, remaining_balance=$3, date_borrowed=$4, status=$5, updated_at=NOW()
+      WHERE id=$6
+      RETURNING *
+    `, [resolvedId, Number(amount_borrowed || 0), Number(remaining_balance || 0), date_borrowed, status || 'Pending', req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/salary-advances/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_salary_advances WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary-advances/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, advance_id, amount_paid, date, status
+      FROM finance_salary_advance_payments
+      WHERE advance_id=$1
+      ORDER BY date DESC, id DESC
+    `, [req.params.id]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/salary-advances/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const amount = Number(req.body?.amount_paid || 0);
+    if (amount <= 0) return res.status(400).json({ error: 'amount_paid must be positive' });
+    const result = await pool.query(`
+      INSERT INTO finance_salary_advance_payments (advance_id, amount_paid, date, status)
+      VALUES ($1,$2,$3,$4)
+      RETURNING *
+    `, [req.params.id, amount, req.body?.date || new Date().toISOString().slice(0, 10), req.body?.status || 'Paid']);
+    await pool.query(`UPDATE finance_salary_advances SET remaining_balance=GREATEST(remaining_balance - $1, 0) WHERE id=$2`, [amount, req.params.id]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/salary-payments/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const existing = await pool.query(`SELECT advance_id, amount_paid FROM finance_salary_advance_payments WHERE id=$1`, [req.params.id]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'Salary payment not found' });
+    await pool.query(`DELETE FROM finance_salary_advance_payments WHERE id=$1`, [req.params.id]);
+    await pool.query(`UPDATE finance_salary_advances SET remaining_balance=remaining_balance + $1 WHERE id=$2`, [existing.rows[0].amount_paid, existing.rows[0].advance_id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/employee-salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT es.id, es.employee_id, e.full_name AS employee_name,
+             p.title AS position, d.name AS department,
+             es.current_salary, es.date, es.period_start, es.period_end
+      FROM finance_employee_salaries es
+      JOIN finance_employees e ON e.id=es.employee_id
+      LEFT JOIN finance_positions p ON p.id=e.position_id
+      LEFT JOIN finance_departments d ON d.id=e.department_id
+      WHERE e.full_name ILIKE $1 OR COALESCE(p.title,'') ILIKE $1 OR COALESCE(d.name,'') ILIKE $1
+      ORDER BY es.date DESC, es.id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/employee-salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM finance_employee_salaries WHERE id=$1`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Employee salary not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/employee-salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, current_salary, date, period_start, period_end } = req.body || {};
+    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
+    const employee = await pool.query(`
+      SELECT e.full_name, p.title AS position, d.name AS department
+      FROM finance_employees e
+      LEFT JOIN finance_positions p ON p.id=e.position_id
+      LEFT JOIN finance_departments d ON d.id=e.department_id
+      WHERE e.id=$1
+    `, [employee_id]);
+    if (!employee.rowCount) return res.status(404).json({ error: 'Employee not found' });
+    const emp = employee.rows[0];
+    const result = await pool.query(`
+      INSERT INTO finance_employee_salaries (employee_id, employee_name, position, department, current_salary, salary_date, date, period_start, period_end)
+      VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8)
+      RETURNING *
+    `, [employee_id, emp.full_name, emp.position || null, emp.department || null, Number(current_salary || 0), date || new Date().toISOString().slice(0, 10), period_start || null, period_end || null]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/employee-salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_id, current_salary, date, period_start, period_end } = req.body || {};
+    if (!employee_id) return res.status(400).json({ error: 'employee_id is required' });
+    const employee = await pool.query(`
+      SELECT e.full_name, p.title AS position, d.name AS department
+      FROM finance_employees e
+      LEFT JOIN finance_positions p ON p.id=e.position_id
+      LEFT JOIN finance_departments d ON d.id=e.department_id
+      WHERE e.id=$1
+    `, [employee_id]);
+    if (!employee.rowCount) return res.status(404).json({ error: 'Employee not found' });
+    const emp = employee.rows[0];
+    const result = await pool.query(`
+      UPDATE finance_employee_salaries
+      SET employee_id=$1, employee_name=$2, position=$3, department=$4, current_salary=$5, salary_date=$6, date=$6, period_start=$7, period_end=$8, updated_at=NOW()
+      WHERE id=$9
+      RETURNING *
+    `, [employee_id, emp.full_name, emp.position || null, emp.department || null, Number(current_salary || 0), date, period_start || null, period_end || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Employee salary not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/employee-salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_employee_salaries WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Employee salary not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/employee/reimburse', ensureFinanceAccess, async (req, res) => {
@@ -684,6 +2385,135 @@ app.delete('/api/employee/salary/:id', ensureFinanceAccess, async (req, res) => 
   try {
     const result = await pool.query(`DELETE FROM employee_salary_advances WHERE id=$1 RETURNING id`, [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, advance_id, amount_paid, date, status
+      FROM employee_salary_advance_payments
+      WHERE advance_id=$1
+      ORDER BY date DESC, id DESC
+    `, [req.params.id]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/salary/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const amount = Number(req.body?.amount_paid || 0);
+    if (amount <= 0) return res.status(400).json({ error: 'amount_paid must be positive' });
+    const result = await pool.query(`
+      INSERT INTO employee_salary_advance_payments (advance_id, amount_paid, date, status)
+      VALUES ($1,$2,$3,$4)
+      RETURNING *
+    `, [req.params.id, amount, req.body?.date || new Date().toISOString().slice(0, 10), req.body?.status || 'Pending']);
+    await pool.query(`
+      UPDATE employee_salary_advances
+      SET balance=GREATEST(balance - $1, 0)
+      WHERE id=$2
+    `, [amount, req.params.id]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/salary/payments/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const existing = await pool.query(`SELECT advance_id, amount_paid FROM employee_salary_advance_payments WHERE id=$1`, [req.params.id]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'Salary payment not found' });
+    const row = existing.rows[0];
+    await pool.query(`DELETE FROM employee_salary_advance_payments WHERE id=$1`, [req.params.id]);
+    await pool.query(`UPDATE employee_salary_advances SET balance=balance + $1 WHERE id=$2`, [row.amount_paid, row.advance_id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary-advances/:id/payments', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, advance_id, amount_paid, date, status
+      FROM employee_salary_advance_payments
+      WHERE advance_id=$1
+      ORDER BY date DESC, id DESC
+    `, [req.params.id]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/employee-salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, employee_name, position, department, current_salary, salary_date, period_start, period_end, status
+      FROM finance_employee_salaries
+      WHERE employee_name ILIKE $1 OR COALESCE(position, '') ILIKE $1 OR COALESCE(department, '') ILIKE $1
+      ORDER BY salary_date DESC, id DESC
+    `, [q]);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/employee-salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM finance_employee_salaries WHERE id=$1`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Employee salary not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/employee/employee-salary', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_name, position, department, current_salary, salary_date, period_start, period_end, status } = req.body || {};
+    if (!employee_name?.trim()) return res.status(400).json({ error: 'employee_name is required' });
+    const result = await pool.query(`
+      INSERT INTO finance_employee_salaries (employee_name, position, department, current_salary, salary_date, period_start, period_end, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      RETURNING *
+    `, [
+      employee_name.trim(),
+      position || null,
+      department || null,
+      Number(current_salary || 0),
+      salary_date || new Date().toISOString().slice(0, 10),
+      period_start || null,
+      period_end || null,
+      status || 'Active'
+    ]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/employee/employee-salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { employee_name, position, department, current_salary, salary_date, period_start, period_end, status } = req.body || {};
+    if (!employee_name?.trim()) return res.status(400).json({ error: 'employee_name is required' });
+    const result = await pool.query(`
+      UPDATE finance_employee_salaries
+      SET employee_name=$1, position=$2, department=$3, current_salary=$4, salary_date=$5, period_start=$6, period_end=$7, status=$8, updated_at=NOW()
+      WHERE id=$9
+      RETURNING *
+    `, [
+      employee_name.trim(),
+      position || null,
+      department || null,
+      Number(current_salary || 0),
+      salary_date || new Date().toISOString().slice(0, 10),
+      period_start || null,
+      period_end || null,
+      status || 'Active',
+      req.params.id
+    ]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Employee salary not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/employee/employee-salary/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_employee_salaries WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Employee salary not found' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -1333,11 +3163,23 @@ app.delete("/api/tickets/:id", async (req, res) => {
 /* ================= LETTERS — SETUP ================= */
 
 // multer required at top of file
+function getLettersModule(req) {
+  const raw = String(req.query?.module || req.body?.module || '').toLowerCase();
+  return raw === 'finance' ? 'finance' : 'noc';
+}
+
+function getLettersUploadDir(moduleName) {
+  return require('path').join(__dirname, 'public', 'uploads', moduleName, 'files');
+}
+
+function getLettersRelativePath(moduleName, fileName) {
+  return `/uploads/${moduleName}/files/${fileName}`;
+}
 
 const lettersUpload = multer ? multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
-      const dir = require('path').join(__dirname, 'public', 'uploads', 'letters');
+      const dir = getLettersUploadDir(getLettersModule(req));
       require('fs').mkdirSync(dir, { recursive: true });
       cb(null, dir);
     },
@@ -1359,9 +3201,13 @@ const lettersUpload = multer ? multer({
         file_id       INTEGER,
         file_name     TEXT NOT NULL,
         downloaded_by TEXT NOT NULL,
+        module        TEXT NOT NULL DEFAULT 'noc',
         downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await pool.query(`ALTER TABLE IF EXISTS folders ADD COLUMN IF NOT EXISTS module TEXT NOT NULL DEFAULT 'noc'`);
+    await pool.query(`ALTER TABLE IF EXISTS files ADD COLUMN IF NOT EXISTS module TEXT NOT NULL DEFAULT 'noc'`);
+    await pool.query(`ALTER TABLE IF EXISTS download_history ADD COLUMN IF NOT EXISTS module TEXT NOT NULL DEFAULT 'noc'`);
     console.log('download_history table ready ✅');
   } catch (err) {
     console.error('download_history table error:', err.message);
@@ -1370,12 +3216,15 @@ const lettersUpload = multer ? multer({
 
 /* ── GET /api/letters/download-history ── */
 app.get('/api/letters/download-history', async (req, res) => {
+  const moduleName = getLettersModule(req);
   try {
     const { rows } = await pool.query(
       `SELECT id, file_id, file_name, downloaded_by, downloaded_at
          FROM download_history
+        WHERE module = $1
         ORDER BY downloaded_at DESC
-        LIMIT 500`
+        LIMIT 500`,
+      [moduleName]
     );
     res.json(rows);
   } catch (err) {
@@ -1387,12 +3236,13 @@ app.get('/api/letters/download-history', async (req, res) => {
 /* ── POST /api/letters/download-history ── */
 app.post('/api/letters/download-history', async (req, res) => {
   const { file_id, file_name, downloaded_by } = req.body || {};
+  const moduleName = getLettersModule(req);
   if (!file_name || !downloaded_by) return res.status(400).json({ error: 'file_name and downloaded_by are required' });
   try {
     const { rows } = await pool.query(
-      `INSERT INTO download_history (file_id, file_name, downloaded_by)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [file_id || null, file_name, downloaded_by]
+      `INSERT INTO download_history (file_id, file_name, downloaded_by, module)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [file_id || null, file_name, downloaded_by, moduleName]
     );
     res.status(201).json({ success: true, row: rows[0] });
   } catch (err) {
@@ -1404,6 +3254,7 @@ app.post('/api/letters/download-history', async (req, res) => {
 /* ── GET /api/letters/folders ── */
 app.get('/api/letters/folders', async (req, res) => {
   try {
+    const moduleName = getLettersModule(req);
     const rawParent = req.query.parent_id;
     const parentId  = (rawParent !== undefined && rawParent !== '') ? parseInt(rawParent) : null;
     if (parentId !== null && isNaN(parentId)) return res.status(400).json({ error: 'Invalid parent_id' });
@@ -1412,22 +3263,24 @@ app.get('/api/letters/folders', async (req, res) => {
     if (parentId !== null) {
       result = await pool.query(`
         SELECT f.id, f.folder_name, f.parent_id, f.created_at,
-               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id) +
-               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id) AS file_count
+               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id AND fi.module = f.module) +
+               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id AND sf.module = f.module) AS file_count
           FROM folders f
          WHERE f.parent_id = $1
            AND f.id != $1
+           AND f.module = $2
          ORDER BY f.folder_name
-      `, [parentId]);
+      `, [parentId, moduleName]);
     } else {
       result = await pool.query(`
         SELECT f.id, f.folder_name, f.parent_id, f.created_at,
-               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id) +
-               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id) AS file_count
+               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id AND fi.module = f.module) +
+               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id AND sf.module = f.module) AS file_count
           FROM folders f
          WHERE f.parent_id IS NULL
+           AND f.module = $1
          ORDER BY f.folder_name
-      `);
+      `, [moduleName]);
     }
     res.json(result.rows);
   } catch (err) {
@@ -1439,11 +3292,12 @@ app.get('/api/letters/folders', async (req, res) => {
 /* ── POST /api/letters/folders ── */
 app.post('/api/letters/folders', async (req, res) => {
   const { folder_name, parent_id = null } = req.body || {};
+  const moduleName = getLettersModule(req);
   if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
   try {
     const result = await pool.query(
-      `INSERT INTO folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
-      [folder_name.trim(), parent_id]
+      `INSERT INTO folders (folder_name, parent_id, module) VALUES ($1, $2, $3) RETURNING *`,
+      [folder_name.trim(), parent_id, moduleName]
     );
     res.status(201).json({ success: true, folder: result.rows[0] });
   } catch (err) {
@@ -1457,11 +3311,12 @@ app.post('/api/letters/folders', async (req, res) => {
 app.put('/api/letters/folders/:id', async (req, res) => {
   const id = parseInt(req.params.id);
   const { folder_name } = req.body || {};
+  const moduleName = getLettersModule(req);
   if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
   try {
     const result = await pool.query(
-      `UPDATE folders SET folder_name = $1 WHERE id = $2 RETURNING *`,
-      [folder_name.trim(), id]
+      `UPDATE folders SET folder_name = $1 WHERE id = $2 AND module = $3 RETURNING *`,
+      [folder_name.trim(), id, moduleName]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
     res.json({ success: true, folder: result.rows[0] });
@@ -1474,8 +3329,9 @@ app.put('/api/letters/folders/:id', async (req, res) => {
 /* ── DELETE /api/letters/folders/:id ── */
 app.delete('/api/letters/folders/:id', async (req, res) => {
   const id = parseInt(req.params.id);
+  const moduleName = getLettersModule(req);
   try {
-    const result = await pool.query(`DELETE FROM folders WHERE id = $1`, [id]);
+    const result = await pool.query(`DELETE FROM folders WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
     res.json({ success: true, deleted: result.rowCount });
   } catch (err) {
@@ -1486,13 +3342,14 @@ app.delete('/api/letters/folders/:id', async (req, res) => {
 /* ── GET /api/letters/folders/:id/files ── */
 app.get('/api/letters/folders/:id/files', async (req, res) => {
   const id = parseInt(req.params.id);
+  const moduleName = getLettersModule(req);
   const q  = req.query.q ? `%${req.query.q}%` : null;
   try {
     const result = await pool.query(
       `SELECT * FROM files
-        WHERE folder_id = $1 ${q ? 'AND file_name ILIKE $2' : ''}
+        WHERE folder_id = $1 AND module = $2 ${q ? 'AND file_name ILIKE $3' : ''}
         ORDER BY created_at DESC`,
-      q ? [id, q] : [id]
+      q ? [id, moduleName, q] : [id, moduleName]
     );
     res.json(result.rows);
   } catch (err) {
@@ -1502,9 +3359,11 @@ app.get('/api/letters/folders/:id/files', async (req, res) => {
 
 /* ── GET /api/letters/uploaders ── */
 app.get('/api/letters/uploaders', async (req, res) => {
+  const moduleName = getLettersModule(req);
   try {
     const result = await pool.query(
-      `SELECT DISTINCT uploader_name FROM files WHERE uploader_name IS NOT NULL ORDER BY uploader_name`
+      `SELECT DISTINCT uploader_name FROM files WHERE module = $1 AND uploader_name IS NOT NULL ORDER BY uploader_name`,
+      [moduleName]
     );
     res.json(result.rows.map(r => r.uploader_name));
   } catch (err) {
@@ -1514,8 +3373,9 @@ app.get('/api/letters/uploaders', async (req, res) => {
 
 /* ── GET /api/letters/files/recent ── */
 app.get('/api/letters/files/recent', async (req, res) => {
+  const moduleName = getLettersModule(req);
   try {
-    const result = await pool.query(`SELECT * FROM files ORDER BY created_at DESC LIMIT 8`);
+    const result = await pool.query(`SELECT * FROM files WHERE module = $1 ORDER BY created_at DESC LIMIT 8`, [moduleName]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1528,19 +3388,22 @@ app.post('/api/letters/files', (req, res, next) => {
   lettersUpload.single('file')(req, res, async (err) => {
     if (err) return res.status(400).json({ error: err.message });
     const { folder_id, uploader_name } = req.body || {};
+    const moduleName = getLettersModule(req);
     if (!folder_id) return res.status(400).json({ error: 'folder_id is required' });
     if (!req.file)  return res.status(400).json({ error: 'No file received' });
-    const file_path = '/uploads/letters/' + req.file.filename;
+    const file_path = getLettersRelativePath(moduleName, req.file.filename);
     const file_size = req.file.size;
     const file_name = req.file.originalname;
     const ext = require('path').extname(file_name).toLowerCase().replace('.', '');
-    const mimeMap = { pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', txt: 'text', png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', mp4: 'video', webm: 'video', mov: 'video', avi: 'video', mkv: 'video' };
+    const mimeMap = { pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', txt: 'text', png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', zip: 'archive', rar: 'archive', mp4: 'video', webm: 'video', mov: 'video', avi: 'video', mkv: 'video' };
     const file_type = mimeMap[ext] || ext || req.file.mimetype.split('/')[1]?.slice(0, 50) || 'file';
     try {
+      const folderCheck = await pool.query(`SELECT id FROM folders WHERE id = $1 AND module = $2`, [parseInt(folder_id), moduleName]);
+      if (!folderCheck.rowCount) return res.status(404).json({ error: 'Folder not found' });
       const result = await pool.query(
-        `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, last_access)
-         VALUES ($1,$2,$3,$4,$5,$6,NOW()) RETURNING *`,
-        [parseInt(folder_id), uploader_name || null, file_name, file_path, file_size, file_type]
+        `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, module, last_access)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) RETURNING *`,
+        [parseInt(folder_id), uploader_name || null, file_name, file_path, file_size, file_type, moduleName]
       );
       res.status(201).json({ success: true, file: result.rows[0] });
     } catch (dbErr) {
@@ -1553,11 +3416,12 @@ app.post('/api/letters/files', (req, res, next) => {
 app.put('/api/letters/files/:id', async (req, res) => {
   const id = parseInt(req.params.id);
   const { file_name } = req.body || {};
+  const moduleName = getLettersModule(req);
   if (!file_name?.trim()) return res.status(400).json({ error: 'file_name is required' });
   try {
     const result = await pool.query(
-      `UPDATE files SET file_name = $1 WHERE id = $2 RETURNING *`,
-      [file_name.trim(), id]
+      `UPDATE files SET file_name = $1 WHERE id = $2 AND module = $3 RETURNING *`,
+      [file_name.trim(), id, moduleName]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
     res.json({ success: true, file: result.rows[0] });
@@ -1569,10 +3433,11 @@ app.put('/api/letters/files/:id', async (req, res) => {
 /* ── DELETE /api/letters/files/:id ── */
 app.delete('/api/letters/files/:id', async (req, res) => {
   const id = parseInt(req.params.id);
+  const moduleName = getLettersModule(req);
   try {
-    const { rows } = await pool.query(`SELECT file_path FROM files WHERE id = $1`, [id]);
+    const { rows } = await pool.query(`SELECT file_path FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
-    await pool.query(`DELETE FROM files WHERE id = $1`, [id]);
+    await pool.query(`DELETE FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
     try {
       const fs       = require('fs');
       const filePath = require('path').join(__dirname, 'public', rows[0].file_path);
@@ -1587,17 +3452,18 @@ app.delete('/api/letters/files/:id', async (req, res) => {
 /* ── GET /api/letters/files/:id/download ── */
 app.get('/api/letters/files/:id/download', async (req, res) => {
   const id = parseInt(req.params.id);
+  const moduleName = getLettersModule(req);
   const downloadedBy = req.query.user || 'Unknown';
   try {
-    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
     const f        = rows[0];
     const filePath = require('path').join(__dirname, 'public', f.file_path);
-    await pool.query(`UPDATE files SET last_access = NOW() WHERE id = $1`, [id]);
+    await pool.query(`UPDATE files SET last_access = NOW() WHERE id = $1 AND module = $2`, [id, moduleName]);
     // Log download history (fire-and-forget)
     pool.query(
-      `INSERT INTO download_history (file_id, file_name, downloaded_by) VALUES ($1, $2, $3)`,
-      [id, f.file_name, downloadedBy]
+      `INSERT INTO download_history (file_id, file_name, downloaded_by, module) VALUES ($1, $2, $3, $4)`,
+      [id, f.file_name, downloadedBy, moduleName]
     ).catch(() => {});
     res.download(filePath, f.file_name, err => {
       if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk' });
@@ -1611,10 +3477,13 @@ app.get('/api/letters/files/:id/download', async (req, res) => {
 app.post('/api/letters/files/:id/copy', async (req, res) => {
   const id = parseInt(req.params.id);
   const { target_folder_id } = req.body || {};
+  const moduleName = getLettersModule(req);
   if (!target_folder_id) return res.status(400).json({ error: 'target_folder_id is required' });
   try {
-    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const folderCheck = await pool.query(`SELECT id FROM folders WHERE id = $1 AND module = $2`, [parseInt(target_folder_id), moduleName]);
+    if (!folderCheck.rowCount) return res.status(404).json({ error: 'Target folder not found' });
     const f = rows[0];
     const fs   = require('fs');
     const path = require('path');
@@ -1623,14 +3492,14 @@ app.post('/api/letters/files/:id/copy', async (req, res) => {
     const newFileName = `${base} (copy)${ext}`;
     const oldPath = path.join(__dirname, 'public', f.file_path);
     const newFile = `${Date.now()}_${path.basename(f.file_path)}`;
-    const newRelPath = '/uploads/letters/' + newFile;
+    const newRelPath = getLettersRelativePath(moduleName, newFile);
     const newAbsPath = path.join(__dirname, 'public', newRelPath);
     fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
     fs.copyFileSync(oldPath, newAbsPath);
     const result = await pool.query(
-      `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [parseInt(target_folder_id), f.uploader_name, newFileName, newRelPath, f.file_size, f.file_type]
+      `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, module)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [parseInt(target_folder_id), f.uploader_name, newFileName, newRelPath, f.file_size, f.file_type, moduleName]
     );
     res.status(201).json({ success: true, file: result.rows[0] });
   } catch (err) {
@@ -1643,32 +3512,35 @@ app.post('/api/letters/files/:id/copy', async (req, res) => {
 app.post('/api/letters/folders/:id/copy', async (req, res) => {
   const id = parseInt(req.params.id);
   const { target_parent_id } = req.body || {};
+  const moduleName = getLettersModule(req);
   if (!target_parent_id) return res.status(400).json({ error: 'target_parent_id is required' });
   try {
-    const { rows: folderRows } = await pool.query(`SELECT * FROM folders WHERE id = $1`, [id]);
+    const { rows: folderRows } = await pool.query(`SELECT * FROM folders WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
+    const targetCheck = await pool.query(`SELECT id FROM folders WHERE id = $1 AND module = $2`, [parseInt(target_parent_id), moduleName]);
+    if (!targetCheck.rowCount) return res.status(404).json({ error: 'Target folder not found' });
     const srcFolder = folderRows[0];
     const newName = srcFolder.folder_name + ' (copy)';
     const { rows: newFolderRows } = await pool.query(
-      `INSERT INTO folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
-      [newName, parseInt(target_parent_id)]
+      `INSERT INTO folders (folder_name, parent_id, module) VALUES ($1, $2, $3) RETURNING *`,
+      [newName, parseInt(target_parent_id), moduleName]
     );
     const newFolderId = newFolderRows[0].id;
-    const { rows: files } = await pool.query(`SELECT * FROM files WHERE folder_id = $1`, [id]);
+    const { rows: files } = await pool.query(`SELECT * FROM files WHERE folder_id = $1 AND module = $2`, [id, moduleName]);
     const fs   = require('fs');
     const path = require('path');
     for (const f of files) {
       try {
         const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
-        const newRelPath = '/uploads/letters/' + newFile;
+        const newRelPath = getLettersRelativePath(moduleName, newFile);
         const newAbsPath = path.join(__dirname, 'public', newRelPath);
         const oldAbsPath = path.join(__dirname, 'public', f.file_path);
         fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
         fs.copyFileSync(oldAbsPath, newAbsPath);
         await pool.query(
-          `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [newFolderId, f.uploader_name, f.file_name, newRelPath, f.file_size, f.file_type]
+          `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, module)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [newFolderId, f.uploader_name, f.file_name, newRelPath, f.file_size, f.file_type, moduleName]
         );
       } catch { /* skip files that can't be copied */ }
     }
@@ -1682,8 +3554,9 @@ app.post('/api/letters/folders/:id/copy', async (req, res) => {
 /* ── GET /api/letters/files/:id/preview ── */
 app.get('/api/letters/files/:id/preview', async (req, res) => {
   const id = parseInt(req.params.id);
+  const moduleName = getLettersModule(req);
   try {
-    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
     const f        = rows[0];
     const filePath = require('path').join(__dirname, 'public', f.file_path);
@@ -2050,6 +3923,21 @@ app.post('/api/reminders', async (req, res) => {
       ON in_app_messages (sender_id, created_at DESC)
     `);
 
+    await pool.query(`
+      ALTER TABLE in_app_messages
+      ADD COLUMN IF NOT EXISTS seen_at TIMESTAMP
+    `);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS group_id TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS group_name TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS recipient_ids TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS group_photo TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS is_group_seed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_name TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_path TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_type TEXT`);
+    await pool.query(`ALTER TABLE in_app_messages ADD COLUMN IF NOT EXISTS attachment_size BIGINT`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_in_app_messages_group ON in_app_messages (group_id, created_at DESC)`);
+
     console.log('In-app messaging table ready ✅');
   } catch (e) {
     console.error('in-app messaging migration:', e.message);
@@ -2127,6 +4015,49 @@ app.put('/api/users/:id', async (req, res) => {
 });
 
 /* ================= IN-APP MESSAGING ================= */
+
+function getMessagingPresence(userId) {
+  const rec = messagingPresence.get(String(userId));
+  const lastSeen = rec?.lastSeen || null;
+  const isOnline = Boolean(rec?.isOnline && rec.lastSeen && Date.now() - rec.lastSeen.getTime() < PRESENCE_TTL_MS);
+  return { user_id: Number(userId), isOnline, lastSeen };
+}
+
+// Lightweight polling-backed presence for Messenger-style chat.
+app.post('/api/messages/presence', (req, res) => {
+  const userId = Number(req.body?.user_id);
+  if (!userId) return res.status(400).json({ error: 'user_id is required' });
+  messagingPresence.set(String(userId), { isOnline: req.body?.is_online !== false, lastSeen: new Date() });
+  res.json(getMessagingPresence(userId));
+});
+
+app.post('/api/messages/typing', (req, res) => {
+  const senderId = Number(req.body?.sender_id);
+  const recipientId = Number(req.body?.recipient_id);
+  const isTyping = Boolean(req.body?.is_typing);
+  if (!senderId || !recipientId) return res.status(400).json({ error: 'sender_id and recipient_id are required' });
+
+  const key = `${senderId}:${recipientId}`;
+  if (isTyping) messagingTyping.set(key, { isTyping: true, updatedAt: new Date() });
+  else messagingTyping.delete(key);
+  res.json({ isTyping });
+});
+
+app.get('/api/messages/realtime', (req, res) => {
+  const userId = Number(req.query.user_id);
+  const peerId = Number(req.query.peer_id);
+  if (!userId || !peerId) return res.status(400).json({ error: 'user_id and peer_id are required' });
+
+  const typingKey = `${peerId}:${userId}`;
+  const typing = messagingTyping.get(typingKey);
+  const isTyping = Boolean(typing?.isTyping && Date.now() - typing.updatedAt.getTime() < TYPING_TTL_MS);
+  if (!isTyping) messagingTyping.delete(typingKey);
+
+  res.json({
+    presence: getMessagingPresence(peerId),
+    typing: { isTyping, typingUserId: isTyping ? String(peerId) : null }
+  });
+});
 
 // GET inbox / sent folders
 app.get('/api/messages', async (req, res) => {
@@ -2258,55 +4189,228 @@ app.post('/api/messages/system', async (req, res) => {
   }
 });
 
+const messageAttachmentUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'messages');
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const safe = String(file.originalname || 'attachment').replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, Date.now() + '_' + safe);
+    }
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
+
+app.post('/api/messages/with-attachment', messageAttachmentUpload.single('attachment'), async (req, res) => {
+  const body = {
+    ...req.body,
+    body: String(req.body?.body || '').trim() || (req.file ? 'Attachment' : '')
+  };
+  const senderIdNum = Number(body.sender_id);
+  let parsedRecipientIds = [];
+  try {
+    parsedRecipientIds = body.recipient_ids ? JSON.parse(body.recipient_ids) : [];
+  } catch {
+    parsedRecipientIds = String(body.recipient_ids || '').split(',');
+  }
+  const recipientIdList = Array.from(new Set(
+    (Array.isArray(parsedRecipientIds) && parsedRecipientIds.length ? parsedRecipientIds : [body.recipient_id])
+      .map(Number)
+      .filter(id => Number.isFinite(id) && id > 0 && id !== senderIdNum)
+  ));
+  const isGroup = recipientIdList.length > 1 || Boolean(body.group_id);
+  if (!senderIdNum || !recipientIdList.length || !req.file) {
+    return res.status(400).json({ error: 'sender_id, recipient_id, and attachment are required' });
+  }
+  try {
+    const participantIds = [senderIdNum, ...recipientIdList].sort((a, b) => a - b);
+    const filePath = '/uploads/messages/' + req.file.filename;
+    const createdAt = new Date();
+    const resolvedGroupId = isGroup ? String(body.group_id || `grp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`) : null;
+    const resolvedGroupName = isGroup ? String(body.group_name || body.subject || 'Group chat').trim() : null;
+    const inserted = [];
+    for (const recipientIdNum of recipientIdList) {
+      const result = await pool.query(
+        `
+        INSERT INTO in_app_messages (
+          sender_id, recipient_id, subject, body, parent_message_id, group_id, group_name, recipient_ids, group_photo, attachment_name, attachment_path, attachment_type, attachment_size, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+        RETURNING *
+        `,
+        [
+          senderIdNum,
+          recipientIdNum,
+          String(body.subject || 'Chat').trim(),
+          body.body,
+          body.parent_message_id ? Number(body.parent_message_id) : null,
+          resolvedGroupId,
+          resolvedGroupName,
+          isGroup ? JSON.stringify(participantIds) : null,
+          isGroup ? (body.group_photo || null) : null,
+          req.file.originalname,
+          filePath,
+          req.file.mimetype || '',
+          req.file.size || null,
+          createdAt
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+    res.status(201).json(isGroup ? { ...inserted[0], messages: inserted } : inserted[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/messages/groups', async (req, res) => {
+  const { creator_id, group_name, member_ids, group_photo } = req.body || {};
+  const creatorId = Number(creator_id);
+  const memberIds = Array.from(new Set(
+    (Array.isArray(member_ids) ? member_ids : [])
+      .map(Number)
+      .filter(id => Number.isFinite(id) && id > 0 && id !== creatorId)
+  ));
+  const name = String(group_name || '').trim();
+
+  if (!creatorId) return res.status(400).json({ error: 'creator_id is required' });
+  if (!name) return res.status(400).json({ error: 'Group name is required' });
+  if (memberIds.length < 2) return res.status(400).json({ error: 'Select at least 2 members' });
+
+  try {
+    const participantIds = [creatorId, ...memberIds].sort((a, b) => a - b);
+    const usersCheck = await pool.query(
+      `SELECT id, full_name, email FROM users WHERE id = ANY($1::int[])`,
+      [participantIds]
+    );
+    if (usersCheck.rowCount < participantIds.length) {
+      return res.status(400).json({ error: 'One or more group members do not exist.' });
+    }
+
+    const groupId = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const createdAt = new Date();
+    const inserted = [];
+    for (const recipientId of memberIds) {
+      const result = await pool.query(
+        `
+        INSERT INTO in_app_messages (
+          sender_id, recipient_id, subject, body, group_id, group_name, recipient_ids, group_photo, is_group_seed, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9, $9)
+        RETURNING *
+        `,
+        [
+          creatorId,
+          recipientId,
+          name,
+          '',
+          groupId,
+          name,
+          JSON.stringify(participantIds),
+          group_photo || null,
+          createdAt
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    const participantRows = usersCheck.rows.map(u => ({
+      id: u.id,
+      name: u.full_name || u.email || 'Unknown',
+      email: u.email
+    }));
+
+    res.status(201).json({
+      group_id: groupId,
+      group_name: name,
+      group_photo: group_photo || null,
+      recipient_ids: participantIds,
+      participants: participantRows,
+      created_at: inserted[0]?.created_at || createdAt.toISOString(),
+      messages: [],
+      raw: inserted[0]
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST send message
 app.post('/api/messages', async (req, res) => {
   const {
     sender_id,
     recipient_id,
+    recipient_ids,
+    group_id,
+    group_name,
+    group_photo,
     subject,
     body,
     parent_message_id
   } = req.body || {};
 
   const senderIdNum = Number(sender_id);
-  const recipientIdNum = Number(recipient_id);
+  const recipientIdList = Array.from(new Set(
+    (Array.isArray(recipient_ids) ? recipient_ids : [recipient_id])
+      .map(Number)
+      .filter(id => Number.isFinite(id) && id > 0 && id !== senderIdNum)
+  ));
+  const isGroup = recipientIdList.length > 1 || Boolean(group_id);
+  const resolvedGroupId = isGroup ? String(group_id || `grp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`) : null;
+  const resolvedGroupName = isGroup
+    ? String(group_name || '').trim() || `Group chat (${recipientIdList.length + 1})`
+    : null;
 
-  if (!senderIdNum || !recipientIdNum || !String(subject || '').trim() || !String(body || '').trim()) {
-    return res.status(400).json({ error: 'sender_id, recipient_id, subject, and body are required' });
+  if (!senderIdNum || !recipientIdList.length || !String(subject || '').trim() || !String(body || '').trim()) {
+    return res.status(400).json({ error: 'sender_id, recipient_id(s), subject, and body are required' });
   }
 
-  if (senderIdNum === recipientIdNum) {
-    return res.status(400).json({ error: 'You cannot send a message to yourself.' });
+  if (!recipientIdList.length) {
+    return res.status(400).json({ error: 'Choose at least one other recipient.' });
   }
 
   try {
     const usersCheck = await pool.query(
       `SELECT id FROM users WHERE id = ANY($1::int[])`,
-      [[senderIdNum, recipientIdNum]]
+      [[senderIdNum, ...recipientIdList]]
     );
 
-    if (usersCheck.rowCount < 2) {
-      return res.status(400).json({ error: 'Sender or recipient does not exist.' });
+    if (usersCheck.rowCount < recipientIdList.length + 1) {
+      return res.status(400).json({ error: 'Sender or one or more recipients do not exist.' });
     }
 
-    const result = await pool.query(
-      `
-      INSERT INTO in_app_messages (
-        sender_id, recipient_id, subject, body, parent_message_id
-      )
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-      `,
-      [
+    const participantIds = [senderIdNum, ...recipientIdList].sort((a, b) => a - b);
+    const createdAt = new Date();
+    const inserted = [];
+    for (const recipientIdNum of recipientIdList) {
+      const result = await pool.query(
+        `
+        INSERT INTO in_app_messages (
+          sender_id, recipient_id, subject, body, parent_message_id, group_id, group_name, recipient_ids, group_photo, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+        RETURNING *
+        `,
+        [
         senderIdNum,
         recipientIdNum,
         String(subject).trim(),
         String(body).trim(),
-        parent_message_id ? Number(parent_message_id) : null
-      ]
-    );
+        parent_message_id ? Number(parent_message_id) : null,
+        resolvedGroupId,
+        resolvedGroupName,
+        isGroup ? JSON.stringify(participantIds) : null,
+        isGroup ? (group_photo || null) : null,
+        createdAt
+        ]
+      );
+      inserted.push(result.rows[0]);
+    }
 
-    res.status(201).json(result.rows[0]);
+    res.status(201).json(isGroup ? { ...inserted[0], group_id: resolvedGroupId, group_name: resolvedGroupName, group_photo: group_photo || null, recipient_ids: participantIds, messages: inserted } : inserted[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2323,7 +4427,9 @@ app.put('/api/messages/:id/read', async (req, res) => {
     const result = await pool.query(
       `
       UPDATE in_app_messages
-      SET is_read = $1, updated_at = NOW()
+      SET is_read = $1,
+          seen_at = CASE WHEN $1 THEN COALESCE(seen_at, NOW()) ELSE NULL END,
+          updated_at = NOW()
       WHERE id = $2 AND recipient_id = $3
       RETURNING *
       `,
@@ -2344,31 +4450,62 @@ app.delete('/api/messages/:id', async (req, res) => {
 
   try {
     const existing = await pool.query(
-      `SELECT sender_id, recipient_id FROM in_app_messages WHERE id = $1`,
+      `SELECT sender_id, recipient_id, group_id FROM in_app_messages WHERE id = $1`,
       [req.params.id]
     );
 
     if (!existing.rowCount) return res.status(404).json({ error: 'Message not found' });
 
     const row = existing.rows[0];
+    const targetClause = row.group_id ? `group_id = $1` : `id = $1`;
+
+    if (row.group_id) {
+      await pool.query(
+        `
+        UPDATE in_app_messages
+        SET is_deleted_by_sender = CASE WHEN sender_id = $2 THEN TRUE ELSE is_deleted_by_sender END,
+            is_deleted_by_recipient = CASE WHEN recipient_id = $2 THEN TRUE ELSE is_deleted_by_recipient END,
+            updated_at = NOW()
+        WHERE group_id = $1 AND (sender_id = $2 OR recipient_id = $2)
+        `,
+        [row.group_id, userId]
+      );
+      return res.json({ success: true });
+    }
+
+    const otherUserId = Number(row.sender_id) === userId ? Number(row.recipient_id) : Number(row.sender_id);
+    await pool.query(
+      `
+      UPDATE in_app_messages
+      SET is_deleted_by_sender = CASE WHEN sender_id = $1 THEN TRUE ELSE is_deleted_by_sender END,
+          is_deleted_by_recipient = CASE WHEN recipient_id = $1 THEN TRUE ELSE is_deleted_by_recipient END,
+          updated_at = NOW()
+      WHERE (
+        (sender_id = $1 AND recipient_id = $2)
+        OR (sender_id = $2 AND recipient_id = $1)
+      )
+      `,
+      [userId, otherUserId]
+    );
+    return res.json({ success: true });
 
     if (Number(row.sender_id) === userId) {
       await pool.query(
         `
         UPDATE in_app_messages
         SET is_deleted_by_sender = TRUE, updated_at = NOW()
-        WHERE id = $1
+        WHERE ${targetClause} AND sender_id = $2
         `,
-        [req.params.id]
+        [row.group_id || req.params.id, userId]
       );
     } else if (Number(row.recipient_id) === userId) {
       await pool.query(
         `
         UPDATE in_app_messages
         SET is_deleted_by_recipient = TRUE, updated_at = NOW()
-        WHERE id = $1
+        WHERE ${targetClause} AND recipient_id = $2
         `,
-        [req.params.id]
+        [row.group_id || req.params.id, userId]
       );
     } else {
       return res.status(403).json({ error: 'Not allowed' });
@@ -3033,7 +5170,10 @@ app.get('/api/users/:id/threads', async (req, res) => {
     if (filter === 'all' || filter === 'messages') {
       const msgRes = await pool.query(`
         SELECT
-          m.id, m.subject, m.body, m.is_read, m.parent_message_id,
+          m.id, m.subject, m.body, m.is_read, m.seen_at, m.parent_message_id,
+          COALESCE(m.is_group_seed, FALSE) AS is_group_seed,
+          m.attachment_name, m.attachment_path, m.attachment_type, m.attachment_size,
+          m.group_id, m.group_name, m.recipient_ids, m.group_photo,
           m.created_at, m.updated_at,
           sender.id AS sender_id, sender.full_name AS sender_name, sender.email AS sender_email,
           recipient.id AS recipient_id, recipient.full_name AS recipient_name, recipient.email AS recipient_email
@@ -3048,15 +5188,23 @@ app.get('/api/users/:id/threads', async (req, res) => {
       for (const m of msgRes.rows) {
         const isSender = Number(m.sender_id) === userId;
         const thread = {
-          thread_id: `msg_${m.id}`,
+          thread_id: m.group_id ? `grp_${m.group_id}` : `msg_${m.id}`,
           type: 'message',
           status: null,
-          title: m.subject || '(No subject)',
-          summary: String(m.body || '').replace(/\s+/g, ' ').trim().slice(0, 120),
+          title: m.group_name || m.subject || '(No subject)',
+          summary: m.group_id && m.is_group_seed ? '' : String(m.body || '').replace(/\s+/g, ' ').trim().slice(0, 120),
           sender_name: isSender ? 'You' : (m.sender_name || m.sender_email || 'System'),
           sender_id: m.sender_id,
           recipient_id: m.recipient_id,
           recipient_name: m.recipient_name || m.recipient_email || 'Unknown',
+          group_id: m.group_id,
+          group_name: m.group_name,
+          group_photo: m.group_photo,
+          recipient_ids: m.recipient_ids,
+          attachment_name: m.attachment_name,
+          attachment_path: m.attachment_path,
+          attachment_type: m.attachment_type,
+          attachment_size: m.attachment_size,
           is_read: isSender ? true : m.is_read,  // sent messages are always "read" by sender
           created_at: m.created_at,
           updated_at: m.updated_at || m.created_at,
@@ -3126,9 +5274,16 @@ app.get('/api/users/:id/threads', async (req, res) => {
       }
     }
 
-    // Sort by created_at DESC
+    // Sort by created_at DESC and collapse group rows to one conversation.
     results.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    res.json(results);
+    const seenThreadIds = new Set();
+    const collapsed = [];
+    for (const thread of results) {
+      if (seenThreadIds.has(thread.thread_id)) continue;
+      seenThreadIds.add(thread.thread_id);
+      collapsed.push(thread);
+    }
+    res.json(collapsed);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3144,6 +5299,80 @@ app.get('/api/users/:id/threads/:threadId', async (req, res) => {
   }
 
   try {
+    if (threadId.startsWith('grp_')) {
+      const groupId = threadId.replace('grp_', '');
+      const rootRes = await pool.query(`
+        SELECT m.*
+        FROM in_app_messages m
+        WHERE m.group_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
+        ORDER BY m.created_at DESC
+        LIMIT 1
+      `, [groupId, userId]);
+      if (!rootRes.rowCount) return res.status(404).json({ error: 'Thread not found' });
+      const root = rootRes.rows[0];
+      const conversation = await pool.query(`
+        SELECT DISTINCT ON (m.sender_id, m.body, m.created_at) m.*,
+          sender.full_name AS sender_name, sender.email AS sender_email,
+          recipient.full_name AS recipient_name, recipient.email AS recipient_email
+        FROM in_app_messages m
+        LEFT JOIN users sender ON sender.id = m.sender_id
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE m.group_id = $1
+          AND (
+            (m.sender_id = $2 AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE)
+          OR (m.recipient_id = $2 AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE)
+          )
+          AND COALESCE(m.is_group_seed, FALSE) = FALSE
+        ORDER BY m.sender_id, m.body, m.created_at, m.id ASC
+      `, [groupId, userId]);
+      let storedParticipantIds = [];
+      try {
+        storedParticipantIds = root.recipient_ids ? JSON.parse(root.recipient_ids) : [];
+      } catch {}
+      const participantIds = Array.from(new Set(
+        (storedParticipantIds.length ? storedParticipantIds : conversation.rows.flatMap(r => [Number(r.sender_id), Number(r.recipient_id)])).map(Number).filter(Boolean)
+      ));
+      const usersRes = participantIds.length
+        ? await pool.query(`SELECT id, full_name, email FROM users WHERE id = ANY($1::int[])`, [participantIds])
+        : { rows: [] };
+      const participants = usersRes.rows.map(u => ({ id: u.id, name: u.full_name || u.email || 'Unknown', email: u.email }));
+      return res.json({
+        thread_id: threadId,
+        type: 'message',
+        title: root.group_name || root.subject || 'Group chat',
+        group_id: groupId,
+        group_name: root.group_name || 'Group chat',
+        group_photo: root.group_photo || null,
+        participants,
+        messages: conversation.rows.sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map(r => ({
+          id: r.id,
+          sender_id: r.sender_id,
+          sender_name: r.sender_name || r.sender_email || 'Unknown',
+          sender_email: r.sender_email,
+          recipient_id: r.recipient_id,
+          recipient_name: r.recipient_name || r.recipient_email || 'Unknown',
+          recipient_email: r.recipient_email,
+          subject: r.subject,
+          body: r.body,
+          attachment_name: r.attachment_name,
+          attachment_path: r.attachment_path,
+          attachment_type: r.attachment_type,
+          attachment_size: r.attachment_size,
+          is_read: r.is_read,
+          seen: Boolean(r.is_read),
+          seen_at: r.seen_at,
+          seenAt: r.seen_at,
+          parent_message_id: r.parent_message_id,
+          group_id: r.group_id,
+          group_name: r.group_name,
+          group_photo: r.group_photo || null,
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+          is_system: false
+        })),
+        raw: root,
+      });
+    }
     // ── Message thread ─────────────────────────────────────────────────────
     if (threadId.startsWith('msg_')) {
       const msgId = Number(threadId.replace('msg_', ''));
@@ -3160,24 +5389,57 @@ app.get('/api/users/:id/threads/:threadId', async (req, res) => {
       if (!result.rowCount) return res.status(404).json({ error: 'Thread not found' });
       const root = result.rows[0];
 
-      // Fetch thread replies (same parent chain)
-      const replies = await pool.query(`
+      const otherUserId = Number(root.sender_id) === userId
+        ? Number(root.recipient_id)
+        : Number(root.sender_id);
+
+      // Fetch the full chat history between these two users.
+      const conversation = await pool.query(`
         SELECT m.*,
-          sender.full_name AS sender_name, sender.email AS sender_email
+          sender.full_name AS sender_name, sender.email AS sender_email,
+          recipient.full_name AS recipient_name, recipient.email AS recipient_email
         FROM in_app_messages m
         LEFT JOIN users sender ON sender.id = m.sender_id
-        WHERE m.parent_message_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
+        LEFT JOIN users recipient ON recipient.id = m.recipient_id
+        WHERE (
+          m.sender_id = $1
+          AND m.recipient_id = $2
+          AND COALESCE(m.is_deleted_by_sender, FALSE) = FALSE
+        ) OR (
+          m.sender_id = $2
+          AND m.recipient_id = $1
+          AND COALESCE(m.is_deleted_by_recipient, FALSE) = FALSE
+        )
         ORDER BY m.created_at ASC
-      `, [msgId, userId]);
+      `, [userId, otherUserId]);
 
       return res.json({
         thread_id: threadId,
         type: 'message',
         title: root.subject || '(No subject)',
-        messages: [
-          { id: root.id, sender_name: root.sender_name || 'Unknown', body: root.body, created_at: root.created_at, is_system: false },
-          ...replies.rows.map(r => ({ id: r.id, sender_name: r.sender_name || 'Unknown', body: r.body, created_at: r.created_at, is_system: false }))
-        ],
+        messages: conversation.rows.map(r => ({
+          id: r.id,
+          sender_id: r.sender_id,
+          sender_name: r.sender_name || r.sender_email || 'Unknown',
+          sender_email: r.sender_email,
+          recipient_id: r.recipient_id,
+          recipient_name: r.recipient_name || r.recipient_email || 'Unknown',
+          recipient_email: r.recipient_email,
+          subject: r.subject,
+          body: r.body,
+          attachment_name: r.attachment_name,
+          attachment_path: r.attachment_path,
+          attachment_type: r.attachment_type,
+          attachment_size: r.attachment_size,
+          is_read: r.is_read,
+          seen: Boolean(r.is_read),
+          seen_at: r.seen_at,
+          seenAt: r.seen_at,
+          parent_message_id: r.parent_message_id,
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+          is_system: false
+        })),
         raw: root,
       });
     }

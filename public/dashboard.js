@@ -39,6 +39,7 @@ function dashboardDataChanged() {
 const mainContent = document.getElementById("mainContent");
 const sidebarMenu = document.getElementById("sidebarMenu");
 const roleKey = String(user?.role || "").trim().toLowerCase();
+console.log("ROLE:", roleKey || "noc");
 
 document.body.classList.toggle("finance-role", roleKey === "finance");
 
@@ -69,6 +70,33 @@ let utView = 'list';         // list | thread | compose
 let utFolder = 'inbox';      // inbox | sent | drafts | starred
 let utDrafts = [];           // locally stored drafts [{id, recipient_id, subject, body, created_at}]
 let utStarred = new Set(JSON.parse(localStorage.getItem('ut_starred') || '[]')); // starred thread_ids
+let utTypingState = { isTyping: false, typingUserId: null };
+let utPresenceByUser = {};
+let utRealtimeTimer = null;
+let utPresenceTimer = null;
+let utTypingIdleTimer = null;
+let utLastTypingEmitAt = 0;
+let utNotificationTimer = null;
+let utKnownMessageIds = new Set();
+let utMessageNotificationAudio = null;
+let utNotificationAudioUnlocked = false;
+let utGroupPhotoDataUrl = '';
+let utPendingGroupMemberIds = new Set();
+let utAttachmentRegistry = new Map();
+let lettersUploadQueue = [];
+
+/* ================= INVENTORY STATE ================= */
+let invItems = [];
+let invSummary = null;
+let invActiveTab = 'overview';
+let invSearch = '';
+let invStatusFilter = 'all';
+let invDateFrom = '';
+let invDateTo = '';
+let invEditingItem = null;
+let invStatusChart = null;
+let invDistributionChart = null;
+let invModule = 'noc';
 
 /* ================= SIDEBAR ================= */
 const PAGE_DEFS = {
@@ -78,31 +106,49 @@ const PAGE_DEFS = {
   ticket:             { label: "Ticket",            icon: "ri-ticket-line",           loader: () => loadTickets() },
   reports:            { label: "Reports",           icon: "ri-bar-chart-line",        loader: () => loadReports() },
   letters:            { label: "Files",              icon: "ri-file-line",             loader: () => loadLetters() },
+  inventory:          { label: "Inventory",          icon: "ri-archive-2-line",        loader: () => roleKey === "finance" ? loadFinanceInventory() : loadInventory() },
   map:                { label: "Map",               icon: "ri-map-2-line",            loader: () => loadMap() },
   acceptance:         { label: "Acceptance",        icon: "ri-checkbox-circle-line",  loader: () => loadAcceptance() },
-  financeDashboard:   { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => loadFinanceDashboard() },
-  companyIncome:      { label: "Company Income",    icon: "ri-line-chart-line",       loader: () => loadFinanceCompanyIncome() },
-  companyExpenses:    { label: "Company Expenses",  icon: "ri-shopping-cart-line",    loader: () => loadFinanceCompanyExpenses() },
-  projectExpenses:    { label: "Project Expenses",  icon: "ri-file-list-3-line",      loader: () => loadFinanceLedger("project_expenses") },
-  employee:           { label: "Employee",          icon: "ri-user-line",             loader: () => loadFinanceEmployeeCenter() },
-  financialReport:    { label: "Financial Report",  icon: "ri-bar-chart-2-line",      loader: () => loadFinanceReport() },
-  collections:        { label: "Collections",       icon: "ri-hand-coin-line",        loader: () => loadFinanceLedger("collections") },
+  financeDashboard:   { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => (window.loadFinanceDashboard || loadFinanceDashboard)() },
+  companyIncome:      { label: "Company Income",    icon: "ri-line-chart-line",       loader: () => (window.loadFinanceCompanyIncome || loadFinanceCompanyIncome)() },
+  companyExpenses:    { label: "Company Expenses",  icon: "ri-shopping-cart-line",    loader: () => (window.loadFinanceCompanyExpenses || loadFinanceCompanyExpenses)() },
+  projectExpenses:    { label: "Project Expenses",  icon: "ri-file-list-3-line",      loader: () => (window.loadFinanceLedger || loadFinanceLedger)("project_expenses") },
+  employee:           { label: "Employee",          icon: "ri-user-line",             loader: () => (window.loadFinanceEmployeeCenter || loadFinanceEmployeeCenter)() },
+  financialReport:    { label: "Financial Report",  icon: "ri-bar-chart-2-line",      loader: () => (window.loadFinanceReportV2 || loadFinanceReportV2)() },
+  collections:        { label: "Collections",       icon: "ri-hand-coin-line",        loader: () => (window.loadFinanceLedger || loadFinanceLedger)("collections") },
   settings:           { label: "Settings",          icon: "ri-settings-3-line",       loader: () => loadSettings() },
   logout:             { label: "Log Out",           icon: "ri-logout-circle-r-line",  loader: () => showLogoutModal() },
 };
 
-const ROLE_MENUS = {
-  finance: ["financeDashboard", "companyIncome", "companyExpenses", "projectExpenses", "employee", "financialReport", "collections", "letters", "settings", "logout"],
-  default: ["dashboard", "terminals", "problematicSites", "ticket", "reports", "letters", "map", "acceptance", "settings", "logout"],
+const SIDEBAR_MENU_CONFIG = {
+  noc: [
+    { label: 'Main', pages: ['dashboard', 'map'] },
+    { label: 'Operations', pages: ['terminals', 'problematicSites', 'acceptance'] },
+    { label: 'Management', pages: ['ticket', 'reports', 'letters', 'inventory'] },
+    { label: 'System', pages: ['settings', 'logout'] },
+  ],
+  finance: [
+    { label: 'Main', pages: ['financeDashboard'] },
+    { label: 'Finance', pages: ['companyIncome', 'companyExpenses', 'projectExpenses', 'collections'] },
+    { label: 'Management', pages: ['employee', 'financialReport', 'letters', 'inventory'] },
+    { label: 'System', pages: ['settings', 'logout'] },
+  ],
 };
 
+function getSidebarRoleKey() {
+  return roleKey === "finance" ? "finance" : "noc";
+}
+
+function getSidebarSections() {
+  return SIDEBAR_MENU_CONFIG[getSidebarRoleKey()] || SIDEBAR_MENU_CONFIG.noc;
+}
+
 function getVisiblePages() {
-  if (roleKey === "finance") return ROLE_MENUS.finance;
-  return ROLE_MENUS.default;
+  return getSidebarSections().flatMap(section => section.pages);
 }
 
 function getHomePageKey() {
-  return roleKey === "finance" ? "financeDashboard" : "dashboard";
+  return getVisiblePages()[0] || "dashboard";
 }
 
 function activateMenu(pageKey) {
@@ -118,6 +164,12 @@ function openPage(pageKey) {
     page.loader();
     return;
   }
+  if (pageKey !== "settings") {
+    resetUnifiedInboxSearchState();
+    utSelectedThreadId = null;
+    utSelectedThread = null;
+    utView = 'list';
+  }
   activateMenu(pageKey);
   document.body.classList.toggle("map-active", pageKey === "map");
   if (pageKey !== "map") leafletMap = null;
@@ -127,48 +179,10 @@ function openPage(pageKey) {
 function renderSidebarMenu() {
   if (!sidebarMenu) return;
 
-  // Section groupings for NOC and Finance roles
-  const NOC_SECTIONS = [
-    {
-      label: 'Main',
-      pages: ['dashboard', 'map'],
-    },
-    {
-      label: 'Operations',
-      pages: ['terminals', 'problematicSites', 'acceptance'],
-    },
-    {
-      label: 'Management',
-      pages: ['ticket', 'reports', 'letters'],
-    },
-    {
-      label: 'System',
-      pages: ['settings', 'logout'],
-    },
-  ];
-
-  const FINANCE_SECTIONS = [
-    {
-      label: 'Overview',
-      pages: ['financeDashboard'],
-    },
-    {
-      label: 'Finance',
-      pages: ['companyIncome', 'companyExpenses', 'projectExpenses', 'collections'],
-    },
-    {
-      label: 'Management',
-      pages: ['employee', 'financialReport', 'letters'],
-    },
-    {
-      label: 'System',
-      pages: ['settings', 'logout'],
-    },
-  ];
-
-  const sections = roleKey === 'finance' ? FINANCE_SECTIONS : NOC_SECTIONS;
-  const visible  = new Set(getVisiblePages());
-  const firstPage = getVisiblePages()[0];
+  const sections = getSidebarSections();
+  const visiblePages = getVisiblePages();
+  const visible  = new Set(visiblePages);
+  const firstPage = visiblePages[0];
 
   let html = '';
   sections.forEach((section, sIdx) => {
@@ -239,6 +253,478 @@ function renderSidebarMenu() {
   // Insert before the toggle button (last element)
   const toggleBtn = sidebar.querySelector('#toggleSidebar');
   sidebar.insertBefore(profileEl, toggleBtn);
+}
+
+/* ================= INVENTORY ================= */
+
+const INV_STATUSES = ['In Stock', 'Deployed', 'For Repair', 'Returned', 'Condemned', 'Missing'];
+const INV_CATEGORIES = ['Network Cables', 'Router', 'Access Point Devices', 'Network Switches', 'Modem', 'Power Supply', 'Tools', 'Other'];
+const INV_CONDITIONS = ['New', 'Good', 'Fair', 'Needs Repair', 'Damaged'];
+
+function inventoryApiBase() {
+  return invModule === 'finance' ? '/api/finance/inventory' : '/api/inventory';
+}
+
+function inventoryFetchOptions(options = {}) {
+  if (invModule !== 'finance') return options;
+  return {
+    ...options,
+    headers: financeHeaders(options.headers || {})
+  };
+}
+
+function loadFinanceInventory() {
+  loadInventory('finance');
+}
+
+function loadInventory(module = 'noc') {
+  invModule = module === 'finance' ? 'finance' : 'noc';
+  invEditingItem = null;
+  const title = invModule === 'finance' ? 'Finance Inventory' : 'Inventory';
+  mainContent.innerHTML = `
+    <div class="inventory-page">
+      <div class="inventory-header">
+        <div>
+          <h2>${title}</h2>
+        </div>
+        <div class="inventory-search">
+          <i class="ri-search-line"></i>
+          <input id="invSearchInput" type="text" placeholder="Search inventory..." value="${escHtml(invSearch)}">
+        </div>
+      </div>
+
+      <div class="inventory-tabs">
+        <button class="inventory-tab ${invActiveTab === 'overview' ? 'active' : ''}" data-tab="overview">Overview</button>
+        <button class="inventory-tab ${invActiveTab === 'items' ? 'active' : ''}" data-tab="items">Inventory Items</button>
+      </div>
+
+      <div id="inventoryBody">
+        <div class="inventory-loading"><i class="ri-loader-4-line spin"></i> Loading inventory...</div>
+      </div>
+    </div>
+  `;
+
+  document.querySelectorAll('.inventory-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      invActiveTab = btn.dataset.tab;
+      invEditingItem = null;
+      renderInventory();
+    });
+  });
+
+  let searchTimer;
+  document.getElementById('invSearchInput')?.addEventListener('input', e => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      invSearch = e.target.value.trim();
+      loadInventoryData();
+    }, 220);
+  });
+
+  loadInventoryData();
+}
+
+async function loadInventoryData() {
+  const params = new URLSearchParams();
+  if (invSearch) params.set('q', invSearch);
+  if (invStatusFilter && invStatusFilter !== 'all') params.set('status', invStatusFilter);
+  if (invDateFrom) params.set('date_from', invDateFrom);
+  if (invDateTo) params.set('date_to', invDateTo);
+
+  try {
+    const [itemsRes, summaryRes] = await Promise.all([
+      fetch(`${inventoryApiBase()}/items?${params.toString()}`, inventoryFetchOptions()),
+      fetch(`${inventoryApiBase()}/summary`, inventoryFetchOptions())
+    ]);
+    const items = await itemsRes.json().catch(() => []);
+    const summary = await summaryRes.json().catch(() => ({}));
+    if (!itemsRes.ok) throw new Error(items.error || 'Failed to load inventory items');
+    if (!summaryRes.ok) throw new Error(summary.error || 'Failed to load inventory summary');
+    invItems = Array.isArray(items) ? items : [];
+    invSummary = summary || {};
+    renderInventory();
+  } catch (err) {
+    const body = document.getElementById('inventoryBody');
+    if (body) body.innerHTML = `<div class="inventory-empty"><i class="ri-error-warning-line"></i><span>${escHtml(err.message || 'Inventory failed to load.')}</span></div>`;
+  }
+}
+
+function renderInventory() {
+  const body = document.getElementById('inventoryBody');
+  if (!body) return;
+  body.innerHTML = invActiveTab === 'overview' ? inventoryOverviewHTML() : inventoryItemsHTML();
+  if (invActiveTab === 'overview') {
+    renderInventoryCharts();
+  } else {
+    bindInventoryItemsEvents();
+  }
+}
+
+function getInventoryStatusCount(status) {
+  const rows = invSummary?.byStatus || [];
+  const found = rows.find(r => String(r.status || '').toLowerCase() === status.toLowerCase());
+  return found ? Number(found.count || 0) : 0;
+}
+
+function inventoryOverviewHTML() {
+  const cards = [
+    { label: 'Total Items', value: invSummary?.totalItems || 0, icon: 'ri-stack-line', cls: 'blue' },
+    { label: 'Deployed', value: getInventoryStatusCount('Deployed'), icon: 'ri-send-plane-line', cls: 'green' },
+    { label: 'In Stock', value: getInventoryStatusCount('In Stock'), icon: 'ri-archive-line', cls: 'cyan' },
+    { label: 'For Repair', value: getInventoryStatusCount('For Repair'), icon: 'ri-tools-line', cls: 'amber' },
+    { label: 'Missing', value: getInventoryStatusCount('Missing'), icon: 'ri-error-warning-line', cls: 'red' }
+  ];
+  const activities = invSummary?.recentActivities || [];
+  return `
+    <div class="inventory-summary-grid">
+      ${cards.map(c => `
+        <div class="inventory-stat-card ${c.cls}">
+          <div class="inventory-stat-icon"><i class="${c.icon}"></i></div>
+          <div>
+            <strong>${Number(c.value || 0).toLocaleString()}</strong>
+            <span>${escHtml(c.label)}</span>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <div class="inventory-charts-grid">
+      <div class="inventory-card">
+        <div class="inventory-card-head">
+          <h3>Inventory Status</h3>
+          <span>Current item lifecycle</span>
+        </div>
+        <div class="inventory-chart-wrap"><canvas id="invStatusChart"></canvas></div>
+      </div>
+      <div class="inventory-card">
+        <div class="inventory-card-head">
+          <h3>Inventory Distribution</h3>
+          <span>Items by category</span>
+        </div>
+        <div class="inventory-chart-wrap"><canvas id="invDistributionChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="inventory-card inventory-activity-card">
+      <div class="inventory-card-head">
+        <h3>Recent Activities</h3>
+        <span>Latest inventory movement</span>
+      </div>
+      <div class="inventory-table-wrap">
+        <table class="inventory-table activity">
+          <thead><tr><th>Date</th><th>Time</th><th>Item</th><th>Action</th><th>Site</th></tr></thead>
+          <tbody>
+            ${activities.length ? activities.map(a => {
+              const d = a.created_at ? new Date(a.created_at) : null;
+              return `<tr>
+                <td>${d ? escHtml(d.toLocaleDateString()) : '&mdash;'}</td>
+                <td>${d ? escHtml(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : '&mdash;'}</td>
+                <td>${escHtml(a.item_label || 'Item')}</td>
+                <td><span class="inventory-action-pill">${escHtml(a.action || 'Updated')}</span></td>
+                <td>${escHtml(a.site || '—')}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="5" class="inventory-empty-cell">No recent activities yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+async function renderInventoryCharts() {
+  try {
+    await ensureFinanceChartsLoaded();
+  } catch (err) {
+    document.querySelectorAll('.inventory-chart-wrap').forEach(wrap => {
+      wrap.innerHTML = `<div class="inventory-empty small">${escHtml(err.message || 'Charts unavailable.')}</div>`;
+    });
+    return;
+  }
+
+  const isDark = document.body.classList.contains('dark');
+  const textColor = isDark ? '#cbd5e1' : '#475569';
+  const gridColor = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(15,23,42,0.07)';
+  const statusLabels = ['In Stock', 'Deployed', 'For Repair', 'Returned', 'Condemned', 'Missing'];
+  const statusData = statusLabels.map(getInventoryStatusCount);
+  const statusCanvas = document.getElementById('invStatusChart');
+  const distCanvas = document.getElementById('invDistributionChart');
+
+  if (statusCanvas) {
+    if (invStatusChart) { try { invStatusChart.destroy(); } catch {} }
+    invStatusChart = new Chart(statusCanvas, {
+      type: 'bar',
+      data: {
+        labels: statusLabels,
+        datasets: [{
+          data: statusData,
+          backgroundColor: ['#60a5fa', '#2563eb', '#f59e0b', '#10b981', '#64748b', '#ef4444'],
+          borderRadius: 8,
+          barThickness: 28
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: textColor, font: { size: 11, weight: 700 } } },
+          y: { beginAtZero: true, grid: { color: gridColor }, ticks: { precision: 0, color: textColor } }
+        }
+      }
+    });
+  }
+
+  if (distCanvas) {
+    if (invDistributionChart) { try { invDistributionChart.destroy(); } catch {} }
+    const rows = invSummary?.byCategory?.length ? invSummary.byCategory : [
+      { category: 'Network Cables', count: 0 },
+      { category: 'Router', count: 0 },
+      { category: 'Access Point Devices', count: 0 },
+      { category: 'Network Switches', count: 0 }
+    ];
+    invDistributionChart = new Chart(distCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: rows.map(r => r.category),
+        datasets: [{
+          data: rows.map(r => Number(r.count || 0)),
+          backgroundColor: ['#2563eb', '#60a5fa', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#64748b'],
+          borderWidth: 0,
+          hoverOffset: 5
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '58%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: textColor, boxWidth: 10, usePointStyle: true, font: { size: 11 } } }
+        }
+      }
+    });
+  }
+}
+
+function inventoryItemsHTML() {
+  return `
+    <div class="inventory-items-toolbar">
+      <div class="inventory-filter-group">
+        <button class="inventory-outline-btn" id="invFilterBtn"><i class="ri-filter-3-line"></i> Filter</button>
+        <select id="invStatusFilter" class="inventory-filter-select">
+          <option value="all">All Status</option>
+          ${INV_STATUSES.map(s => `<option value="${escHtml(s)}" ${invStatusFilter === s ? 'selected' : ''}>${escHtml(s)}</option>`).join('')}
+        </select>
+        <span class="inventory-outline-btn inventory-date-label"><i class="ri-calendar-event-line"></i> Custom Date</span>
+        <label class="inventory-date-filter"><i class="ri-calendar-line"></i><input id="invDateFrom" type="date" value="${escHtml(invDateFrom)}"></label>
+        <label class="inventory-date-filter"><input id="invDateTo" type="date" value="${escHtml(invDateTo)}"></label>
+      </div>
+      <button class="inventory-add-btn" id="invAddBtn"><i class="ri-add-line"></i> Add</button>
+    </div>
+    <div id="inventoryFormHost">${invEditingItem ? inventoryFormHTML(invEditingItem) : ''}</div>
+    <div class="inventory-card">
+      <div class="inventory-table-wrap">
+        <table class="inventory-table">
+          <thead><tr><th>Date</th><th>Serial No</th><th>Category</th><th>Brand</th><th>Status</th><th>Site</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${invItems.length ? invItems.map(item => `
+              <tr>
+                <td>${formatInventoryDate(item.date_received || item.created_at)}</td>
+                <td><strong>${escHtml(item.serial_no || '—')}</strong><small>${escHtml(item.item_code || '')}</small></td>
+                <td>${escHtml(item.category || '—')}</td>
+                <td>${escHtml(item.brand || '—')}</td>
+                <td>${inventoryStatusBadge(item.status)}</td>
+                <td>${escHtml(item.site_name || item.site_id || '—')}</td>
+                <td>
+                  <div class="inventory-row-actions">
+                    <button class="inventory-icon-btn edit" data-id="${item.id}" title="Edit"><i class="ri-edit-line"></i></button>
+                    <button class="inventory-icon-btn delete" data-id="${item.id}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+                  </div>
+                </td>
+              </tr>`).join('') : `<tr><td colspan="7" class="inventory-empty-cell">No inventory items found.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+function inventoryFormHTML(item = {}) {
+  const isEdit = Boolean(item.id);
+  const input = (name, label, type = 'text', extra = '') => `
+    <label class="inventory-field">
+      <span>${label}</span>
+      <input name="${name}" type="${type}" value="${escHtml(formatInventoryInputValue(item[name], type))}" ${extra}>
+    </label>`;
+  const select = (name, label, options) => `
+    <label class="inventory-field">
+      <span>${label}</span>
+      <select name="${name}">
+        ${options.map(opt => `<option value="${escHtml(opt)}" ${String(item[name] || '') === opt ? 'selected' : ''}>${escHtml(opt)}</option>`).join('')}
+      </select>
+    </label>`;
+  return `
+    <form class="inventory-form" id="inventoryItemForm" data-id="${isEdit ? item.id : ''}">
+      <div class="inventory-form-title">
+        <div><h3>${isEdit ? 'Edit Inventory Item' : 'Add Inventory Item'}</h3><span>${isEdit ? 'Update item details and status' : 'Create a new inventory record'}</span></div>
+        <button type="button" class="inventory-outline-btn" id="invCancelFormBtn">Cancel</button>
+      </div>
+      <div class="inventory-form-grid">
+        <div class="inventory-form-col">
+          <section class="inventory-form-section">
+            <h4>Basic Information</h4>
+            ${input('serial_no', 'Serial Number', 'text', 'required')}
+            ${select('category', 'Category', INV_CATEGORIES)}
+            ${input('item_code', 'Item Code / Secondary Number')}
+            ${input('brand', 'Brand')}
+            ${input('model', 'Model')}
+            <label class="inventory-field full"><span>Description</span><textarea name="description">${escHtml(item.description || '')}</textarea></label>
+          </section>
+          <section class="inventory-form-section">
+            <h4>Receiving Information</h4>
+            ${input('date_received', 'Date Received', 'date')}
+            ${input('received_by', 'Received By')}
+          </section>
+          <section class="inventory-form-section">
+            <h4>Deployment Information</h4>
+            ${input('site_id', 'Site ID')}
+            ${input('site_name', 'Site Name')}
+            ${input('deployed_at', 'Deployed At', 'date')}
+            ${input('deployed_by', 'Deployed By')}
+          </section>
+        </div>
+        <div class="inventory-form-col">
+          <section class="inventory-form-section">
+            <h4>Purchase Information</h4>
+            ${input('purchase_date', 'Purchase Date', 'date')}
+            ${input('price', 'Price', 'number', 'step="0.01" min="0"')}
+            ${input('supplier', 'Supplier')}
+            ${input('purchase_order_no', 'Purchase Order No.')}
+          </section>
+          <section class="inventory-form-section">
+            <h4>Condition & Status</h4>
+            ${select('condition', 'Condition', INV_CONDITIONS)}
+            ${select('status', 'Status', INV_STATUSES)}
+          </section>
+          <section class="inventory-form-section">
+            <h4>Project Information</h4>
+            ${input('project_name', 'Project Name')}
+            ${input('project_id', 'Project ID')}
+          </section>
+        </div>
+      </div>
+      <div class="inventory-form-footer">
+        <button type="submit" class="inventory-save-btn"><i class="ri-save-3-line"></i> Save</button>
+      </div>
+    </form>
+  `;
+}
+
+function bindInventoryItemsEvents() {
+  document.getElementById('invAddBtn')?.addEventListener('click', () => {
+    invEditingItem = {
+      category: INV_CATEGORIES[0],
+      condition: 'Good',
+      status: 'In Stock'
+    };
+    renderInventory();
+    document.getElementById('inventoryItemForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  document.getElementById('invCancelFormBtn')?.addEventListener('click', () => {
+    invEditingItem = null;
+    renderInventory();
+  });
+  document.getElementById('invStatusFilter')?.addEventListener('change', e => {
+    invStatusFilter = e.target.value;
+    loadInventoryData();
+  });
+  document.getElementById('invDateFrom')?.addEventListener('change', e => {
+    invDateFrom = e.target.value;
+    loadInventoryData();
+  });
+  document.getElementById('invDateTo')?.addEventListener('change', e => {
+    invDateTo = e.target.value;
+    loadInventoryData();
+  });
+  document.getElementById('invFilterBtn')?.addEventListener('click', () => {
+    invStatusFilter = 'all';
+    invDateFrom = '';
+    invDateTo = '';
+    loadInventoryData();
+  });
+  document.querySelectorAll('.inventory-icon-btn.edit').forEach(btn => {
+    btn.addEventListener('click', () => {
+      invEditingItem = invItems.find(item => String(item.id) === String(btn.dataset.id)) || null;
+      renderInventory();
+      document.getElementById('inventoryItemForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+  document.querySelectorAll('.inventory-icon-btn.delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteInventoryItem(btn.dataset.id));
+  });
+  document.getElementById('inventoryItemForm')?.addEventListener('submit', saveInventoryItem);
+}
+
+async function saveInventoryItem(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const btn = form.querySelector('.inventory-save-btn');
+  const id = form.dataset.id;
+  const fd = new FormData(form);
+  const payload = Object.fromEntries(fd.entries());
+  payload.created_by = user?.id || null;
+  payload.actor_name = user?.full_name || user?.email || 'User';
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving';
+  try {
+    const res = await fetch(id ? `${inventoryApiBase()}/items/${id}` : `${inventoryApiBase()}/items`, inventoryFetchOptions({
+      method: id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to save inventory item');
+    showToast(id ? 'Inventory item updated.' : 'Inventory item added.', 'success');
+    invEditingItem = null;
+    await loadInventoryData();
+  } catch (err) {
+    showToast(err.message || 'Failed to save inventory item.', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ri-save-3-line"></i> Save';
+  }
+}
+
+async function deleteInventoryItem(id) {
+  const item = invItems.find(row => String(row.id) === String(id));
+  if (!confirm(`Delete ${item?.serial_no || 'this inventory item'}?`)) return;
+  try {
+    const actor = encodeURIComponent(user?.full_name || user?.email || 'User');
+    const res = await fetch(`${inventoryApiBase()}/items/${id}?actor=${actor}`, inventoryFetchOptions({ method: 'DELETE' }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to delete inventory item');
+    showToast('Inventory item deleted.', 'success');
+    await loadInventoryData();
+  } catch (err) {
+    showToast(err.message || 'Delete failed.', 'error');
+  }
+}
+
+function inventoryStatusBadge(status = 'In Stock') {
+  const key = String(status || 'In Stock').toLowerCase().replace(/\s+/g, '-');
+  return `<span class="inventory-status-badge ${key}">${escHtml(status || 'In Stock')}</span>`;
+}
+
+function formatInventoryDate(value) {
+  if (!value) return '&mdash;';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return escHtml(String(value));
+  return escHtml(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }));
+}
+
+function formatInventoryInputValue(value, type) {
+  if (!value) return '';
+  if (type === 'date') {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return value;
 }
 
 
@@ -315,10 +801,16 @@ function loadReports() {
         <span id="rptDateBarLabel">Loading…</span>
       </div>
 
-      <!-- PROJECT TAB BAR -->
+      <!-- PROJECT SELECTOR -->
       <div class="rpt-project-shell" id="rptProjectShell">
-        <div class="rpt-project-tabs" id="rptProjectTabs">
-          <span class="rpt-proj-loading"><i class="ri-loader-4-line spin"></i> Loading…</span>
+        <div class="rpt-project-selector-wrap" id="rptProjectSelectorWrap">
+          <div class="rpt-proj-select-group">
+            <i class="ri-folder-chart-line rpt-proj-select-icon"></i>
+            <select class="rpt-proj-dropdown" id="rptProjectDropdown">
+              <option value="">Loading projects…</option>
+            </select>
+            <i class="ri-arrow-down-s-line rpt-proj-select-arrow"></i>
+          </div>
         </div>
         <div class="rpt-project-actions" id="rptProjectActions" style="display:none;">
           <button class="rpt-col-config-btn" id="rptColConfigBtn">
@@ -437,14 +929,14 @@ async function fetchProjects() {
 }
 
 function renderProjectTabs(projects) {
-  const tabs    = document.getElementById('rptProjectTabs');
-  const empty   = document.getElementById('rptEmptyProjects');
-  const card    = document.getElementById('rptTableCard');
-  const actions = document.getElementById('rptProjectActions');
-  if (!tabs) return;
+  const dropdown = document.getElementById('rptProjectDropdown');
+  const empty    = document.getElementById('rptEmptyProjects');
+  const card     = document.getElementById('rptTableCard');
+  const actions  = document.getElementById('rptProjectActions');
+  if (!dropdown) return;
 
   if (!projects.length) {
-    tabs.innerHTML = '';
+    dropdown.innerHTML = '<option value="">No projects yet\u2026</option>';
     empty.classList.remove('hidden');
     card.classList.add('hidden');
     actions.style.display = 'none';
@@ -454,23 +946,22 @@ function renderProjectTabs(projects) {
   // Hide empty state when we have projects
   empty.classList.add('hidden');
 
-  tabs.innerHTML = projects.map(p => `
-    <button class="rpt-proj-tab ${rptCurrentProject?.id === p.id ? 'active' : ''}"
-            data-id="${p.id}">
-      <i class="ri-folder-chart-line"></i>
-      <span>${escHtml(p.name)}</span>
-    </button>
-  `).join('');
-
-  tabs.querySelectorAll('.rpt-proj-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      selectProject(rptAllProjects.find(p => p.id === parseInt(btn.dataset.id)));
-    });
-  });
-
   const toSelect = rptCurrentProject
     ? (rptAllProjects.find(p => p.id === rptCurrentProject.id) || projects[0])
     : projects[0];
+
+  dropdown.innerHTML = projects.map(p =>
+    `<option value="${p.id}" ${toSelect?.id === p.id ? 'selected' : ''}>${escHtml(p.name)}</option>`
+  ).join('');
+
+  // Remove old listener before adding new one
+  const newDropdown = dropdown.cloneNode(true);
+  dropdown.parentNode.replaceChild(newDropdown, dropdown);
+  newDropdown.addEventListener('change', function() {
+    const selected = rptAllProjects.find(p => p.id === parseInt(this.value));
+    if (selected) selectProject(selected);
+  });
+
   selectProject(toSelect);
 }
 
@@ -480,9 +971,9 @@ function selectProject(project) {
   expandedReportId  = null;
   allReportData     = [];
 
-  document.querySelectorAll('.rpt-proj-tab').forEach(btn => {
-    btn.classList.toggle('active', parseInt(btn.dataset.id) === project.id);
-  });
+  // Sync dropdown selection
+  const dropdown = document.getElementById('rptProjectDropdown');
+  if (dropdown) dropdown.value = String(project.id);
 
   document.getElementById('rptTableCard').classList.remove('hidden');
   document.getElementById('rptEmptyProjects').classList.add('hidden');
@@ -2726,6 +3217,7 @@ async function loadTerminals() {
     const region = sel.value;
     if (!region) return;
     terminalCurrentRegion = region;
+    localStorage.setItem(`selectedRegion_terminals_${user?.id || 'guest'}`, region);
     document.getElementById('regionTitle').textContent = region + ' Records';
     document.getElementById('termRegionView').classList.add('hidden');
     document.getElementById('termTableView').classList.remove('hidden');
@@ -2891,6 +3383,20 @@ async function fetchRegions() {
     if (!sel) return;
     sel.innerHTML = '<option value="">— Select Region —</option>' +
       data.map(r => `<option value="${r.region_name}">${r.region_name}</option>`).join('');
+
+    // Restore saved region (per user), fallback to first; only if none already active
+    if (data.length > 0 && !terminalCurrentRegion) {
+      const saved       = localStorage.getItem(`selectedRegion_terminals_${user?.id || 'guest'}`);
+      const names       = data.map(r => r.region_name);
+      const regionToUse = (saved && names.includes(saved)) ? saved : data[0].region_name;
+      sel.value = regionToUse;
+      terminalCurrentRegion = regionToUse;
+      const titleEl = document.getElementById('regionTitle');
+      if (titleEl) titleEl.textContent = regionToUse + ' Records';
+      document.getElementById('termRegionView')?.classList.add('hidden');
+      document.getElementById('termTableView')?.classList.remove('hidden');
+      fetchTerminals(regionToUse);
+    }
   } catch { showToast('Could not load regions.', 'error'); }
 }
 
@@ -3324,6 +3830,62 @@ function showToast(message, type = "success") {
   setTimeout(() => { toast.classList.remove("toast-show"); setTimeout(() => toast.remove(), 400); }, 3500);
 }
 
+function showMessageNotificationToast({ senderName, preview, createdAt, onClick }) {
+  let stack = document.getElementById('messageToastStack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'messageToastStack';
+    stack.className = 'message-toast-stack';
+    document.body.appendChild(stack);
+  }
+
+  const toast = document.createElement('button');
+  toast.type = 'button';
+  toast.className = 'message-toast';
+  toast.innerHTML = `
+    <div class="message-toast-icon"><i class="ri-message-3-line"></i></div>
+    <div class="message-toast-body">
+      <div class="message-toast-top">
+        <strong>${escHtml(senderName || 'New message')}</strong>
+        ${createdAt ? `<span>${escHtml(relativeTime(createdAt))}</span>` : ''}
+      </div>
+      <div class="message-toast-preview">${escHtml(preview || 'Sent a message')}</div>
+    </div>
+  `;
+  toast.addEventListener('click', () => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 180);
+    onClick?.();
+  });
+  stack.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 220);
+  }, 4500);
+}
+
+function playMessageNotificationSound() {
+  try {
+    utMessageNotificationAudio ||= new Audio('/notification.mp3');
+    utMessageNotificationAudio.currentTime = 0;
+    utMessageNotificationAudio.play().catch(() => {});
+  } catch {}
+}
+
+function unlockMessageNotificationSound() {
+  if (utNotificationAudioUnlocked) return;
+  utNotificationAudioUnlocked = true;
+  try {
+    utMessageNotificationAudio ||= new Audio('/notification.mp3');
+    utMessageNotificationAudio.volume = 0.45;
+  } catch {}
+}
+['click', 'keydown', 'touchstart'].forEach(evt => {
+  window.addEventListener(evt, unlockMessageNotificationSound, { once: true, passive: true });
+});
+setTimeout(() => startUtNotificationPolling(), 1000);
+
 /* ================= FINANCE ================= */
 
 const FINANCE_SECTION_META = {
@@ -3342,13 +3904,12 @@ const FINANCE_SECTION_META = {
     ],
     fields: [
       { key: "date", label: "Date", type: "date", required: true },
-      { key: "lot", label: "Lot", type: "text", required: false, placeholder: "Lot A" },
-      { key: "source", label: "Source", type: "text", required: true, placeholder: "Client payment / Service income" },
-      { key: "description", label: "Description", type: "text", required: true, placeholder: "Client payment, service income..." },
-      { key: "category", label: "Category", type: "text", required: false, placeholder: "Revenue / Retainer / Payment" },
+      { key: "project_name", label: "Project Name", type: "text", required: false, placeholder: "e.g. Lot A, Lot B, Project Alpha..." },
+      { key: "source", label: "Source", type: "select", required: true, options: ["Service Fee", "Installation Fee", "Subscription", "Maintenance", "Client Payment", "Other"] },
+      { key: "description", label: "Description", type: "text", required: true, placeholder: "e.g. Satellite Service - Jan" },
       { key: "amount", label: "Amount", type: "number", required: true, step: "0.01", min: "0" },
-      { key: "status", label: "Status", type: "select", required: true, options: ["completed", "pending", "cancelled"] },
-      { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
+      { key: "status", label: "Status", type: "select", required: true, options: ["received", "pending", "cancelled"] },
+      { key: "or_number", label: "OR Number", type: "text", required: false, placeholder: "e.g. OR-2026-001" }
     ]
   },
   company_expenses: {
@@ -3369,8 +3930,9 @@ const FINANCE_SECTION_META = {
       { key: "expense_group", label: "Group", type: "select", required: true, options: ["expenses", "purchases", "overhead"] },
       { key: "category", label: "Category", type: "text", required: true, placeholder: "Utilities / Equipment / Rent" },
       { key: "description", label: "Description", type: "text", required: true, placeholder: "Office supplies, utilities..." },
+      { key: "vendor", label: "Vendor", type: "text", required: false, placeholder: "Supplier / payee" },
       { key: "amount", label: "Amount", type: "number", required: true, step: "0.01", min: "0" },
-      { key: "status", label: "Status", type: "select", required: true, options: ["completed", "pending", "cancelled"] },
+      { key: "status", label: "Status", type: "select", required: true, options: ["paid", "unpaid", "pending"] },
       { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
     ]
   },
@@ -3383,16 +3945,22 @@ const FINANCE_SECTION_META = {
     columns: [
       { key: "date", label: "Date", format: v => formatFinanceDate(v) },
       { key: "project_name", label: "Project" },
+      { key: "type", label: "Type" },
       { key: "description", label: "Description" },
+      { key: "category", label: "Category" },
+      { key: "vendor", label: "Vendor" },
       { key: "amount", label: "Amount", format: v => formatFinanceCurrency(v) },
       { key: "status", label: "Status", format: v => financeStatusBadge(v) }
     ],
     fields: [
       { key: "date", label: "Date", type: "date", required: true },
       { key: "project_name", label: "Project Name", type: "text", required: true, placeholder: "Project Alpha" },
+      { key: "type", label: "Type", type: "select", required: true, options: ["expenses", "purchases"] },
       { key: "description", label: "Description", type: "text", required: true, placeholder: "Materials / deployment / transport" },
+      { key: "category", label: "Category", type: "text", required: true, placeholder: "Materials / Equipment / Labor" },
+      { key: "vendor", label: "Vendor", type: "text", required: false, placeholder: "Supplier / vendor" },
       { key: "amount", label: "Amount", type: "number", required: true, step: "0.01", min: "0" },
-      { key: "status", label: "Status", type: "select", required: true, options: ["completed", "pending", "cancelled"] },
+      { key: "status", label: "Status", type: "select", required: true, options: ["approved", "pending", "rejected"] },
       { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
     ]
   },
@@ -3405,6 +3973,7 @@ const FINANCE_SECTION_META = {
     columns: [
       { key: "client_name", label: "Client" },
       { key: "project_name", label: "Project" },
+      { key: "or_number", label: "OR Number" },
       { key: "due_date", label: "Due Date", format: v => formatFinanceDate(v) },
       { key: "amount_due", label: "Amount Due", format: v => formatFinanceCurrency(v) },
       { key: "amount_collected", label: "Collected", format: v => formatFinanceCurrency(v) },
@@ -3414,10 +3983,11 @@ const FINANCE_SECTION_META = {
       { key: "date", label: "Entry Date", type: "date", required: true },
       { key: "client_name", label: "Client Name", type: "text", required: true, placeholder: "XYZ Corp" },
       { key: "project_name", label: "Project Name", type: "text", required: false, placeholder: "Project Delta" },
+      { key: "or_number", label: "OR Number", type: "text", required: false, placeholder: "OR-0001" },
       { key: "due_date", label: "Due Date", type: "date", required: true },
       { key: "amount_due", label: "Amount Due", type: "number", required: true, step: "0.01", min: "0" },
       { key: "amount_collected", label: "Amount Collected", type: "number", required: true, step: "0.01", min: "0" },
-      { key: "status", label: "Status", type: "select", required: true, options: ["pending", "partial", "completed", "overdue"] },
+      { key: "status", label: "Status", type: "select", required: true, options: ["Pending", "Approved", "Decline"] },
       { key: "notes", label: "Notes", type: "textarea", placeholder: "Optional notes" }
     ]
   }
@@ -3998,17 +4568,33 @@ function loadFinanceDashboard() {
 
 async function loadFinanceCompanyIncome() {
   mainContent.innerHTML = `
-    <div class="inc-page">
-      <div class="inc-hdr" style="background:transparent;">
-        <div class="inc-av"><i class="ri-user-smile-line" style="font-size:22px;color:#1e3a6e;"></i></div>
-        <span class="inc-wb">Welcome back!</span>
-        <div class="inc-srch"><i class="ri-search-line"></i><input type="text" placeholder="Search here" id="finIncSearch"></div>
-        <button class="inc-bell"><i class="ri-notification-3-line"></i><span class="bdot"></span></button>
+    <div class="inc-page company-income-page">
+      <div class="income-hero">
+        <div class="income-hero-titlewrap">
+          <div class="income-hero-icon"><i class="ri-money-dollar-circle-line"></i></div>
+          <div>
+            <h2>Company Income</h2>
+            <p>Track and manage all income records</p>
+          </div>
+        </div>
+        <div class="income-hero-actions">
+          <div class="inc-srch income-search"><i class="ri-search-line"></i><input type="text" placeholder="Search here" id="finIncSearch"></div>
+          <button class="inc-btn-add income-hero-add" id="finIncHeroAddBtn" style="display:none;"><i class="ri-add-line"></i> Add Income</button>
+        </div>
       </div>
-      <div style="padding:6px 28px 0;background:transparent;">
-        <div style="display:inline-flex;background:white;border-radius:10px;padding:4px;gap:2px;box-shadow:0 2px 10px rgba(0,0,0,0.07);">
+      <div class="income-tabs-row">
+        <div class="income-tabs-wrap">
           <button class="exp-tab active" id="finIncTabOv">Overview</button>
           <button class="exp-tab" id="finIncTabList">Income</button>
+        </div>
+        <div id="finIncFilterBar" class="income-filter-bar" style="display:none;">
+          <input type="date" id="finIncFrom" class="pe-filter-date">
+          <span style="color:#6b7280;font-size:13px;">to</span>
+          <input type="date" id="finIncTo" class="pe-filter-date">
+          <input type="text" id="finIncProject" placeholder="Project Name" class="pe-filter-text">
+          <input type="text" id="finIncSource" placeholder="Source" class="pe-filter-text">
+          <button id="finIncApplyFilters" class="pe-apply-btn"><i class="ri-filter-line"></i> Apply</button>
+          <button id="finIncClearFilters" class="pe-clear-btn"><i class="ri-close-line"></i> Clear</button>
         </div>
       </div>
       <div class="inc-body">
@@ -4028,7 +4614,7 @@ async function loadFinanceCompanyIncome() {
               </div>
             </div>
             <div class="inc-chart-bare">
-              <div class="inc-chart-title">Income by Lot</div>
+              <div class="inc-chart-title">Income by Project</div>
               <div class="fin-chart-canvas-wrap fin-chart-canvas-wrap-tall">
                 <canvas id="finIncLotChart"></canvas>
               </div>
@@ -4037,27 +4623,27 @@ async function loadFinanceCompanyIncome() {
           <div class="inc-tbl-wrap" style="margin-top:18px;">
             <div class="inc-tbl-banner">RECENT INCOME REPORTS</div>
             <table class="inc-tbl">
-              <thead><tr><th>Date</th><th>Lot</th><th>Source</th><th>Description</th><th>Amount</th><th>Status</th></tr></thead>
+              <thead><tr><th>Date</th><th>Project Name</th><th>Source</th><th>Description</th><th>Amount</th><th>Status</th></tr></thead>
               <tbody id="finIncRecentBody"><tr><td colspan="6" class="inc-empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
         <div id="finIncList" style="display:none;">
-          <div style="display:flex;align-items:center;justify-content:space-between;background:#1e3a6e;border-radius:13px;padding:18px 28px;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+          <div class="income-list-summary">
             <div style="display:flex;align-items:center;gap:14px;">
-              <div style="width:46px;height:46px;background:rgba(255,255,255,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;">&#128176;</div>
+              <div class="inc-kpi-icon">&#128176;</div>
               <div>
-                <div style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.65);text-transform:uppercase;letter-spacing:.6px;">Total Income</div>
-                <div id="finIncTotal" style="font-size:28px;font-weight:900;color:white;line-height:1.2;">PHP 0.00</div>
+                <div class="income-list-label">Total Income</div>
+                <div id="finIncTotal" class="income-list-total">PHP 0.00</div>
               </div>
             </div>
-            <button class="inc-btn-add" id="finIncAddBtn"><i class="ri-add-line"></i> Add Income</button>
+            <div class="income-list-count"><strong id="finIncRecordCount">0 records</strong><span>All records</span></div>
           </div>
           <div class="inc-tbl-wrap">
             <div class="inc-tbl-banner">INCOME REPORTS</div>
             <table class="inc-tbl">
-              <thead><tr><th>Date</th><th>Lot</th><th>Source</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead>
-              <tbody id="finIncTableBody"><tr><td colspan="6" class="inc-empty">Loading...</td></tr></tbody>
+              <thead><tr><th>Date</th><th>Project Name</th><th>Source</th><th>Description</th><th>Amount</th><th>Status</th><th>OR #</th><th>Actions</th></tr></thead>
+              <tbody id="finIncTableBody"><tr><td colspan="8" class="inc-empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -4066,18 +4652,33 @@ async function loadFinanceCompanyIncome() {
   `;
 
   let rows = [];
+  let filters = { from: "", to: "", project: "", source: "" };
+  const projectPill = (project) => {
+    const label = project || "General";
+    const colors = {
+      "Lot A": ["#dbeafe", "#1e40af"], "Lot B": ["#d1fae5", "#065f46"],
+      "Lot C": ["#fef3c7", "#92400e"], "Lot D": ["#fce7f3", "#9d174d"],
+      "Lot E": ["#ede9fe", "#5b21b6"], "Lot F": ["#ffedd5", "#9a3412"],
+      "Lot G": ["#f0fdf4", "#14532d"]
+    };
+    if (!project) return `<span style="color:#9ca3af;font-size:12px;font-style:italic;">General</span>`;
+    const [bg, fg] = colors[label] || ["#e5e7eb", "#374151"];
+    return `<span style="display:inline-flex;align-items:center;padding:5px 13px;border-radius:20px;font-size:11.5px;font-weight:800;background:${bg};color:${fg};letter-spacing:.4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.08);">${escHtml(label)}</span>`;
+  };
   const render = () => {
     const q = (document.getElementById("finIncSearch")?.value || "").trim().toLowerCase();
     const filtered = !q ? rows : rows.filter(row => JSON.stringify(row).toLowerCase().includes(q));
     const total = filtered.reduce((sum, row) => sum + Number(row.amount || 0), 0);
     document.getElementById("finIncTotal").textContent = formatFinanceCurrency(total);
     document.getElementById("finIncKpi").textContent = formatFinanceCurrency(total);
+    const countEl = document.getElementById("finIncRecordCount");
+    if (countEl) countEl.textContent = `${filtered.length} ${filtered.length === 1 ? "record" : "records"}`;
     renderFinanceIncomeCharts(filtered);
     document.getElementById("finIncRecentBody").innerHTML = filtered.length
       ? filtered.slice(0, 5).map(row => `
           <tr>
             <td>${formatFinanceDate(row.date)}</td>
-            <td>${escHtml(row.lot || "General")}</td>
+            <td>${projectPill(row.project_name || row.lot)}</td>
             <td>${escHtml(row.source || row.category || "—")}</td>
             <td>${escHtml(row.description || "—")}</td>
             <td>${formatFinanceCurrency(row.amount)}</td>
@@ -4089,14 +4690,16 @@ async function loadFinanceCompanyIncome() {
       ? filtered.map(row => `
           <tr>
             <td style="color:#64748b;font-size:12.5px;white-space:nowrap;">${formatFinanceDate(row.date)}</td>
-            <td><span style="display:inline-flex;align-items:center;padding:5px 13px;border-radius:20px;font-size:11.5px;font-weight:800;background:#dbeafe;color:#1e40af;letter-spacing:.4px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.08);">${escHtml(row.lot || "General")}</span></td>
+            <td>${projectPill(row.project_name || row.lot)}</td>
             <td style="font-weight:600;color:#374151;">${escHtml(row.source || row.category || "—")}</td>
             <td style="color:#64748b;font-size:13px;">${escHtml(row.description || "—")}</td>
             <td><span style="font-size:14.5px;font-weight:900;color:#1e3a6e;background:rgba(30,58,110,.07);padding:4px 10px;border-radius:8px;display:inline-block;">${formatFinanceCurrency(row.amount)}</span></td>
+            <td>${financeStatusBadge(row.status || "received")}</td>
+            <td style="font-size:12px;color:#64748b;">${row.or_number ? `<code>${escHtml(row.or_number)}</code>` : "—"}</td>
             <td><div class="inc-row-btns"><button class="inc-row-btn inc-btn-edit fin-inc-edit" data-id="${row.id}"><i class="ri-pencil-line"></i> Edit</button><button class="inc-row-btn inc-btn-del fin-inc-del" data-id="${row.id}"><i class="ri-delete-bin-line"></i> Delete</button></div></td>
           </tr>
         `).join("")
-      : `<tr><td colspan="6" class="inc-empty">No records found.</td></tr>`;
+      : `<tr><td colspan="8" class="inc-empty">No records found.</td></tr>`;
     document.querySelectorAll(".fin-inc-edit").forEach(btn => btn.onclick = () => {
       const row = rows.find(r => String(r.id) === btn.dataset.id);
       openFinanceRecordModal("company_income", row, () => loadFinanceCompanyIncome());
@@ -4104,34 +4707,70 @@ async function loadFinanceCompanyIncome() {
     document.querySelectorAll(".fin-inc-del").forEach(btn => btn.onclick = async () => {
       if (!confirm("Delete this income record?")) return;
       try {
-        await financeRequest(`/api/finance/records/company_income/${btn.dataset.id}`, { method: "DELETE" });
+        await financeRequest(`/api/income/${btn.dataset.id}`, { method: "DELETE" });
         showToast("Income deleted.", "success");
         loadFinanceCompanyIncome();
       } catch (err) { showToast(err.message || "Delete failed.", "error"); }
     });
   };
+  const loadRows = async () => {
+    const params = new URLSearchParams();
+    params.set("period", filters.from || filters.to ? "custom" : "all");
+    if (filters.from) params.set("from", filters.from);
+    if (filters.to) params.set("to", filters.to);
+    if (filters.project) params.set("project_name", filters.project);
+    if (filters.source) params.set("source", filters.source);
+    rows = await financeRequest(`/api/income?${params.toString()}`);
+    render();
+  };
 
   document.getElementById("finIncSearch").addEventListener("input", render);
-  document.getElementById("finIncAddBtn").onclick = () => openFinanceRecordModal("company_income", null, () => loadFinanceCompanyIncome());
+  document.getElementById("finIncHeroAddBtn").onclick = () => openFinanceRecordModal("company_income", null, () => loadFinanceCompanyIncome());
   document.getElementById("finIncTabOv").onclick = () => {
     document.getElementById("finIncTabOv").classList.add("active");
     document.getElementById("finIncTabList").classList.remove("active");
     document.getElementById("finIncOverview").style.display = "";
     document.getElementById("finIncList").style.display = "none";
+    document.getElementById("finIncHeroAddBtn").style.display = "none";
+    document.getElementById("finIncFilterBar").style.display = "none";
   };
   document.getElementById("finIncTabList").onclick = () => {
     document.getElementById("finIncTabList").classList.add("active");
     document.getElementById("finIncTabOv").classList.remove("active");
     document.getElementById("finIncOverview").style.display = "none";
     document.getElementById("finIncList").style.display = "";
+    document.getElementById("finIncHeroAddBtn").style.display = "inline-flex";
+    document.getElementById("finIncFilterBar").style.display = "flex";
+  };
+  document.getElementById("finIncApplyFilters").onclick = async () => {
+    filters = {
+      from: document.getElementById("finIncFrom").value,
+      to: document.getElementById("finIncTo").value,
+      project: document.getElementById("finIncProject").value.trim(),
+      source: document.getElementById("finIncSource").value.trim()
+    };
+    try {
+      await loadRows();
+      showToast("Filters applied.", "info");
+    } catch (err) { showToast(err.message || "Failed to filter income.", "error"); }
+  };
+  document.getElementById("finIncClearFilters").onclick = async () => {
+    filters = { from: "", to: "", project: "", source: "" };
+    ["finIncFrom", "finIncTo", "finIncProject", "finIncSource"].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    try {
+      await loadRows();
+      showToast("Filters cleared.", "info");
+    } catch (err) { showToast(err.message || "Failed to reload income.", "error"); }
   };
 
   try {
-    rows = await financeRequest("/api/finance/records/company_income");
-    render();
+    await loadRows();
   } catch (err) {
     document.getElementById("finIncRecentBody").innerHTML = `<tr><td colspan="6" class="inc-empty">${escHtml(err.message || "Failed to load income.")}</td></tr>`;
-    document.getElementById("finIncTableBody").innerHTML = `<tr><td colspan="6" class="inc-empty">${escHtml(err.message || "Failed to load income.")}</td></tr>`;
+    document.getElementById("finIncTableBody").innerHTML = `<tr><td colspan="8" class="inc-empty">${escHtml(err.message || "Failed to load income.")}</td></tr>`;
   }
 }
 
@@ -4150,6 +4789,7 @@ async function loadFinanceCompanyExpenses() {
           <button class="exp-tab" id="finExpTabExpenses">Company Expenses</button>
           <button class="exp-tab" id="finExpTabPurchases">Purchases</button>
           <button class="exp-tab" id="finExpTabOverhead">Overhead</button>
+          <button class="exp-tab" id="finExpTabContribution">Contribution</button>
         </div>
       </div>
       <div class="exp-body">
@@ -4159,6 +4799,7 @@ async function loadFinanceCompanyExpenses() {
             <div class="exp-kpi-card exp-kpi-teal"><div class="exp-kpi-icon"><i class="ri-bank-card-line"></i></div><div><div class="exp-kpi-val" id="finExpExpenses">—</div><div class="exp-kpi-lbl">Company Expenses</div></div></div>
             <div class="exp-kpi-card exp-kpi-cyan"><div class="exp-kpi-icon"><i class="ri-shopping-cart-line"></i></div><div><div class="exp-kpi-val" id="finExpPurchases">—</div><div class="exp-kpi-lbl">Company Purchase</div></div></div>
             <div class="exp-kpi-card exp-kpi-indigo"><div class="exp-kpi-icon"><i class="ri-building-line"></i></div><div><div class="exp-kpi-val" id="finExpOverhead">—</div><div class="exp-kpi-lbl">Overhead Expenses</div></div></div>
+            <div class="exp-kpi-card exp-kpi-blue"><div class="exp-kpi-icon"><i class="ri-team-line"></i></div><div><div class="exp-kpi-val" id="finExpContribution">—</div><div class="exp-kpi-lbl">Contributions</div></div></div>
           </div>
           <div class="exp-charts-row">
             <div class="exp-chart-card">
@@ -4195,10 +4836,25 @@ async function loadFinanceCompanyExpenses() {
             </table>
           </div>
         </div>
+        <div id="finExpContributionPanel" style="display:none;">
+          <div class="exp-kpi-row" id="finExpContributionKpis"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin:20px 0 12px;flex-wrap:wrap;gap:10px;">
+            <h3 style="font-size:20px;font-weight:800;color:#1e3a6e;">Contributions</h3>
+            <button class="inc-btn-add" id="finContributionAddBtn"><i class="ri-add-line"></i> Add</button>
+          </div>
+          <div class="inc-tbl-wrap">
+            <table class="inc-tbl">
+              <thead><tr><th>Name</th><th>Type</th><th>Employee Share</th><th>Employer Share</th><th>Total</th><th>Due Date</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody id="finContributionBody"><tr><td colspan="8" class="inc-empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   `;
   let rows = [];
+  let contributions = [];
+  let contributionKpis = { grand_total: 0, total_paid: 0, total_unpaid: 0, total_overdue: 0 };
   let active = "overview";
   const render = () => {
     const q = (document.getElementById("finExpSearch")?.value || "").trim().toLowerCase();
@@ -4214,11 +4870,47 @@ async function loadFinanceCompanyExpenses() {
     document.getElementById("finExpExpenses").textContent = formatFinanceCurrency(totals.expenses);
     document.getElementById("finExpPurchases").textContent = formatFinanceCurrency(totals.purchases);
     document.getElementById("finExpOverhead").textContent = formatFinanceCurrency(totals.overhead);
+    document.getElementById("finExpContribution").textContent = formatFinanceCurrency(contributionKpis.grand_total || 0);
     renderFinanceExpenseCharts(filtered);
     document.getElementById("finExpRecentBody").innerHTML = filtered.length ? filtered.slice(0, 6).map(r => `
       <tr><td>${formatFinanceDate(r.date)}</td><td>${escHtml(r.category || r.expense_group || "—")}</td><td>${escHtml(r.description || "—")}</td><td style="font-weight:700;color:#dc2626;">${formatFinanceCurrency(r.amount)}</td><td>${financeStatusBadge(r.status)}</td></tr>
     `).join("") : `<tr><td colspan="5" class="inc-empty">No records found.</td></tr>`;
     if (active === "overview") return;
+    if (active === "contribution") {
+      const qCon = q;
+      const conRows = !qCon ? contributions : contributions.filter(row => JSON.stringify(row).toLowerCase().includes(qCon));
+      document.getElementById("finExpContributionKpis").innerHTML = `
+        <div class="exp-kpi-card exp-kpi-blue"><div class="exp-kpi-icon"><i class="ri-money-dollar-circle-line"></i></div><div><div class="exp-kpi-val">${formatFinanceCurrency(contributionKpis.grand_total)}</div><div class="exp-kpi-lbl">Total</div></div></div>
+        <div class="exp-kpi-card exp-kpi-teal"><div class="exp-kpi-icon"><i class="ri-checkbox-circle-line"></i></div><div><div class="exp-kpi-val">${formatFinanceCurrency(contributionKpis.total_paid)}</div><div class="exp-kpi-lbl">Paid</div></div></div>
+        <div class="exp-kpi-card exp-kpi-cyan"><div class="exp-kpi-icon"><i class="ri-close-circle-line"></i></div><div><div class="exp-kpi-val">${formatFinanceCurrency(contributionKpis.total_unpaid)}</div><div class="exp-kpi-lbl">Unpaid</div></div></div>
+        <div class="exp-kpi-card exp-kpi-indigo"><div class="exp-kpi-icon"><i class="ri-alarm-warning-line"></i></div><div><div class="exp-kpi-val">${formatFinanceCurrency(contributionKpis.total_overdue)}</div><div class="exp-kpi-lbl">Overdue</div></div></div>
+      `;
+      document.getElementById("finContributionBody").innerHTML = conRows.length ? conRows.map(r => `
+        <tr>
+          <td>${escHtml(r.name)}</td>
+          <td>${escHtml(r.type)}</td>
+          <td>${formatFinanceCurrency(r.employee_share)}</td>
+          <td>${formatFinanceCurrency(r.employer_share)}</td>
+          <td style="font-weight:800;color:#1e3a6e;">${formatFinanceCurrency(r.total || (Number(r.employee_share || 0) + Number(r.employer_share || 0)))}</td>
+          <td>${formatFinanceDate(r.due_date)}</td>
+          <td>${financeStatusBadge(r.status)}</td>
+          <td><div class="inc-row-btns"><button class="inc-row-btn inc-btn-edit fin-con-edit" data-id="${r.id}"><i class="ri-pencil-line"></i> Edit</button><button class="inc-row-btn inc-btn-del fin-con-del" data-id="${r.id}"><i class="ri-delete-bin-line"></i> Delete</button></div></td>
+        </tr>
+      `).join("") : `<tr><td colspan="8" class="inc-empty">No contribution records found.</td></tr>`;
+      document.querySelectorAll(".fin-con-edit").forEach(btn => btn.onclick = () => {
+        const row = contributions.find(r => String(r.id) === btn.dataset.id);
+        openFinanceContributionModal(row, () => loadFinanceCompanyExpenses());
+      });
+      document.querySelectorAll(".fin-con-del").forEach(btn => btn.onclick = async () => {
+        if (!confirm("Delete this contribution record?")) return;
+        try {
+          await financeRequest(`/api/contributions/${btn.dataset.id}`, { method: "DELETE" });
+          showToast("Contribution deleted.", "success");
+          loadFinanceCompanyExpenses();
+        } catch (err) { showToast(err.message || "Delete failed.", "error"); }
+      });
+      return;
+    }
     const subset = filtered.filter(r => String(r.expense_group || "expenses").toLowerCase() === active);
     document.getElementById("finExpSubTitle").textContent = active === "expenses" ? "Company Expenses" : active === "purchases" ? "Company Purchases" : "Overhead Expenses";
     document.getElementById("finExpSubKpis").innerHTML = `
@@ -4244,7 +4936,7 @@ async function loadFinanceCompanyExpenses() {
     document.querySelectorAll(".fin-exp-del").forEach(btn => btn.onclick = async () => {
       if (!confirm("Delete this expense record?")) return;
       try {
-        await financeRequest(`/api/finance/records/company_expenses/${btn.dataset.id}`, { method: "DELETE" });
+        await financeRequest(`/api/expenses/${btn.dataset.id}`, { method: "DELETE" });
         showToast("Expense deleted.", "success");
         loadFinanceCompanyExpenses();
       } catch (err) { showToast(err.message || "Delete failed.", "error"); }
@@ -4252,10 +4944,11 @@ async function loadFinanceCompanyExpenses() {
   };
   const switchTab = (tab) => {
     active = tab;
-    ["finExpTabOv","finExpTabExpenses","finExpTabPurchases","finExpTabOverhead"].forEach(id => document.getElementById(id)?.classList.remove("active"));
-    document.getElementById(tab === "overview" ? "finExpTabOv" : tab === "expenses" ? "finExpTabExpenses" : tab === "purchases" ? "finExpTabPurchases" : "finExpTabOverhead").classList.add("active");
+    ["finExpTabOv","finExpTabExpenses","finExpTabPurchases","finExpTabOverhead","finExpTabContribution"].forEach(id => document.getElementById(id)?.classList.remove("active"));
+    document.getElementById(tab === "overview" ? "finExpTabOv" : tab === "expenses" ? "finExpTabExpenses" : tab === "purchases" ? "finExpTabPurchases" : tab === "overhead" ? "finExpTabOverhead" : "finExpTabContribution").classList.add("active");
     document.getElementById("finExpOverview").style.display = tab === "overview" ? "" : "none";
-    document.getElementById("finExpSub").style.display = tab === "overview" ? "none" : "";
+    document.getElementById("finExpSub").style.display = ["overview", "contribution"].includes(tab) ? "none" : "";
+    document.getElementById("finExpContributionPanel").style.display = tab === "contribution" ? "" : "none";
     render();
   };
   document.getElementById("finExpSearch").addEventListener("input", render);
@@ -4263,13 +4956,67 @@ async function loadFinanceCompanyExpenses() {
   document.getElementById("finExpTabExpenses").onclick = () => switchTab("expenses");
   document.getElementById("finExpTabPurchases").onclick = () => switchTab("purchases");
   document.getElementById("finExpTabOverhead").onclick = () => switchTab("overhead");
+  document.getElementById("finExpTabContribution").onclick = () => switchTab("contribution");
   document.getElementById("finExpAddBtn").onclick = () => openFinanceRecordModal("company_expenses", { expense_group: active }, () => loadFinanceCompanyExpenses());
+  document.getElementById("finContributionAddBtn").onclick = () => openFinanceContributionModal(null, () => loadFinanceCompanyExpenses());
   try {
-    rows = await financeRequest("/api/finance/records/company_expenses");
+    [rows, contributions, contributionKpis] = await Promise.all([
+      financeRequest("/api/expenses"),
+      financeRequest("/api/contributions"),
+      financeRequest("/api/contributions/kpis")
+    ]);
     render();
   } catch (err) {
     document.getElementById("finExpRecentBody").innerHTML = `<tr><td colspan="5" class="inc-empty">${escHtml(err.message || "Failed to load expenses.")}</td></tr>`;
   }
+}
+
+function openFinanceContributionModal(existing, onDone) {
+  const modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.innerHTML = `
+    <div class="fin-modal">
+      <div class="fin-modal-head"><div><h3>${existing ? "Edit" : "Add"} Contribution</h3><p>Maintain SSS, PhilHealth, and Pag-Ibig contribution records.</p></div><button class="modal-close-btn" id="finConClose"><i class="ri-close-line"></i></button></div>
+      <div class="fin-modal-body">
+        <div class="fin-form-grid">
+          <label class="fin-field"><span>Name *</span><input id="finConName" value="${escHtml(existing?.name || "")}"></label>
+          <label class="fin-field"><span>Type *</span><select id="finConType"><option value="SSS">SSS</option><option value="PhilHealth">PhilHealth</option><option value="Pag-Ibig">Pag-Ibig</option></select></label>
+          <label class="fin-field"><span>Employee Share *</span><input id="finConEmp" type="number" step="0.01" min="0" value="${escHtml(existing?.employee_share ?? "")}"></label>
+          <label class="fin-field"><span>Employer Share *</span><input id="finConEr" type="number" step="0.01" min="0" value="${escHtml(existing?.employer_share ?? "")}"></label>
+          <label class="fin-field"><span>Due Date *</span><input id="finConDue" type="date" value="${escHtml(existing?.due_date ? String(existing.due_date).slice(0,10) : "")}"></label>
+          <label class="fin-field"><span>Status *</span><select id="finConStatus"><option value="Paid">Paid</option><option value="Unpaid">Unpaid</option><option value="Overdue">Overdue</option></select></label>
+        </div>
+      </div>
+      <div class="fin-modal-actions"><button class="tool-btn" id="finConCancel">Cancel</button><button class="tool-btn apply-btn" id="finConSave"><i class="ri-save-line"></i> Save</button></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById("finConType").value = existing?.type || "SSS";
+  document.getElementById("finConStatus").value = existing?.status || "Unpaid";
+  const close = () => modal.remove();
+  document.getElementById("finConClose").onclick = close;
+  document.getElementById("finConCancel").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  document.getElementById("finConSave").onclick = async () => {
+    try {
+      const payload = {
+        name: document.getElementById("finConName").value.trim(),
+        type: document.getElementById("finConType").value,
+        employee_share: Number(document.getElementById("finConEmp").value || 0),
+        employer_share: Number(document.getElementById("finConEr").value || 0),
+        due_date: document.getElementById("finConDue").value,
+        status: document.getElementById("finConStatus").value
+      };
+      if (!payload.name || !payload.type || !payload.due_date) throw new Error("Name, type, and due date are required.");
+      await financeRequest(existing ? `/api/contributions/${existing.id}` : "/api/contributions", {
+        method: existing ? "PUT" : "POST",
+        body: JSON.stringify(payload)
+      });
+      close();
+      showToast(existing ? "Contribution updated." : "Contribution added.", "success");
+      onDone?.();
+    } catch (err) { showToast(err.message || "Save failed.", "error"); }
+  };
 }
 
 async function loadFinanceEmployeeCenter() {
@@ -4284,11 +5031,15 @@ async function loadFinanceEmployeeCenter() {
           <button class="exp-tab active" id="empTabRmb">Reimburse</button>
           <button class="exp-tab" id="empTabBdg">Request of Budget</button>
           <button class="exp-tab" id="empTabSal">Salary Advancement</button>
+          <button class="exp-tab" id="empTabPayroll">Employee Salary</button>
         </div>
       </div>
       <div id="empActionRow" style="display:none;justify-content:flex-end;gap:10px;padding:0 32px 12px;">
         <button id="empAddSalaryBtn" style="display:inline-flex;align-items:center;gap:7px;padding:10px 22px;border-radius:8px;border:none;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 4px 14px rgba(30,58,110,.35);">
-          <i class="ri-add-line"></i> Add
+          <i class="ri-add-line"></i> Add Salary Advance
+        </button>
+        <button id="empAddPayrollBtn" style="display:none;align-items:center;gap:7px;padding:10px 22px;border-radius:8px;border:none;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;box-shadow:0 4px 14px rgba(30,58,110,.35);">
+          <i class="ri-add-line"></i> Add Employee Salary
         </button>
       </div>
       <div style="padding:0 32px 32px;">
@@ -4308,21 +5059,54 @@ async function loadFinanceEmployeeCenter() {
   let reimburse = [];
   let budget = [];
   let salary = [];
+  let employeeSalary = [];
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-PH", { month: "2-digit", day: "2-digit", year: "numeric" }) : "—";
   const render = () => {
     const q = (document.getElementById("empSearch")?.value || "").trim().toLowerCase();
-    const bannerMap = { reimburse: "Employee Reimburse", budget: "Requests", salary: "Salary Advances" };
+    const bannerMap = { reimburse: "Employee Reimburse", budget: "Requests", salary: "Salary Advances", employeeSalary: "Employee Salary" };
     const headMap = {
       reimburse: ["Name","Roles","Date","Description","Amount","Status","Action","Comments"],
       budget: ["Name","Roles","Date","Description","Amount","Status","Action","Comments"],
-      salary: ["Name","Amount","Balance","Date","Status","Actions"]
+      salary: ["Name","Amount","Balance","Date","Status","Actions"],
+      employeeSalary: ["Name","Position","Department","Current Salary","Payroll Date","Period","Status","Actions"]
     };
     document.getElementById("empBanner").textContent = bannerMap[activeTab];
-    document.getElementById("empActionRow").style.display = activeTab === "salary" ? "flex" : "none";
+    document.getElementById("empActionRow").style.display = ["salary", "employeeSalary"].includes(activeTab) ? "flex" : "none";
+    document.getElementById("empAddSalaryBtn").style.display = activeTab === "salary" ? "inline-flex" : "none";
+    document.getElementById("empAddPayrollBtn").style.display = activeTab === "employeeSalary" ? "inline-flex" : "none";
     document.getElementById("empThead").innerHTML = headMap[activeTab].map(h => `<th style="padding:14px 20px;text-align:center;font-size:13px;font-weight:700;color:#1e3a6e;">${h}</th>`).join("");
-    const source = activeTab === "reimburse" ? reimburse : activeTab === "budget" ? budget : salary;
+    const source = activeTab === "reimburse" ? reimburse : activeTab === "budget" ? budget : activeTab === "salary" ? salary : employeeSalary;
     const rows = !q ? source : source.filter(row => JSON.stringify(row).toLowerCase().includes(q));
     const tbody = document.getElementById("empTbody");
+    if (activeTab === "employeeSalary") {
+      tbody.innerHTML = rows.length ? rows.map(r => `
+        <tr style="border-bottom:1px solid #eef2f8;transition:background .15s;">
+          <td style="padding:16px 20px;text-align:center;">${escHtml(r.employee_name)}</td>
+          <td style="padding:16px 20px;text-align:center;">${escHtml(r.position || "â€”")}</td>
+          <td style="padding:16px 20px;text-align:center;">${escHtml(r.department || "â€”")}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">${formatFinanceCurrency(r.current_salary)}</td>
+          <td style="padding:16px 20px;text-align:center;">${fmtDate(r.salary_date)}</td>
+          <td style="padding:16px 20px;text-align:center;">${fmtDate(r.period_start)} - ${fmtDate(r.period_end)}</td>
+          <td style="padding:16px 20px;text-align:center;">${financeStatusBadge(r.status)}</td>
+          <td style="padding:16px 20px;text-align:center;"><div style="display:flex;gap:8px;justify-content:center;align-items:center;"><button class="fin-payroll-edit" data-id="${r.id}" style="width:34px;height:34px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;"><i class="ri-pencil-line"></i></button><button class="fin-payroll-del" data-id="${r.id}" style="width:34px;height:34px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;"><i class="ri-delete-bin-line"></i></button></div></td>
+        </tr>
+      `).join("") : `<tr><td colspan="8" style="text-align:center;padding:40px;color:#9ca3af;">No records found.</td></tr>`;
+      document.querySelectorAll(".fin-payroll-edit").forEach(btn => btn.onclick = async () => {
+        try {
+          const row = await financeRequest(`/api/employee/employee-salary/${btn.dataset.id}`);
+          openFinanceEmployeeSalaryModal(row, () => loadFinanceEmployeeCenter());
+        } catch (err) { showToast(err.message || "Failed to load employee salary record.", "error"); }
+      });
+      document.querySelectorAll(".fin-payroll-del").forEach(btn => btn.onclick = async () => {
+        if (!confirm("Delete this employee salary record?")) return;
+        try {
+          await financeRequest(`/api/employee/employee-salary/${btn.dataset.id}`, { method: "DELETE" });
+          showToast("Employee salary deleted.", "success");
+          loadFinanceEmployeeCenter();
+        } catch (err) { showToast(err.message || "Delete failed.", "error"); }
+      });
+      return;
+    }
     if (activeTab === "salary") {
       tbody.innerHTML = rows.length ? rows.map(r => `
         <tr style="border-bottom:1px solid #eef2f8;transition:background .15s;">
@@ -4366,20 +5150,23 @@ async function loadFinanceEmployeeCenter() {
   };
   const switchTab = (tab) => {
     activeTab = tab;
-    ["empTabRmb","empTabBdg","empTabSal"].forEach(id => document.getElementById(id)?.classList.remove("active"));
-    document.getElementById(tab === "reimburse" ? "empTabRmb" : tab === "budget" ? "empTabBdg" : "empTabSal").classList.add("active");
+    ["empTabRmb","empTabBdg","empTabSal","empTabPayroll"].forEach(id => document.getElementById(id)?.classList.remove("active"));
+    document.getElementById(tab === "reimburse" ? "empTabRmb" : tab === "budget" ? "empTabBdg" : tab === "salary" ? "empTabSal" : "empTabPayroll").classList.add("active");
     render();
   };
   document.getElementById("empSearch").addEventListener("input", render);
   document.getElementById("empTabRmb").onclick = () => switchTab("reimburse");
   document.getElementById("empTabBdg").onclick = () => switchTab("budget");
   document.getElementById("empTabSal").onclick = () => switchTab("salary");
+  document.getElementById("empTabPayroll").onclick = () => switchTab("employeeSalary");
   document.getElementById("empAddSalaryBtn").onclick = () => openFinanceSalaryModal(null, () => loadFinanceEmployeeCenter());
+  document.getElementById("empAddPayrollBtn").onclick = () => openFinanceEmployeeSalaryModal(null, () => loadFinanceEmployeeCenter());
   try {
-    [reimburse, budget, salary] = await Promise.all([
+    [reimburse, budget, salary, employeeSalary] = await Promise.all([
       financeRequest("/api/employee/reimburse"),
       financeRequest("/api/employee/budget"),
-      financeRequest("/api/employee/salary")
+      financeRequest("/api/employee/salary"),
+      financeRequest("/api/employee/employee-salary")
     ]);
   } catch (err) {
     showToast(err.message || "Failed to load employee data.", "error");
@@ -4456,6 +5243,57 @@ function openFinanceSalaryModal(existing, onDone) {
       });
       close();
       showToast(existing ? "Salary advancement updated." : "Salary advancement added.", "success");
+      onDone?.();
+    } catch (err) { showToast(err.message || "Save failed.", "error"); }
+  };
+}
+
+function openFinanceEmployeeSalaryModal(existing, onDone) {
+  const modal = document.createElement("div");
+  modal.className = "modal-overlay";
+  modal.innerHTML = `
+    <div class="fin-modal">
+      <div class="fin-modal-head"><div><h3>${existing ? "Edit" : "Add"} Employee Salary</h3><p>Maintain payroll records from the Finance employee module.</p></div><button class="modal-close-btn" id="finPayrollClose"><i class="ri-close-line"></i></button></div>
+      <div class="fin-modal-body">
+        <div class="fin-form-grid">
+          <label class="fin-field"><span>Name *</span><input id="finPayrollName" value="${escHtml(existing?.employee_name || "")}"></label>
+          <label class="fin-field"><span>Position</span><input id="finPayrollPosition" value="${escHtml(existing?.position || "")}"></label>
+          <label class="fin-field"><span>Department</span><input id="finPayrollDepartment" value="${escHtml(existing?.department || "")}"></label>
+          <label class="fin-field"><span>Current Salary *</span><input id="finPayrollSalary" type="number" step="0.01" min="0" value="${escHtml(existing?.current_salary ?? "")}"></label>
+          <label class="fin-field"><span>Payroll Date *</span><input id="finPayrollDate" type="date" value="${escHtml(existing?.salary_date ? String(existing.salary_date).slice(0,10) : "")}"></label>
+          <label class="fin-field"><span>Period Start</span><input id="finPayrollStart" type="date" value="${escHtml(existing?.period_start ? String(existing.period_start).slice(0,10) : "")}"></label>
+          <label class="fin-field"><span>Period End</span><input id="finPayrollEnd" type="date" value="${escHtml(existing?.period_end ? String(existing.period_end).slice(0,10) : "")}"></label>
+          <label class="fin-field"><span>Status *</span><select id="finPayrollStatus"><option value="Active">Active</option><option value="Paid">Paid</option><option value="Pending">Pending</option><option value="Inactive">Inactive</option></select></label>
+        </div>
+      </div>
+      <div class="fin-modal-actions"><button class="tool-btn" id="finPayrollCancel">Cancel</button><button class="tool-btn apply-btn" id="finPayrollSave"><i class="ri-save-line"></i> Save</button></div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById("finPayrollStatus").value = existing?.status || "Active";
+  const close = () => modal.remove();
+  document.getElementById("finPayrollClose").onclick = close;
+  document.getElementById("finPayrollCancel").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  document.getElementById("finPayrollSave").onclick = async () => {
+    try {
+      const payload = {
+        employee_name: document.getElementById("finPayrollName").value.trim(),
+        position: document.getElementById("finPayrollPosition").value.trim(),
+        department: document.getElementById("finPayrollDepartment").value.trim(),
+        current_salary: Number(document.getElementById("finPayrollSalary").value || 0),
+        salary_date: document.getElementById("finPayrollDate").value,
+        period_start: document.getElementById("finPayrollStart").value || null,
+        period_end: document.getElementById("finPayrollEnd").value || null,
+        status: document.getElementById("finPayrollStatus").value
+      };
+      if (!payload.employee_name || !payload.salary_date) throw new Error("Name and payroll date are required.");
+      await financeRequest(existing ? `/api/employee/employee-salary/${existing.id}` : "/api/employee/employee-salary", {
+        method: existing ? "PUT" : "POST",
+        body: JSON.stringify(payload)
+      });
+      close();
+      showToast(existing ? "Employee salary updated." : "Employee salary added.", "success");
       onDone?.();
     } catch (err) { showToast(err.message || "Save failed.", "error"); }
   };
@@ -4539,25 +5377,26 @@ async function loadFinanceLedger(sectionKey) {
 function openFinanceRecordModal(sectionKey, existing, onSave) {
   const meta = FINANCE_SECTION_META[sectionKey];
   if (!meta) return;
+  const isIncome = sectionKey === "company_income";
   const modal = document.createElement("div");
   modal.className = "modal-overlay";
   modal.id = "finRecordModal";
   modal.innerHTML = `
-    <div class="fin-modal">
+    <div class="fin-modal ${isIncome ? "income-modal" : ""}">
       <div class="fin-modal-head">
         <div>
-          <h3>${existing ? "Edit" : "Add"} ${meta.title} Record</h3>
-          <p>${meta.subtitle}</p>
+          <h3>${isIncome ? `<i class="${existing ? "ri-pencil-line" : "ri-add-circle-line"}"></i> ${existing ? "Edit Income" : "Add Income"}` : `${existing ? "Edit" : "Add"} ${meta.title} Record`}</h3>
+          ${isIncome ? "" : `<p>${meta.subtitle}</p>`}
         </div>
         <button class="modal-close-btn" id="finModalClose"><i class="ri-close-line"></i></button>
       </div>
       <div class="fin-modal-body">
         <div class="fin-form-grid">
-          ${meta.fields.map(field => financeFieldHtml(field, existing?.[field.key])).join("")}
+          ${meta.fields.map(field => financeFieldHtml(field, existing?.[field.key], sectionKey)).join("")}
         </div>
       </div>
       <div class="fin-modal-actions">
-        <button class="tool-btn" id="finModalCancel">Cancel</button>
+        <button class="tool-btn" id="finModalCancel"><i class="ri-close-line"></i> Cancel</button>
         <button class="tool-btn apply-btn" id="finModalSave"><i class="ri-save-line"></i> Save</button>
       </div>
     </div>
@@ -4588,12 +5427,16 @@ function openFinanceRecordModal(sectionKey, existing, onSave) {
   };
 }
 
-function financeFieldHtml(field, value) {
+function financeFieldHtml(field, value, sectionKey = "") {
   const safeValue = value == null ? "" : String(value);
+  const isIncome = sectionKey === "company_income";
+  const incomeLabelExtra = isIncome && field.key === "project_name" ? ` <em>(leave blank for general income)</em>` : isIncome && field.key === "or_number" ? ` <em>(optional)</em>` : "";
+  const labelText = `${field.label}${incomeLabelExtra}${field.required ? " *" : ""}`;
+  const optionLabel = opt => isIncome && field.key === "status" ? String(opt).replace(/\b\w/g, c => c.toUpperCase()) : opt;
   if (field.type === "textarea") {
     return `
       <label class="fin-field fin-field-span">
-        <span>${field.label}${field.required ? " *" : ""}</span>
+        <span>${labelText}</span>
         <textarea id="finField_${field.key}" placeholder="${field.placeholder || ""}">${escHtml(safeValue)}</textarea>
       </label>
     `;
@@ -4601,17 +5444,17 @@ function financeFieldHtml(field, value) {
   if (field.type === "select") {
     return `
       <label class="fin-field">
-        <span>${field.label}${field.required ? " *" : ""}</span>
+        <span>${labelText}</span>
         <select id="finField_${field.key}">
-          <option value="">Select ${field.label}</option>
-          ${field.options.map(opt => `<option value="${opt}" ${safeValue.toLowerCase() === opt.toLowerCase() ? "selected" : ""}>${opt}</option>`).join("")}
+          <option value="">${field.key === "source" ? "-- Select Source --" : `Select ${field.label}`}</option>
+          ${field.options.map(opt => `<option value="${opt}" ${safeValue.toLowerCase() === opt.toLowerCase() ? "selected" : ""}>${optionLabel(opt)}</option>`).join("")}
         </select>
       </label>
     `;
   }
   return `
     <label class="fin-field">
-      <span>${field.label}${field.required ? " *" : ""}</span>
+      <span>${labelText}</span>
       <input
         id="finField_${field.key}"
         type="${field.type || "text"}"
@@ -4693,6 +5536,134 @@ function loadFinanceReport() {
         : `<tr><td colspan="6" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No report data yet.</td></tr>`;
     })
     .catch(err => showToast(err.message || "Failed to load report.", "error"));
+}
+
+function loadFinanceReportV2() {
+  const currentYear = new Date().getFullYear();
+  const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
+  mainContent.innerHTML = `
+    ${financeTopbar("Financial Report", "Filtered income, expenses, collections, and net income summary.")}
+    <div class="finance-hero finance-blue">
+      <div>
+        <div class="finance-hero-title">Financial Report</div>
+        <div class="finance-hero-sub" id="finRptPeriodLabel">Full Year ${currentYear}</div>
+      </div>
+      <div class="finance-hero-actions">
+        <select id="finRptYear" class="pe-filter-select">
+          ${years.map(year => `<option value="${year}" ${year === currentYear ? "selected" : ""}>${year}</option>`).join("")}
+        </select>
+        <select id="finRptMonth" class="pe-filter-select">
+          <option value="">All Months</option>
+          ${["January","February","March","April","May","June","July","August","September","October","November","December"].map((month, idx) => `<option value="${idx + 1}">${month}</option>`).join("")}
+        </select>
+        <button class="tool-btn" id="finRptExportBtn"><i class="ri-file-excel-2-line"></i> Export</button>
+        <button class="tool-btn apply-btn" id="finRptPrintBtn"><i class="ri-printer-line"></i> Print / PDF</button>
+      </div>
+    </div>
+    <div class="cards" id="finReportCards">
+      <div class="card"><div class="card-top"><div class="icon-box green"><i class="ri-line-chart-line"></i></div><div class="stat"><h1 id="finRptIncome">0</h1><span class="trend up">total income</span></div></div><p>Income</p></div>
+      <div class="card"><div class="card-top"><div class="icon-box red"><i class="ri-shopping-cart-line"></i></div><div class="stat"><h1 id="finRptExpenses">0</h1><span class="trend down">combined spend</span></div></div><p>Expenses</p></div>
+      <div class="card"><div class="card-top"><div class="icon-box blue"><i class="ri-hand-coin-line"></i></div><div class="stat"><h1 id="finRptCollected">0</h1><span class="trend up">collected</span></div></div><p>Collections</p></div>
+      <div class="card"><div class="card-top"><div class="icon-box orange"><i class="ri-funds-box-line"></i></div><div class="stat"><h1 id="finRptNet">0</h1><span class="trend up">net income</span></div></div><p>Net Income</p></div>
+    </div>
+    <div class="table-container">
+      <div class="table-title"><i class="ri-calendar-line"></i> Report Breakdown</div>
+      <table id="finReportTable">
+        <thead><tr><th>Period</th><th>Income</th><th>Company Expenses</th><th>Project Expenses</th><th>Total Expenses</th><th>Collections</th><th>Net</th></tr></thead>
+        <tbody id="finReportBody"><tr><td colspan="7" class="rpt-empty-cell"><i class="ri-loader-4-line spin"></i> Loading...</td></tr></tbody>
+      </table>
+    </div>
+  `;
+
+  let lastReportRows = [];
+  const monthNames = ["","January","February","March","April","May","June","July","August","September","October","November","December"];
+  const loadReport = () => {
+    const year = document.getElementById("finRptYear")?.value || currentYear;
+    const month = document.getElementById("finRptMonth")?.value || "";
+    const periodText = month ? `${monthNames[Number(month)]} ${year}` : `Full Year ${year}`;
+    const label = document.getElementById("finRptPeriodLabel");
+    if (label) label.textContent = periodText;
+    const qs = new URLSearchParams({ year });
+    if (month) qs.set("month", month);
+    financeRequest(`/api/finance/report?${qs.toString()}`)
+      .then(data => {
+        const totals = data.totals || {};
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = formatFinanceCurrency(val); };
+        setVal("finRptIncome", totals.total_income);
+        setVal("finRptExpenses", Number(totals.company_expenses || 0) + Number(totals.project_expenses || 0));
+        setVal("finRptCollected", totals.total_collections);
+        setVal("finRptNet", totals.net_income);
+        const body = document.getElementById("finReportBody");
+        lastReportRows = data.monthly || [];
+        body.innerHTML = lastReportRows.length
+          ? lastReportRows.map(row => `
+              <tr>
+                <td>${escHtml(row.month_label)}</td>
+                <td>${formatFinanceCurrency(row.income)}</td>
+                <td>${formatFinanceCurrency(row.company_expenses)}</td>
+                <td>${formatFinanceCurrency(row.project_expenses)}</td>
+                <td>${formatFinanceCurrency(row.total_expenses)}</td>
+                <td>${formatFinanceCurrency(row.collections)}</td>
+                <td>${formatFinanceCurrency(row.net)}</td>
+              </tr>
+            `).join("")
+          : `<tr><td colspan="7" class="rpt-empty-cell"><i class="ri-inbox-line"></i> No report data yet.</td></tr>`;
+      })
+      .catch(err => showToast(err.message || "Failed to load report.", "error"));
+  };
+
+  document.getElementById("finRptYear")?.addEventListener("change", loadReport);
+  document.getElementById("finRptMonth")?.addEventListener("change", loadReport);
+  document.getElementById("finRptExportBtn")?.addEventListener("click", () => exportFinanceReportCsv(lastReportRows));
+  document.getElementById("finRptPrintBtn")?.addEventListener("click", printFinanceReport);
+  loadReport();
+}
+
+function exportFinanceReportCsv(rows = []) {
+  if (!rows.length) { showToast("No report data to export.", "error"); return; }
+  const header = ["Period","Income","Company Expenses","Project Expenses","Total Expenses","Collections","Net"];
+  const csv = [
+    header.join(","),
+    ...rows.map(row => [
+      row.month_label,
+      row.income,
+      row.company_expenses,
+      row.project_expenses,
+      row.total_expenses,
+      row.collections,
+      row.net
+    ].map(value => `"${String(value ?? "").replace(/"/g, '""')}"`).join(","))
+  ].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const year = document.getElementById("finRptYear")?.value || new Date().getFullYear();
+  const month = document.getElementById("finRptMonth")?.value || "full-year";
+  a.href = url;
+  a.download = `Financial_Report_${year}_${month}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast("Financial report exported.", "success");
+}
+
+function printFinanceReport() {
+  const table = document.getElementById("finReportTable");
+  if (!table) { showToast("No report data to print.", "error"); return; }
+  const period = document.getElementById("finRptPeriodLabel")?.textContent || "Financial Report";
+  const win = window.open("", "_blank");
+  win.document.write(`<!DOCTYPE html><html><head><title>${period}</title><style>
+    body{font-family:Segoe UI,Arial,sans-serif;color:#1e293b;padding:32px;}
+    h1{margin:0 0 4px;color:#1e3a6e;font-size:24px;}
+    p{margin:0 0 20px;color:#64748b;}
+    table{width:100%;border-collapse:collapse;font-size:12.5px;}
+    th{background:#1e3a6e;color:#fff;padding:10px;text-align:right;}
+    th:first-child,td:first-child{text-align:left;}
+    td{padding:10px;border-bottom:1px solid #e2e8f0;text-align:right;}
+    tr:nth-child(even){background:#f8fafc;}
+  </style></head><body><h1>Financial Report</h1><p>${period}</p>${table.outerHTML}</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 300);
 }
 
 /* ================= DASHBOARD ================= */
@@ -5479,11 +6450,26 @@ async function loadProblematicSites() {
     const val = this.value;
     if (!val) return;
     probCurrentRegion = val;
+    localStorage.setItem(`selectedRegion_problematicSites_${user?.id || 'guest'}`, val);
     document.getElementById("probRegionTitle").textContent = val + " — Problematic Sites";
     document.getElementById("probRegionView").classList.add("hidden");
     document.getElementById("probTableView").classList.remove("hidden");
     fetchProbData(val);
   });
+
+  // Restore saved region (per user), fallback to first; only if none already active
+  if (probRegionsList.length > 0 && !probCurrentRegion) {
+    const saved       = localStorage.getItem(`selectedRegion_problematicSites_${user?.id || 'guest'}`);
+    const names       = probRegionsList.map(r => r.region_name);
+    const regionToUse = (saved && names.includes(saved)) ? saved : probRegionsList[0].region_name;
+    const probSel     = document.getElementById("probRegionSelect");
+    if (probSel) probSel.value = regionToUse;
+    probCurrentRegion = regionToUse;
+    document.getElementById("probRegionTitle").textContent = regionToUse + " — Problematic Sites";
+    document.getElementById("probRegionView").classList.add("hidden");
+    document.getElementById("probTableView").classList.remove("hidden");
+    fetchProbData(regionToUse);
+  }
 
 
 
@@ -6826,7 +7812,7 @@ function renderTkList() {
     const age = t.created_at ? timeAgo(new Date(t.created_at)) : "";
     return `
       <div class="tk-row">
-        <div class="tk-row-main">
+        <div class="tk-row-main tk-ticket-open" data-id="${t.id}" role="button" tabindex="0" aria-label="View ticket ${escHtml(t.subject || `#${t.id}`)}">
           <div class="tk-row-subject">${escHtml(t.subject)}</div>
           <div class="tk-row-meta">
             <span class="tk-id">#${t.id}</span>
@@ -6837,18 +7823,23 @@ function renderTkList() {
           </div>
         </div>
         <div class="tk-row-right">
-          <button class="row-action-btn view-btn tk-action-btn" data-id="${t.id}" title="View Details"><i class="ri-eye-line"></i></button>
           <div class="tk-avatar">${assignee}</div>
           <span class="tk-status-badge ${statusClass}">${escHtml(t.status)}</span>
         </div>
       </div>
     `;
   }).join("");
-  list.querySelectorAll(".tk-action-btn.view-btn").forEach(btn => {
-    btn.addEventListener("click", e => {
-      e.stopPropagation();
-      const t = ticketData.find(x => String(x.id) === btn.dataset.id);
+  list.querySelectorAll(".tk-ticket-open").forEach(el => {
+    const openTicket = () => {
+      const t = ticketData.find(x => String(x.id) === el.dataset.id);
       if (t) openTkViewModal(t);
+    };
+    el.addEventListener("click", openTicket);
+    el.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openTicket();
+      }
     });
   });
 }
@@ -6898,9 +7889,21 @@ let lettersFilterType     = "all";
 let lettersFilterUploader = "";
 let lettersFilterModified = "all";
 let lettersClipboard      = null;
+let lettersPreviewItems   = [];
+let lettersPreviewIndex   = -1;
+let lettersPreviewKeydown = null;
 
 function lettersCurrentFolder() { return lettersFolderStack.length ? lettersFolderStack[lettersFolderStack.length - 1] : null; }
 function lettersCurrentFolderId() { const f = lettersCurrentFolder(); return f ? f.id : null; }
+function lettersModuleScope() { return roleKey === "finance" ? "finance" : "noc"; }
+function lettersApiUrl(path, params = {}) {
+  const search = new URLSearchParams();
+  search.set("module", lettersModuleScope());
+  Object.entries(params || {}).forEach(([key, val]) => {
+    if (val !== undefined && val !== null && val !== "") search.set(key, val);
+  });
+  return `${path}${path.includes("?") ? "&" : "?"}${search.toString()}`;
+}
 
 function loadLetters() {
   lettersFolderStack    = [];
@@ -6931,6 +7934,7 @@ function loadLetters() {
           <div class="letters-breadcrumb" id="lettersBreadcrumb"></div>
           <div class="letters-main-actions">
             <button class="tool-btn letters-paste-btn hidden" id="lettersPasteBtn"><i class="ri-clipboard-line"></i> Paste</button>
+            <button class="tool-btn" id="lettersViewDownloadsBtn"><i class="ri-download-cloud-2-line"></i> View Downloads</button>
             <button class="tool-btn apply-btn" id="lettersNewBtn"><i class="ri-add-line"></i> New</button>
           </div>
         </div>
@@ -7013,7 +8017,13 @@ function loadLetters() {
           <div class="add-fields-grid" style="grid-template-columns:1fr;">
             <div class="add-field-item">
               <label class="add-field-label"><i class="ri-upload-line"></i> Choose File</label>
-              <input id="newFileInput" type="file" class="add-field-input" accept=".pdf,.docx,.xlsx,.doc,.xls,.png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mov,.avi,.mkv">
+              <label class="letters-upload-drop" id="lettersUploadDrop" for="newFileInput">
+                <i class="ri-upload-cloud-2-line"></i>
+                <strong>Drop files here or click to browse</strong>
+                <span>Upload multiple PDF, Word, Excel, image, archive, or video files</span>
+              </label>
+              <input id="newFileInput" type="file" class="add-field-input letters-upload-input" multiple accept=".pdf,.docx,.xlsx,.doc,.xls,.png,.jpg,.jpeg,.gif,.webp,.zip,.rar,.mp4,.webm,.mov,.avi,.mkv">
+              <div class="letters-upload-queue" id="lettersUploadQueue"></div>
             </div>
             <div class="add-field-item">
               <label class="add-field-label"><i class="ri-user-line"></i> Uploader Name</label>
@@ -7046,7 +8056,7 @@ function loadLetters() {
       </div>
     </div>
 
-    <!-- Preview Modal -->
+    <!-- File Preview Modal -->
     <div id="lettersPreviewModal" class="modal-overlay hidden">
       <div class="letters-preview-box">
         <div class="letters-preview-header">
@@ -7055,6 +8065,8 @@ function loadLetters() {
             <span id="lettersPreviewName">Document</span>
           </div>
           <div class="letters-preview-header-actions">
+            <button class="letters-preview-nav-btn" id="lettersPreviewPrev" title="Previous file" aria-label="Previous file"><i class="ri-arrow-left-s-line"></i></button>
+            <button class="letters-preview-nav-btn" id="lettersPreviewNext" title="Next file" aria-label="Next file"><i class="ri-arrow-right-s-line"></i></button>
             <a class="tool-btn" id="lettersPreviewDownload" target="_blank" title="Download">
               <i class="ri-download-line"></i> Download
             </a>
@@ -7080,29 +8092,34 @@ function loadLetters() {
       </div>
     </div>
 
-    <!-- ── Download History ── -->
-    <div class="dl-history-section">
-      <div class="dl-history-header">
-        <div class="dl-history-title"><i class="ri-download-2-line"></i> Download History</div>
-        <div class="dl-history-search-wrap">
-          <i class="ri-search-line"></i>
-          <input type="text" id="dlHistorySearch" placeholder="Search downloads…" autocomplete="off">
+    <!-- ── Download History Modal ── -->
+    <div class="modal-overlay hidden" id="dlHistoryModal">
+      <div class="dl-history-modal-box">
+        <div class="dl-history-modal-header">
+          <div class="dl-history-modal-title"><i class="ri-download-2-line"></i> Download History<span id="dlHistoryModalFileName"></span></div>
+          <div class="dl-history-modal-search">
+            <div class="dl-history-search-wrap">
+              <i class="ri-search-line"></i>
+              <input type="text" id="dlHistorySearch" placeholder="Search downloads…" autocomplete="off">
+            </div>
+          </div>
+          <button class="modal-close-btn" id="dlHistoryModalClose"><i class="ri-close-line"></i></button>
         </div>
-      </div>
-      <div class="dl-history-table-wrap">
-        <table class="dl-history-table">
-          <thead>
-            <tr>
-              <th>File Name</th>
-              <th>Downloaded By</th>
-              <th>Date</th>
-              <th>Time</th>
-            </tr>
-          </thead>
-          <tbody id="dlHistoryBody">
-            <tr><td colspan="4" class="dl-history-empty"><i class="ri-loader-4-line spin"></i> Loading…</td></tr>
-          </tbody>
-        </table>
+        <div class="dl-history-table-wrap">
+          <table class="dl-history-table">
+            <thead>
+              <tr>
+                <th>File Name</th>
+                <th>Downloaded By</th>
+                <th>Date</th>
+                <th>Time</th>
+              </tr>
+            </thead>
+            <tbody id="dlHistoryBody">
+              <tr><td colspan="4" class="dl-history-empty"><i class="ri-loader-4-line spin"></i> Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   `;
@@ -7116,14 +8133,23 @@ function loadLetters() {
     openLettersNewChoiceMenu(document.getElementById("lettersNewBtn"));
   });
 
+  document.getElementById("lettersViewDownloadsBtn")?.addEventListener("click", () => {
+    openDownloadHistoryModal();
+  });
+
   fetchLettersRecent();
   fetchLettersContent();
   bindLettersFilterChips();
   updateLettersClearBtn();
   bindLettersPasteBtn();
 
-  // Download history
-  fetchDownloadHistory();
+  // Download history modal
+  document.getElementById('dlHistoryModalClose')?.addEventListener('click', () => {
+    document.getElementById('dlHistoryModal').classList.add('hidden');
+  });
+  document.getElementById('dlHistoryModal')?.addEventListener('click', function(e) {
+    if (e.target === this) this.classList.add('hidden');
+  });
   document.getElementById('dlHistorySearch')?.addEventListener('input', function () {
     renderDownloadHistory(this.value.trim());
   });
@@ -7132,8 +8158,32 @@ function loadLetters() {
 /* ── Download History ── */
 let dlHistoryAll = [];
 
+function openDownloadHistoryModal(fileId, fileName) {
+  const modal = document.getElementById('dlHistoryModal');
+  if (!modal) return;
+  const fileNameEl = document.getElementById('dlHistoryModalFileName');
+  if (fileNameEl) fileNameEl.textContent = fileName ? ` — ${fileName}` : '';
+  const searchInput = document.getElementById('dlHistorySearch');
+  if (searchInput) searchInput.value = '';
+  modal.classList.remove('hidden');
+
+  if (fileId) {
+    // Filter history for this specific file
+    fetch(lettersApiUrl('/api/letters/download-history'))
+      .then(r => r.ok ? r.json() : [])
+      .then(rows => {
+        dlHistoryAll = (rows || []).filter(r => String(r.file_id) === String(fileId));
+        renderDownloadHistory('');
+      })
+      .catch(() => { dlHistoryAll = []; renderDownloadHistory(''); });
+  } else {
+    fetchDownloadHistory();
+  }
+}
+
+
 function fetchDownloadHistory() {
-  fetch('/api/letters/download-history')
+  fetch(lettersApiUrl('/api/letters/download-history'))
     .then(r => r.ok ? r.json() : [])
     .then(rows => {
       dlHistoryAll = rows || [];
@@ -7176,10 +8226,10 @@ function renderDownloadHistory(query) {
 function logDownloadHistory(fileId, fileName) {
   const u = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
   const downloadedBy = u.full_name || u.email || 'Unknown';
-  fetch('/api/letters/download-history', {
+  fetch(lettersApiUrl('/api/letters/download-history'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_id: fileId, file_name: fileName, downloaded_by: downloadedBy })
+    body: JSON.stringify({ file_id: fileId, file_name: fileName, downloaded_by: downloadedBy, module: lettersModuleScope() })
   }).catch(() => {});
 }
 
@@ -7318,7 +8368,7 @@ function applyLettersFileFilters(files) {
 
 async function fetchLettersRecent() {
   try {
-    const res  = await fetch("/api/letters/files/recent");
+    const res  = await fetch(lettersApiUrl("/api/letters/files/recent"));
     const data = await res.json();
     renderLettersRecent(data);
   } catch { renderLettersRecent([]); }
@@ -7332,14 +8382,13 @@ async function fetchLettersContent() {
   const fid = lettersCurrentFolderId();
   try {
     if (fid === null) {
-      const res  = await fetch("/api/letters/folders");
+      const res  = await fetch(lettersApiUrl("/api/letters/folders"));
       const data = await res.json();
       renderLettersFolders(data, null);
     } else {
-      const q = lettersSearchQuery ? `?q=${encodeURIComponent(lettersSearchQuery)}` : "";
       const [subfoldersRes, filesRes] = await Promise.all([
-        fetch(`/api/letters/folders?parent_id=${fid}`),
-        fetch(`/api/letters/folders/${fid}/files${q}`)
+        fetch(lettersApiUrl("/api/letters/folders", { parent_id: fid })),
+        fetch(lettersApiUrl(`/api/letters/folders/${fid}/files`, { q: lettersSearchQuery }))
       ]);
       const subfolders = await subfoldersRes.json();
       const files      = await filesRes.json();
@@ -7380,10 +8429,10 @@ function renderLettersRecent(files) {
   if (!list) return;
   if (!files.length) { list.innerHTML = `<div class="letters-empty-recent">No files yet</div>`; return; }
   list.innerHTML = files.map(f => {
-    const fi = getLettersFileIcon(f.file_type);
+    const fi = getLettersFileIcon(f.file_type, f.file_name);
     return `
       <div class="letters-recent-item" title="${f.file_name}">
-        <i class="${fi.icon}" style="color:${fi.color};font-size:18px;flex-shrink:0;"></i>
+        ${getLettersThumbHtml(f, fi, "recent")}
         <span class="letters-recent-name">${f.file_name}</span>
       </div>
     `;
@@ -7441,21 +8490,22 @@ function renderLettersFolderContents(subfolders, files, parentId) {
     html += `<div class="letters-folders-grid">${buildFolderCardsHTML(filteredFolders)}</div>`;
   }
   const filteredFiles = applyLettersFileFilters(files);
+  lettersPreviewItems = filteredFiles;
   populateUploaderChip(files);
   if (filteredFiles.length) {
     html += `<div class="letters-section-label" style="margin-top:${filteredFolders.length ? "24px" : "0"}"><i class="ri-file-line"></i> Files</div>`;
     html += `<div class="letters-files-list">${filteredFiles.map(f => {
-      const fi   = getLettersFileIcon(f.file_type);
+      const fi   = getLettersFileIcon(f.file_type, f.file_name);
       const size = formatFileSize(f.file_size);
       const date = f.created_at ? new Date(f.created_at).toLocaleDateString() : "";
       return `
-        <div class="letters-file-row" data-id="${f.id}">
-          <i class="${fi.icon}" style="color:${fi.color};font-size:24px;flex-shrink:0;"></i>
+        <div class="letters-file-row" data-id="${f.id}" data-name="${escHtml(f.file_name)}" data-filetype="${escHtml(f.file_type || '')}" title="Double-click to open">
+          ${getLettersThumbHtml(f, fi, "row")}
           <div class="letters-file-info">
-            <div class="letters-file-name">${f.file_name}</div>
+            <div class="letters-file-name">${escHtml(f.file_name)}</div>
             <div class="letters-file-meta">${[f.uploader_name, size, date].filter(Boolean).join(" · ")}</div>
           </div>
-          <button class="letters-kebab" data-type="file" data-id="${f.id}" data-name="${f.file_name}" data-filetype="${f.file_type}"><i class="ri-more-2-fill"></i></button>
+          <button class="letters-kebab" data-type="file" data-id="${f.id}" data-name="${escHtml(f.file_name)}" data-filetype="${escHtml(f.file_type || '')}"><i class="ri-more-2-fill"></i></button>
         </div>
       `;
     }).join("")}</div>`;
@@ -7465,16 +8515,32 @@ function renderLettersFolderContents(subfolders, files, parentId) {
   }
   content.innerHTML = html;
   bindFolderCardClicks(content);
+  bindLettersFileRows(content);
   bindLettersKebabs(content);
 }
 
-function getLettersFileIcon(type) {
+function getLettersFileExt(fileName = "") {
+  return String(fileName || "").split(".").pop().toLowerCase();
+}
+
+function getLettersFileIcon(type, fileName = "") {
   const t = (type || "").toLowerCase();
-  if (t.includes("pdf"))                              return { icon: "ri-file-pdf-2-fill",   color: "#e74c3c" };
-  if (t.includes("sheet") || t.includes("xls"))      return { icon: "ri-file-excel-2-fill", color: "#27ae60" };
-  if (t.includes("word") || t.includes("doc"))       return { icon: "ri-file-word-2-fill",  color: "#2f4b85" };
-  if (["mp4","webm","mov","avi","mkv","video"].includes(t)) return { icon: "ri-video-fill", color: "#8b5cf6" };
-  return { icon: "ri-file-fill", color: "#6b7280" };
+  const e = getLettersFileExt(fileName);
+  if (t.includes("pdf") || e === "pdf") return { icon: "ri-file-pdf-2-fill", color: "#dc2626", kind: "pdf" };
+  if (["doc","docx","word"].includes(t) || ["doc","docx"].includes(e) || t.includes("word")) return { icon: "ri-file-word-2-fill", color: "#2563eb", kind: "word" };
+  if (["xls","xlsx","excel"].includes(t) || ["xls","xlsx"].includes(e) || t.includes("sheet")) return { icon: "ri-file-excel-2-fill", color: "#16a34a", kind: "excel" };
+  if (["png","jpg","jpeg","gif","webp","image"].includes(t) || ["png","jpg","jpeg","gif","webp"].includes(e)) return { icon: "ri-image-fill", color: "#f59e0b", kind: "image" };
+  if (["zip","rar","archive"].includes(t) || ["zip","rar"].includes(e)) return { icon: "ri-file-zip-fill", color: "#a855f7", kind: "archive" };
+  if (["mp4","webm","mov","avi","mkv","video"].includes(t) || ["mp4","webm","mov","avi","mkv"].includes(e)) return { icon: "ri-video-fill", color: "#8b5cf6", kind: "video" };
+  return { icon: "ri-file-fill", color: "#6b7280", kind: "unknown" };
+}
+
+function getLettersThumbHtml(file, fi, variant = "row") {
+  const cls = variant === "recent" ? "letters-file-thumb recent" : "letters-file-thumb";
+  if (fi.kind === "image" && file?.id) {
+    return `<span class="${cls} image"><img src="${lettersApiUrl(`/api/letters/files/${file.id}/preview`)}" alt=""></span>`;
+  }
+  return `<span class="${cls} ${fi.kind}"><i class="${fi.icon}" style="color:${fi.color};"></i></span>`;
 }
 
 function formatFileSize(bytes) {
@@ -7500,7 +8566,7 @@ async function openLettersPreview(id, name, type) {
   const icon  = document.getElementById("lettersPreviewIcon");
   const dl    = document.getElementById("lettersPreviewDownload");
   title.textContent = name;
-  dl.href = `/api/letters/files/${id}/download`;
+  dl.href = getLettersDownloadUrl(id);
   dl.onclick = () => logDownloadHistory(id, name);
   const fi = getLettersFileIcon(type);
   icon.className = fi.icon;
@@ -7512,7 +8578,7 @@ async function openLettersPreview(id, name, type) {
   modal.onclick = e => { if (e.target === modal) close(); };
   const t   = (type || "").toLowerCase();
   const ext = name.split(".").pop().toLowerCase();
-  const previewUrl = `/api/letters/files/${id}/preview`;
+  const previewUrl = lettersApiUrl(`/api/letters/files/${id}/preview`);
   const isPdf   = t === "pdf"  || ext === "pdf";
   const isWord  = ["word","doc","docx"].includes(t) || ["doc","docx"].includes(ext);
   const isExcel = ["excel","xls","xlsx"].includes(t) || ["xls","xlsx"].includes(ext);
@@ -7582,11 +8648,154 @@ function showLettersPreviewFallback(body, id, msg) {
     <div class="letters-preview-fallback">
       <i class="ri-file-line"></i>
       <p>${msg || "Preview is not available for this file type."}</p>
-      <a class="tool-btn apply-btn" href="/api/letters/files/${id}/download" target="_blank" onclick="logDownloadHistory(${id}, '${(name||'').replace(/'/g,"\\'")}')">
+      <a class="tool-btn apply-btn" href="${getLettersDownloadUrl(id)}" target="_blank" onclick="logDownloadHistory(${id}, '${(name||'').replace(/'/g,"\\'")}')">
         <i class="ri-download-line"></i> Download to view
       </a>
     </div>
   `;
+}
+
+function getLettersDownloadUrl(id) {
+  const u = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  const downloadedBy = u.full_name || u.email || 'Unknown';
+  return lettersApiUrl(`/api/letters/files/${id}/download`, { user: downloadedBy });
+}
+
+function closeLettersDrivePreview() {
+  const modal = document.getElementById("lettersPreviewModal");
+  const body = document.getElementById("lettersPreviewBody");
+  modal?.classList.add("hidden");
+  if (body) body.innerHTML = "";
+  document.body.classList.remove("letters-preview-open");
+  if (lettersPreviewKeydown) {
+    document.removeEventListener("keydown", lettersPreviewKeydown);
+    lettersPreviewKeydown = null;
+  }
+}
+
+function openLettersDrivePreviewAt(index) {
+  if (index < 0 || index >= lettersPreviewItems.length) return;
+  const file = lettersPreviewItems[index];
+  openLettersDrivePreview(file.id, file.file_name, file.file_type);
+}
+
+async function openLettersDrivePreview(id, name, type) {
+  const modal = document.getElementById("lettersPreviewModal");
+  const body  = document.getElementById("lettersPreviewBody");
+  const title = document.getElementById("lettersPreviewName");
+  const icon  = document.getElementById("lettersPreviewIcon");
+  const dl    = document.getElementById("lettersPreviewDownload");
+  const prev  = document.getElementById("lettersPreviewPrev");
+  const next  = document.getElementById("lettersPreviewNext");
+  if (!modal || !body || !title || !icon || !dl) return;
+
+  const index = lettersPreviewItems.findIndex(f => String(f.id) === String(id));
+  if (index >= 0) lettersPreviewIndex = index;
+
+  const fi = getLettersFileIcon(type);
+  const ext = String(name || "").split(".").pop().toLowerCase();
+  const t = String(type || "").toLowerCase();
+  const previewUrl = lettersApiUrl(`/api/letters/files/${id}/preview`);
+  const isPdf = t === "pdf" || ext === "pdf";
+  const isImg = ["image","jpg","jpeg","png","gif","webp"].includes(t) || ["jpg","jpeg","png","gif","webp"].includes(ext);
+  const isVideo = ["video","mp4","webm","mov","avi","mkv"].includes(t) || ["mp4","webm","mov","avi","mkv"].includes(ext);
+  const isWord = ["word","docx"].includes(t) || ext === "docx";
+  const isExcel = ["excel","xls","xlsx"].includes(t) || ["xls","xlsx"].includes(ext);
+
+  title.textContent = name || "File";
+  icon.className = fi.icon;
+  icon.style.color = fi.color;
+  dl.href = getLettersDownloadUrl(id);
+  dl.onclick = null;
+  body.innerHTML = `<div class="letters-preview-loading"><i class="ri-loader-4-line spin"></i><p>Loading file...</p></div>`;
+  modal.classList.remove("hidden");
+  document.body.classList.add("letters-preview-open");
+
+  const goPrev = () => openLettersDrivePreviewAt(lettersPreviewIndex - 1);
+  const goNext = () => openLettersDrivePreviewAt(lettersPreviewIndex + 1);
+  document.getElementById("lettersPreviewClose").onclick = closeLettersDrivePreview;
+  if (prev) {
+    prev.onclick = goPrev;
+    prev.disabled = lettersPreviewIndex <= 0;
+  }
+  if (next) {
+    next.onclick = goNext;
+    next.disabled = lettersPreviewIndex < 0 || lettersPreviewIndex >= lettersPreviewItems.length - 1;
+  }
+  modal.onclick = e => { if (e.target === modal) closeLettersDrivePreview(); };
+  if (lettersPreviewKeydown) document.removeEventListener("keydown", lettersPreviewKeydown);
+  lettersPreviewKeydown = e => {
+    if (modal.classList.contains("hidden")) return;
+    if (e.key === "Escape") closeLettersDrivePreview();
+    if (e.key === "ArrowLeft") goPrev();
+    if (e.key === "ArrowRight") goNext();
+  };
+  document.addEventListener("keydown", lettersPreviewKeydown);
+
+  try {
+    if (isPdf) {
+      body.innerHTML = `<iframe src="${previewUrl}" class="letters-preview-frame" title="${escHtml(name)}"></iframe>`;
+    } else if (isImg) {
+      body.innerHTML = `<div class="letters-preview-img-wrap"><img src="${previewUrl}" class="letters-preview-img" alt="${escHtml(name)}"></div>`;
+    } else if (isVideo) {
+      body.innerHTML = `<div class="letters-preview-video-wrap"><video class="letters-preview-video" controls src="${previewUrl}"></video></div>`;
+    } else if (isWord) {
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js");
+      const ab = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); });
+      const result = await mammoth.convertToHtml({ arrayBuffer: ab });
+      body.innerHTML = `<div class="letters-preview-doc-shell"><div class="letters-preview-docx">${result.value || "<p><em>Document appears to be empty.</em></p>"}</div></div>`;
+    } else if (isExcel) {
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js");
+      const ab = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); });
+      const workbook = XLSX.read(ab, { type: "array" });
+      const tabs = workbook.SheetNames.length > 1
+        ? `<div class="letters-excel-tabs">${workbook.SheetNames.map((s, i) =>
+            `<button class="letters-excel-tab${i === 0 ? " active" : ""}" data-sheet="${escHtml(s)}">${escHtml(s)}</button>`
+          ).join("")}</div>` : "";
+      body.innerHTML = `<div class="letters-preview-sheet-shell">${tabs}<div class="letters-preview-excel" id="lettersExcelContent">${XLSX.utils.sheet_to_html(workbook.Sheets[workbook.SheetNames[0]], { editable: false })}</div></div>`;
+      styleExcelTable(body);
+      body.querySelectorAll(".letters-excel-tab").forEach(btn => {
+        btn.addEventListener("click", () => {
+          body.querySelectorAll(".letters-excel-tab").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          document.getElementById("lettersExcelContent").innerHTML =
+            XLSX.utils.sheet_to_html(workbook.Sheets[btn.dataset.sheet], { editable: false });
+          styleExcelTable(body);
+        });
+      });
+    } else {
+      showLettersDriveFallback(body, id, name, type);
+    }
+  } catch (err) {
+    console.error("File preview error:", err);
+    showLettersDriveFallback(body, id, name, type, "Preview failed. You can still download the file.");
+  }
+}
+
+function showLettersDriveFallback(body, id, name, type, message = "This file type cannot be previewed in the browser.") {
+  const fi = getLettersFileIcon(type);
+  body.innerHTML = `
+    <div class="letters-preview-fallback">
+      <i class="${fi.icon}" style="color:${fi.color};"></i>
+      <strong>${escHtml(name || "File")}</strong>
+      <p>${escHtml(message)}</p>
+      <a class="tool-btn apply-btn" href="${getLettersDownloadUrl(id)}" target="_blank">
+        <i class="ri-download-line"></i> Download to view
+      </a>
+    </div>`;
+}
+
+function bindLettersFileRows(container) {
+  container.querySelectorAll(".letters-file-row").forEach(row => {
+    row.addEventListener("dblclick", e => {
+      if (e.target.closest(".letters-kebab")) return;
+      openLettersDrivePreview(
+        parseInt(row.dataset.id, 10),
+        row.dataset.name || "",
+        row.dataset.filetype || ""
+      );
+    });
+  });
 }
 
 function openLettersNewChoiceMenu(anchorEl) {
@@ -7639,9 +8848,9 @@ async function lettersPasteFile() {
   const btn = document.getElementById("lettersPasteBtn");
   btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Pasting…';
   try {
-    const res    = await fetch(`/api/letters/files/${id}/copy`, {
+    const res    = await fetch(lettersApiUrl(`/api/letters/files/${id}/copy`), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target_folder_id: targetFolderId })
+      body: JSON.stringify({ target_folder_id: targetFolderId, module: lettersModuleScope() })
     });
     const result = await res.json();
     if (!res.ok) { showToast("Paste failed: " + (result.error || "Unknown"), "error"); return; }
@@ -7659,9 +8868,9 @@ async function lettersPasteFolder() {
   const btn = document.getElementById("lettersPasteBtn");
   btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Pasting…';
   try {
-    const res    = await fetch(`/api/letters/folders/${id}/copy`, {
+    const res    = await fetch(lettersApiUrl(`/api/letters/folders/${id}/copy`), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target_parent_id: targetParentId })
+      body: JSON.stringify({ target_parent_id: targetParentId, module: lettersModuleScope() })
     });
     const result = await res.json();
     if (!res.ok) { showToast("Paste failed: " + (result.error || "Unknown"), "error"); return; }
@@ -7676,9 +8885,9 @@ async function lettersDuplicateFile(id, name) {
   const folderId = lettersCurrentFolderId();
   if (!folderId) return;
   try {
-    const res    = await fetch(`/api/letters/files/${id}/copy`, {
+    const res    = await fetch(lettersApiUrl(`/api/letters/files/${id}/copy`), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target_folder_id: folderId })
+      body: JSON.stringify({ target_folder_id: folderId, module: lettersModuleScope() })
     });
     const result = await res.json();
     if (!res.ok) { showToast("Duplicate failed: " + (result.error || "Unknown"), "error"); return; }
@@ -7700,8 +8909,8 @@ function bindLettersKebabs(container) {
       menu.className = "letters-kebab-menu";
       if (type === "file") {
         menu.innerHTML = `
-          <div class="kebab-item km-preview"><i class="ri-eye-line"></i> Preview</div>
-          <div class="kebab-item km-download"><i class="ri-download-line"></i> Download</div>
+          <div class="kebab-item km-download"><i class="ri-download-line"></i> Download File</div>
+          <div class="kebab-item km-dl-history"><i class="ri-history-line"></i> View Download History</div>
           <div class="kebab-divider"></div>
           <div class="kebab-item km-copy"><i class="ri-file-copy-line"></i> Copy</div>
           <div class="kebab-item km-duplicate"><i class="ri-file-add-line"></i> Duplicate</div>
@@ -7709,8 +8918,8 @@ function bindLettersKebabs(container) {
           <div class="kebab-item km-rename"><i class="ri-edit-line"></i> Rename</div>
           <div class="kebab-item kebab-danger km-delete"><i class="ri-delete-bin-line"></i> Delete</div>
         `;
-        menu.querySelector(".km-preview").onclick   = () => { closeAllLettersKebabs(); openLettersPreview(id, name, ftype); };
-        menu.querySelector(".km-download").onclick  = () => { closeAllLettersKebabs(); logDownloadHistory(id, item.file_name || ''); window.location.href = `/api/letters/files/${id}/download`; };
+        menu.querySelector(".km-download").onclick  = () => { closeAllLettersKebabs(); logDownloadHistory(id, name); window.location.href = getLettersDownloadUrl(id); };
+        menu.querySelector(".km-dl-history").onclick = () => { closeAllLettersKebabs(); openDownloadHistoryModal(id, name); };
         menu.querySelector(".km-copy").onclick      = () => { closeAllLettersKebabs(); lettersCopyItem("file", id, name, lettersCurrentFolderId()); };
         menu.querySelector(".km-duplicate").onclick = () => { closeAllLettersKebabs(); lettersDuplicateFile(id, name); };
       } else {
@@ -7758,7 +8967,7 @@ function openLettersRename(type, id, currentName) {
     const btn = document.getElementById("lettersRenameConfirm");
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i>';
     try {
-      const url    = type === "folder" ? `/api/letters/folders/${id}` : `/api/letters/files/${id}`;
+      const url    = type === "folder" ? lettersApiUrl(`/api/letters/folders/${id}`) : lettersApiUrl(`/api/letters/files/${id}`);
       const body   = type === "folder" ? { folder_name: newName } : { file_name: newName };
       const res    = await fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const result = await res.json();
@@ -7785,7 +8994,7 @@ function openLettersDelete(type, id, name) {
     const btn = document.getElementById("lettersDeleteConfirm");
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i>';
     try {
-      const url = type === "folder" ? `/api/letters/folders/${id}` : `/api/letters/files/${id}`;
+      const url = type === "folder" ? lettersApiUrl(`/api/letters/folders/${id}`) : lettersApiUrl(`/api/letters/files/${id}`);
       const res = await fetch(url, { method: "DELETE" });
       const result = await res.json();
       if (!res.ok) { showToast("Delete failed: " + (result.error || "Unknown"), "error"); return; }
@@ -7814,7 +9023,7 @@ function openLettersFolderModal() {
     btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Creating…';
     try {
       const parent_id = lettersCurrentFolderId();
-      const res    = await fetch("/api/letters/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder_name: name, parent_id }) });
+      const res    = await fetch(lettersApiUrl("/api/letters/folders"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ folder_name: name, parent_id, module: lettersModuleScope() }) });
       const result = await res.json();
       if (!res.ok) { showToast("Failed: " + (result.error || "Unknown"), "error"); return; }
       close(); fetchLettersContent(); showToast("Folder created.", "success");
@@ -7848,13 +9057,125 @@ function openLettersFileModal() {
       formData.append("file", fileInput.files[0]);
       formData.append("uploader_name", uploaderName);
       formData.append("folder_id", lettersCurrentFolder().id);
-      const res    = await fetch("/api/letters/files", { method: "POST", body: formData });
+      formData.append("module", lettersModuleScope());
+      const res    = await fetch(lettersApiUrl("/api/letters/files"), { method: "POST", body: formData });
       const result = await res.json();
       if (!res.ok) { showToast("Upload failed: " + (result.error || "Unknown"), "error"); return; }
       close(); fetchLettersContent(); fetchLettersRecent(); showToast("File uploaded.", "success");
     } catch { showToast("Network error.", "error"); }
     finally { btn.disabled = false; btn.innerHTML = '<i class="ri-upload-line"></i> Upload'; }
   };
+}
+
+function openLettersFileModal() {
+  const modal = document.getElementById("lettersFileModal");
+  const fileInput = document.getElementById("newFileInput");
+  const drop = document.getElementById("lettersUploadDrop");
+  fileInput.value = "";
+  lettersUploadQueue = [];
+  document.getElementById("newFileUploader").value = user?.full_name || user?.email || "";
+  document.getElementById("lettersFileUploadHint").innerHTML = '<i class="ri-information-line"></i> PDF, Word, Excel, Images, Archives, Videos supported';
+  renderLettersUploadQueue();
+  modal.classList.remove("hidden");
+  const close = () => modal.classList.add("hidden");
+  document.getElementById("lettersFileModalClose").onclick = close;
+  document.getElementById("lettersFileModalCancel").onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  const setFiles = fileList => {
+    lettersUploadQueue = Array.from(fileList || []).map((file, index) => ({
+      id: `up_${Date.now()}_${index}`,
+      file,
+      progress: 0,
+      status: "Ready"
+    }));
+    document.getElementById("lettersFileUploadHint").innerHTML = lettersUploadQueue.length
+      ? `<i class="ri-stack-line"></i> ${lettersUploadQueue.length} file${lettersUploadQueue.length === 1 ? "" : "s"} selected`
+      : '<i class="ri-information-line"></i> PDF, Word, Excel, Images, Archives, Videos supported';
+    renderLettersUploadQueue();
+  };
+  fileInput.onchange = function () { setFiles(this.files); };
+  ["dragenter", "dragover"].forEach(evt => drop?.addEventListener(evt, e => {
+    e.preventDefault();
+    drop.classList.add("drag-over");
+  }));
+  ["dragleave", "drop"].forEach(evt => drop?.addEventListener(evt, e => {
+    e.preventDefault();
+    drop.classList.remove("drag-over");
+  }));
+  drop?.addEventListener("drop", e => setFiles(e.dataTransfer.files));
+  document.getElementById("lettersFileModalConfirm").onclick = async () => {
+    const uploaderName = document.getElementById("newFileUploader").value.trim();
+    if (!lettersUploadQueue.length) { showToast("Please choose at least one file.", "error"); return; }
+    const btn = document.getElementById("lettersFileModalConfirm");
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Uploading...';
+    let completed = 0;
+    try {
+      for (const item of lettersUploadQueue) {
+        updateLettersUploadQueueItem(item.id, { status: "Uploading", progress: 8 });
+        await uploadLetterFileWithProgress(item, uploaderName, progress => {
+          updateLettersUploadQueueItem(item.id, { status: "Uploading", progress });
+        });
+        completed += 1;
+        updateLettersUploadQueueItem(item.id, { status: "Completed", progress: 100 });
+      }
+      fetchLettersContent(); fetchLettersRecent();
+      showToast(`${completed} file${completed === 1 ? "" : "s"} uploaded.`, "success");
+      setTimeout(close, 450);
+    } catch (err) { showToast(err.message || "Upload failed.", "error"); }
+    finally { btn.disabled = false; btn.innerHTML = '<i class="ri-upload-line"></i> Upload'; }
+  };
+}
+
+function renderLettersUploadQueue() {
+  const wrap = document.getElementById("lettersUploadQueue");
+  if (!wrap) return;
+  if (!lettersUploadQueue.length) { wrap.innerHTML = ""; return; }
+  wrap.innerHTML = lettersUploadQueue.map(item => {
+    const fi = getLettersFileIcon("", item.file.name);
+    return `
+      <div class="letters-upload-item" data-upload-id="${item.id}">
+        <span class="letters-file-thumb ${fi.kind}"><i class="${fi.icon}" style="color:${fi.color};"></i></span>
+        <div class="letters-upload-info">
+          <div class="letters-upload-name">${escHtml(item.file.name)}</div>
+          <div class="letters-upload-status">${escHtml(item.status)} · ${formatFileSize(item.file.size)}</div>
+          <div class="letters-upload-track"><span style="width:${Math.max(0, Math.min(100, item.progress))}%"></span></div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function updateLettersUploadQueueItem(id, patch) {
+  lettersUploadQueue = lettersUploadQueue.map(item => item.id === id ? { ...item, ...patch } : item);
+  renderLettersUploadQueue();
+}
+
+function uploadLetterFileWithProgress(item, uploaderName, onProgress) {
+  return new Promise((resolve, reject) => {
+    const formData = new FormData();
+    formData.append("file", item.file);
+    formData.append("uploader_name", uploaderName);
+    formData.append("folder_id", lettersCurrentFolder().id);
+    formData.append("module", lettersModuleScope());
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", lettersApiUrl("/api/letters/files"));
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) onProgress(Math.max(8, Math.round((e.loaded / e.total) * 92)));
+    };
+    xhr.onload = () => {
+      let result = {};
+      try { result = JSON.parse(xhr.responseText || "{}"); } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(result);
+      else {
+        updateLettersUploadQueueItem(item.id, { status: "Failed", progress: 100 });
+        reject(new Error(result.error || "Upload failed"));
+      }
+    };
+    xhr.onerror = () => {
+      updateLettersUploadQueueItem(item.id, { status: "Failed", progress: 100 });
+      reject(new Error("Network error"));
+    };
+    xhr.send(formData);
+  });
 }
 
 /* ================= COUNTERS ================= */
@@ -7933,6 +9254,15 @@ function loadSettings() {
             <div class="stg-navitem-text">
               <span class="stg-navitem-label">Inbox</span>
               <span class="stg-navitem-sub">Messages &amp; Requests</span>
+            </div>
+            <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
+          </button>
+
+          <button class="stg-navitem" data-tab="myrequests">
+            <div class="stg-navitem-icon"><i class="ri-file-list-3-line"></i></div>
+            <div class="stg-navitem-text">
+              <span class="stg-navitem-label">My Requests</span>
+              <span class="stg-navitem-sub">Track your submissions</span>
             </div>
             <i class="ri-arrow-right-s-line stg-navitem-arrow"></i>
           </button>
@@ -8197,6 +9527,18 @@ function loadSettings() {
                 </div>
               </div>
 
+              <div class="stg-panel" id="stg-tab-myrequests">
+                <div class="stg-card2">
+                  <div class="stg-card2-header">
+                    <div class="stg-card2-title"><i class="ri-file-list-3-line"></i> My Requests</div>
+                    <button class="stg-outline-btn" id="stgNewRequestBtn"><i class="ri-add-line"></i> New Request</button>
+                  </div>
+                  <div id="stgRequestsMount">
+                    <div class="stg-req-empty"><i class="ri-loader-4-line spin"></i><span>Loading…</span></div>
+                  </div>
+                </div>
+              </div>
+
         </div><!-- /stg-panels -->
       </div><!-- /stg-layout -->
     </div>
@@ -8282,8 +9624,17 @@ function loadSettings() {
         utFilter           = 'messages';
         utFolder           = 'inbox';
         utStatusFilter     = 'all';
-        utSearch           = '';
+        // utSearch and DOM input are cleared inside loadUnifiedInbox() itself
         loadUnifiedInbox();
+      } else {
+        // Clear search state whenever leaving the inbox tab
+        utSearch = '';
+        const si = document.getElementById('utSearchInput');
+        if (si) si.value = '';
+      }
+
+      if (this.dataset.tab === 'myrequests') {
+        loadMyRequests();
       }
 
       if (this.dataset.tab === 'messaging') {
@@ -9444,6 +10795,10 @@ function openLeaveModal(user) {
 
   // ── My Requests ─────────────────────────────────────────────────────────────
   // (Handled as a full-page via loadMyRequestsPage() — no panel wiring needed here)
+  document.getElementById('stgNewRequestBtn')?.addEventListener('click', () => {
+    // Trigger the existing Request action tile flow
+    document.getElementById('stgRequestBtn')?.click();
+  });
 
   loadStgMessagingData();
 
@@ -9459,7 +10814,6 @@ function openLeaveModal(user) {
 /* ── Update nav badge counts without re-rendering the whole shell ── */
 function _updateUtNavCounts() {
   const mount = document.getElementById('utInboxMount');
-  if (!mount) return;
 
   const msgThreads   = utThreads.filter(t => t.type === 'message');
   const unreadCount  = msgThreads.filter(t => !t.is_read && Number(t.recipient_id) === Number(user.id)).length;
@@ -9468,8 +10822,10 @@ function _updateUtNavCounts() {
   const pendingCount = utThreads.filter(t => t.type === 'request' && (t.status || '').toLowerCase() === 'pending').length;
   const draftsCount  = utDrafts.length;
   const inboxCount   = msgThreads.filter(t => Number(t.recipient_id) === Number(user.id)).length;
+  updateStgInboxUnreadBadge(unreadCount);
 
   const updateBtn = (folder, count, cls) => {
+    if (!mount) return;
     const btn = mount.querySelector(`.ut-nav-btn[data-folder="${folder}"]`);
     if (!btn) return;
     let badge = btn.querySelector('.ut-nav-count');
@@ -9489,9 +10845,42 @@ function _updateUtNavCounts() {
   updateBtn('requests', pendingCount, 'pending');
 }
 
+function updateStgInboxUnreadBadge(count) {
+  const inboxBtn = document.querySelector('.stg-navitem[data-tab="inbox"]');
+  if (!inboxBtn) return;
+  let badge = inboxBtn.querySelector('.stg-inbox-badge');
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'stg-inbox-badge';
+      inboxBtn.appendChild(badge);
+    }
+    badge.textContent = count > 99 ? '99+' : String(count);
+    inboxBtn.classList.add('has-unread');
+  } else {
+    badge?.remove();
+    inboxBtn.classList.remove('has-unread');
+  }
+}
+
+function resetUnifiedInboxSearchState() {
+  utSearch = '';
+  const input = document.getElementById('utSearchInput');
+  if (input) {
+    input.value = '';
+    input.defaultValue = '';
+    input.removeAttribute('value');
+  }
+}
+
 async function loadUnifiedInbox() {
   const mount = document.getElementById('utInboxMount');
   if (!mount) return;
+  startUtPresenceHeartbeat();
+
+  // Always reset search on every load — prevents stale ID pre-filling the input
+  // This runs before shellExists check so even partial re-renders start clean
+  resetUnifiedInboxSearchState();
 
   // Drafts folder is purely client-side — no fetch needed
   if (utFolder === 'drafts') {
@@ -9541,6 +10930,9 @@ async function loadUnifiedInbox() {
       renderUtThreadList();
       // Update nav counts without full re-render
       _updateUtNavCounts();
+      // Defense-in-depth: re-clear input after render in case anything re-filled it
+      resetUnifiedInboxSearchState();
+      requestAnimationFrame(resetUnifiedInboxSearchState);
     } else {
       renderUnifiedInbox();
     }
@@ -9561,21 +10953,22 @@ function renderUnifiedInbox() {
   if (utFolder !== 'requests') utFolder = 'inbox';
 
   mount.innerHTML = `
-    <div class="ut-shell">
+    <div class="ut-shell ut-telegram-shell ${utSelectedThread || utView === 'compose' ? 'ut-mobile-thread-open' : ''}">
 
       <!-- LEFT: Conversation List -->
       <section class="ut-thread-list-panel" id="utThreadListPanel">
         <div class="ut-chat-list-header">
-          <span class="ut-chat-list-title"><i class="ri-message-3-line"></i> Messages</span>
+          <span class="ut-chat-list-title"><i class="ri-message-3-line"></i> Chats</span>
           <div style="display:flex;gap:6px;align-items:center;">
-            <button class="ut-refresh-btn" id="utRefreshBtn" title="Refresh"><i class="ri-refresh-line"></i></button>
-            <button class="ut-new-chat-btn" id="utComposeBtn" title="New Message"><i class="ri-edit-line"></i></button>
+            <button class="ut-refresh-btn" id="utRefreshBtn" title="Refresh" aria-label="Refresh conversations"><i class="ri-refresh-line"></i></button>
+            <button class="ut-new-chat-btn ut-group-create-btn" id="utCreateGroupBtn" title="Create Group" aria-label="Create group chat"><i class="ri-group-line"></i></button>
+            <button class="ut-new-chat-btn" id="utComposeBtn" title="New Message" aria-label="Start a new message"><i class="ri-edit-line"></i></button>
           </div>
         </div>
         <div class="ut-search-row">
           <div class="ut-search-wrap">
             <i class="ri-search-line"></i>
-            <input type="text" id="utSearchInput" class="ut-search-input" placeholder="Search conversations…" value="${escHtml(utSearch)}">
+            <input type="text" id="utSearchInput" class="ut-search-input" placeholder="Search" value="">
           </div>
         </div>
         <div id="utThreadListBody"></div>
@@ -9586,8 +10979,8 @@ function renderUnifiedInbox() {
         <div id="utConversationBody">
           <div class="ut-empty-state">
             <i class="ri-chat-smile-3-line" style="font-size:52px;opacity:0.25;"></i>
-            <div style="font-weight:600;font-size:15px;">Your Messages</div>
-            <div style="font-size:13px;opacity:0.6;">Select a conversation or start a new one</div>
+            <div style="font-weight:600;font-size:15px;">Select a chat to start messaging</div>
+            <div style="font-size:13px;opacity:0.6;">Choose a conversation from the chat list</div>
             <button class="ut-action-btn primary" id="utEmptyComposeBtn" style="margin-top:8px;">
               <i class="ri-edit-line"></i> New Message
             </button>
@@ -9598,8 +10991,19 @@ function renderUnifiedInbox() {
     </div>
   `;
 
-  // Search
+  // Search — always start empty, never carry over previous value
   const searchInput = document.getElementById('utSearchInput');
+  if (searchInput) {
+    searchInput.setAttribute('autocomplete', 'off');
+    searchInput.setAttribute('autocorrect', 'off');
+    searchInput.setAttribute('autocapitalize', 'off');
+    searchInput.setAttribute('spellcheck', 'false');
+  }
+  resetUnifiedInboxSearchState();
+  requestAnimationFrame(resetUnifiedInboxSearchState);
+  setTimeout(resetUnifiedInboxSearchState, 0);
+  setTimeout(resetUnifiedInboxSearchState, 100);
+  setTimeout(resetUnifiedInboxSearchState, 300);
   let searchTimer;
   searchInput?.addEventListener('input', function() {
     clearTimeout(searchTimer);
@@ -9618,10 +11022,12 @@ function renderUnifiedInbox() {
   const openCompose = () => {
     utView = 'compose';
     stgReplyToMessage = null;
+    document.querySelector('.ut-shell')?.classList.add('ut-mobile-thread-open');
     renderUtConversationPane();
   };
   document.getElementById('utComposeBtn')?.addEventListener('click', openCompose);
   document.getElementById('utEmptyComposeBtn')?.addEventListener('click', openCompose);
+  document.getElementById('utCreateGroupBtn')?.addEventListener('click', openUtCreateGroupModal);
 
   renderUtThreadList();
 
@@ -9631,14 +11037,229 @@ function renderUnifiedInbox() {
   }
 }
 
+function parseUtRecipientIds(value) {
+  if (Array.isArray(value)) return value.map(Number).filter(Boolean);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(Number).filter(Boolean) : [];
+  } catch {
+    return String(value).split(',').map(Number).filter(Boolean);
+  }
+}
+
+function getUtGroupMembersPreview(thread) {
+  const ids = parseUtRecipientIds(thread?.recipient_ids);
+  const members = ids
+    .map(id => Number(id) === Number(user.id)
+      ? { id, full_name: 'You', email: '' }
+      : stgUsers.find(u => Number(u.id) === Number(id)))
+    .filter(Boolean);
+  if (!members.length) return '';
+  const names = members.map(u => u.full_name || u.email || 'User');
+  return `${members.length} members: ${names.slice(0, 3).join(', ')}${names.length > 3 ? ` +${names.length - 3}` : ''}`;
+}
+
+function getUtGroupAvatarHtml(thread, avatarBg, className = 'ut-conv-avatar') {
+  const photo = thread?.group_photo || thread?.raw?.group_photo || '';
+  if (photo) {
+    return `<div class="${className} ut-group-avatar ut-group-photo" style="background-image:url('${escHtml(photo)}');"></div>`;
+  }
+  return `<div class="${className} ut-group-avatar" style="background:${avatarBg};"><i class="ri-group-line"></i></div>`;
+}
+
+function closeUtCreateGroupModal() {
+  document.getElementById('utCreateGroupModal')?.remove();
+  utGroupPhotoDataUrl = '';
+  utPendingGroupMemberIds.clear();
+}
+
+function renderUtGroupMemberOptions(query = '') {
+  const list = document.getElementById('utGroupMemberList');
+  if (!list) return;
+  const q = query.trim().toLowerCase();
+  const users = stgUsers.filter(u => {
+    const text = `${u.full_name || ''} ${u.email || ''} ${u.role || ''}`.toLowerCase();
+    return !q || text.includes(q);
+  });
+  list.innerHTML = users.length ? users.map(u => `
+    <label class="ut-group-member-option">
+      <input type="checkbox" value="${u.id}" ${utPendingGroupMemberIds.has(Number(u.id)) ? 'checked' : ''}>
+      <span class="ut-group-member-avatar">${escHtml((u.full_name || u.email || 'U').charAt(0).toUpperCase())}</span>
+      <span class="ut-group-member-text">
+        <strong>${escHtml(u.full_name || u.email || 'User')}</strong>
+        <small>${escHtml(u.email || u.role || '')}</small>
+      </span>
+    </label>
+  `).join('') : `<div class="ut-group-member-empty">No users found.</div>`;
+}
+
+function openUtCreateGroupModal() {
+  closeUtCreateGroupModal();
+  utGroupPhotoDataUrl = '';
+  utPendingGroupMemberIds.clear();
+  const modal = document.createElement('div');
+  modal.id = 'utCreateGroupModal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="ut-group-modal">
+      <div class="ut-group-modal-header">
+        <div>
+          <h3><i class="ri-group-line"></i> Create Group</h3>
+          <p>Add at least two members to start a group chat.</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="utGroupCloseBtn" aria-label="Close"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="ut-group-modal-body">
+        <label class="ut-group-field">
+          <span>Group name</span>
+          <input type="text" id="utGroupNameInput" class="ut-group-input" placeholder="Group name" maxlength="80">
+        </label>
+        <label class="ut-group-field">
+          <span>Group photo/icon</span>
+          <input type="file" id="utGroupPhotoInput" class="ut-group-input" accept="image/*">
+          <small id="utGroupPhotoLabel">Optional. Image is shown as the group avatar.</small>
+        </label>
+        <label class="ut-group-field">
+          <span>Members</span>
+          <div class="ut-group-search-wrap">
+            <i class="ri-search-line"></i>
+            <input type="text" id="utGroupMemberSearch" placeholder="Search people">
+          </div>
+        </label>
+        <div class="ut-group-member-list" id="utGroupMemberList"></div>
+      </div>
+      <div class="ut-group-modal-footer">
+        <span id="utGroupMemberCount">0 selected</span>
+        <div>
+          <button type="button" class="tool-btn" id="utGroupCancelBtn">Cancel</button>
+          <button type="button" class="tool-btn apply-btn" id="utGroupCreateBtn"><i class="ri-check-line"></i> Create Group</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  renderUtGroupMemberOptions();
+
+  const updateCount = () => {
+    const label = document.getElementById('utGroupMemberCount');
+    if (label) label.textContent = `${utPendingGroupMemberIds.size} selected`;
+  };
+  modal.addEventListener('change', e => {
+    if (e.target?.matches('#utGroupMemberList input')) {
+      if (e.target.checked) utPendingGroupMemberIds.add(Number(e.target.value));
+      else utPendingGroupMemberIds.delete(Number(e.target.value));
+      updateCount();
+    }
+  });
+  document.getElementById('utGroupMemberSearch')?.addEventListener('input', e => {
+    renderUtGroupMemberOptions(e.target.value);
+    modal.querySelectorAll('#utGroupMemberList input').forEach(input => { input.checked = utPendingGroupMemberIds.has(Number(input.value)); });
+    updateCount();
+  });
+  document.getElementById('utGroupPhotoInput')?.addEventListener('change', e => {
+    const file = e.target.files?.[0];
+    if (!file) { utGroupPhotoDataUrl = ''; return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      utGroupPhotoDataUrl = String(reader.result || '');
+      const label = document.getElementById('utGroupPhotoLabel');
+      if (label) label.textContent = file.name;
+    };
+    reader.readAsDataURL(file);
+  });
+  document.getElementById('utGroupCloseBtn')?.addEventListener('click', closeUtCreateGroupModal);
+  document.getElementById('utGroupCancelBtn')?.addEventListener('click', closeUtCreateGroupModal);
+  modal.addEventListener('click', e => { if (e.target === modal) closeUtCreateGroupModal(); });
+  document.getElementById('utGroupCreateBtn')?.addEventListener('click', createUtGroupChat);
+  document.getElementById('utGroupNameInput')?.focus();
+}
+
+async function createUtGroupChat() {
+  const name = (document.getElementById('utGroupNameInput')?.value || '').trim();
+  const memberIds = Array.from(utPendingGroupMemberIds).map(Number).filter(Boolean);
+  const btn = document.getElementById('utGroupCreateBtn');
+  if (!name) { showToast('Group name is required.', 'error'); return; }
+  if (memberIds.length < 2) { showToast('Select at least 2 members.', 'error'); return; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Creating'; }
+  try {
+    let res = await fetch('/api/messages/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        creator_id: Number(user.id),
+        group_name: name,
+        member_ids: memberIds,
+        group_photo: utGroupPhotoDataUrl || null
+      })
+    });
+    let group = await res.json().catch(() => ({}));
+    if (res.status === 404) {
+      res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sender_id: Number(user.id),
+          recipient_id: Number(memberIds[0]),
+          recipient_ids: memberIds,
+          group_name: name,
+          group_photo: utGroupPhotoDataUrl || null,
+          subject: name,
+          body: '',
+          parent_message_id: null
+        })
+      });
+      group = await res.json().catch(() => ({}));
+    }
+    if (!res.ok) throw new Error(group.error || 'Failed to create group');
+    if (!group.group_id) throw new Error('Group was created but no group id was returned.');
+    const thread = {
+      thread_id: `grp_${group.group_id}`,
+      type: 'message',
+      title: group.group_name,
+      summary: '',
+      sender_id: Number(user.id),
+      sender_name: 'You',
+      recipient_id: memberIds[0],
+      recipient_name: '',
+      group_id: group.group_id,
+      group_name: group.group_name,
+      group_photo: group.group_photo || null,
+      recipient_ids: group.recipient_ids,
+      is_read: true,
+      created_at: group.created_at || new Date().toISOString(),
+      updated_at: group.created_at || new Date().toISOString(),
+      raw: group.raw || group
+    };
+    utThreads = [thread, ...utThreads.filter(t => String(t.thread_id) !== String(thread.thread_id))];
+    utSelectedThreadId = thread.thread_id;
+    utSelectedThread = {
+      ...thread,
+      participants: group.participants || [],
+      messages: [],
+      raw: group.raw || group
+    };
+    utView = 'thread';
+    closeUtCreateGroupModal();
+    document.querySelector('.ut-shell')?.classList.add('ut-mobile-thread-open');
+    renderUtThreadList();
+    renderUtConversationPane();
+    startUtRealtimePolling();
+    showToast('Group created.', 'success');
+    loadUnifiedInbox();
+  } catch (err) {
+    showToast(err.message || 'Failed to create group.', 'error');
+  } finally {
+    const createBtn = document.getElementById('utGroupCreateBtn');
+    if (createBtn) { createBtn.disabled = false; createBtn.innerHTML = '<i class="ri-check-line"></i> Create Group'; }
+  }
+}
+
 function renderUtThreadList() {
   const body = document.getElementById('utThreadListBody');
   if (!body) return;
 
-  body.classList.add('ut-fading');
   const _render = () => {
-    body.classList.remove('ut-fading');
-
     // Show ALL message threads (both sent and received) + requests — no folder separation
     let displayThreads = utThreads.filter(t => {
       // Only show messages (not requests) in the main conversation list
@@ -9658,6 +11279,26 @@ function renderUtThreadList() {
     // A "conversation" is all messages between current user and another person
     const convMap = new Map();
     for (const t of displayThreads) {
+      if (t.group_id) {
+        const key = `group_${t.group_id}`;
+        const existing = convMap.get(key);
+        const tTime = new Date(t.updated_at || t.created_at || 0).getTime();
+        const eTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
+        const isIncomingUnread = !t.is_read && Number(t.recipient_id) === Number(user.id);
+        const groupName = t.group_name || t.title || 'Group chat';
+        if (!existing || tTime > eTime) {
+          convMap.set(key, {
+            ...t,
+            _isGroup: true,
+            _partnerId: null,
+            _partnerName: groupName,
+            _unreadCount: (existing?._unreadCount || 0) + (isIncomingUnread ? 1 : 0)
+          });
+        } else if (isIncomingUnread) {
+          existing._unreadCount = (existing._unreadCount || 0) + 1;
+        }
+        continue;
+      }
       // Determine the OTHER person's id/name
       const isSender = Number(t.sender_id) === Number(user.id);
       const partnerId   = isSender ? t.recipient_id : t.sender_id;
@@ -9666,13 +11307,16 @@ function renderUtThreadList() {
       const existing = convMap.get(key);
       const tTime = new Date(t.updated_at || t.created_at || 0).getTime();
       const eTime = existing ? new Date(existing.updated_at || existing.created_at || 0).getTime() : 0;
+      const isIncomingUnread = !t.is_read && Number(t.recipient_id) === Number(user.id);
       if (!existing || tTime > eTime) {
-        convMap.set(key, { ...t, _partnerId: partnerId, _partnerName: partnerName });
-      } else {
-        // Count unread across all threads with this partner
-        if (!t.is_read && Number(t.recipient_id) === Number(user.id)) {
-          convMap.get(key)._unreadCount = (convMap.get(key)._unreadCount || 0) + 1;
-        }
+        convMap.set(key, {
+          ...t,
+          _partnerId: partnerId,
+          _partnerName: partnerName,
+          _unreadCount: (existing?._unreadCount || 0) + (isIncomingUnread ? 1 : 0)
+        });
+      } else if (isIncomingUnread) {
+        existing._unreadCount = (existing._unreadCount || 0) + 1;
       }
     }
     const conversations = [...convMap.values()].sort((a, b) =>
@@ -9690,29 +11334,36 @@ function renderUtThreadList() {
     }
 
     body.innerHTML = conversations.map(t => {
-      const isUnread  = !t.is_read && Number(t.recipient_id) === Number(user.id);
-      const unreadCnt = (t._unreadCount || 0) + (isUnread ? 1 : 0);
+      const unreadCnt = t._unreadCount || 0;
+      const isUnread  = unreadCnt > 0;
       const isActive  = t.thread_id === utSelectedThreadId;
       const timeText  = t.updated_at || t.created_at ? relativeTime(t.updated_at || t.created_at) : '';
       const name      = t._partnerName || 'Unknown';
       const initial   = name.charAt(0).toUpperCase();
+      const presence = t._isGroup ? {} : (utPresenceByUser[String(t._partnerId)] || {});
+      const onlineClass = presence.isOnline ? 'online' : 'offline';
       // Deterministic avatar color from name
       const colors    = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#f97316'];
       const colorIdx  = name.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length;
       const avatarBg  = colors[colorIdx];
 
-      const previewText = t.summary || '';
+      const previewText = t._isGroup && !t.summary ? 'No messages yet' : (t.summary || 'Attachment');
+      const memberPreview = t._isGroup ? getUtGroupMembersPreview(t) : '';
+      const isPinned = Boolean(t.pinned || t.is_pinned);
 
       return `
-        <div class="ut-thread-row ${isUnread ? 'unread' : ''} ${isActive ? 'active' : ''}" data-tid="${escHtml(t.thread_id)}">
-          <div class="ut-conv-avatar" style="background:${avatarBg};">${initial}</div>
+        <div class="ut-thread-row ${isUnread ? 'unread' : ''} ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''}" data-tid="${escHtml(t.thread_id)}">
+          <div class="ut-conv-avatar-wrap">
+            ${t._isGroup ? getUtGroupAvatarHtml(t, avatarBg) : `<div class="ut-conv-avatar" style="background:${avatarBg};">${initial}</div>`}
+            ${t._isGroup ? '' : `<span class="ut-status-presence-dot ${onlineClass}"></span>`}
+          </div>
           <div class="ut-thread-meta">
             <div class="ut-thread-title-row">
               <span class="ut-thread-title">${escHtml(name)}</span>
               <span class="ut-thread-time">${escHtml(timeText)}</span>
             </div>
             <div class="ut-thread-preview-row">
-              <span class="ut-thread-preview">${escHtml(previewText)}</span>
+              <span class="ut-thread-preview">${isPinned ? '<i class="ri-pushpin-2-fill"></i> ' : ''}${memberPreview ? `${escHtml(memberPreview)} · ` : ''}${escHtml(previewText)}</span>
               ${unreadCnt > 0 ? `<span class="ut-unread-badge">${unreadCnt}</span>` : ''}
             </div>
           </div>
@@ -9724,31 +11375,46 @@ function renderUtThreadList() {
         const tid = row.dataset.tid;
         utSelectedThreadId = tid;
         utView = 'thread';
+        document.querySelector('.ut-shell')?.classList.add('ut-mobile-thread-open');
 
         body.querySelectorAll('.ut-thread-row').forEach(r => r.classList.remove('active'));
         row.classList.add('active');
         row.classList.remove('unread');
 
         const convBody = document.getElementById('utConversationBody');
-        if (convBody) convBody.innerHTML = `<div class="ut-loading"><i class="ri-loader-4-line spin"></i> Loading…</div>`;
+        if (convBody) convBody.innerHTML = `
+          <div class="ut-chat-skeleton">
+            <div class="ut-skeleton-header">
+              <span></span><div><i></i><i></i></div>
+            </div>
+            <div class="ut-skeleton-bubble left"></div>
+            <div class="ut-skeleton-bubble left short"></div>
+            <div class="ut-skeleton-bubble right"></div>
+            <div class="ut-skeleton-bubble right short"></div>
+          </div>`;
 
         try {
           const res  = await fetch(`/api/users/${user.id}/threads/${encodeURIComponent(tid)}`);
           const data = await res.json();
           if (!res.ok) throw new Error(data?.error || 'Failed to load thread');
           utSelectedThread = data;
+          utSelectedThread.messages = (utSelectedThread.messages || []).map(normalizeUtRealtimeMessage);
 
           if (tid.startsWith('msg_')) {
-            const msgId = tid.replace('msg_', '');
-            fetch(`/api/messages/${msgId}/read`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: user.id, is_read: true })
-            }).catch(() => {});
-            utThreads = utThreads.map(t => t.thread_id === tid ? { ...t, is_read: true } : t);
+            await markUtConversationSeen(utSelectedThread);
+            const participantIds = new Set(
+              (utSelectedThread.messages || [])
+                .flatMap(msg => [String(msg.sender_id), String(msg.recipient_id)])
+                .filter(Boolean)
+            );
+            utThreads = utThreads.map(t => {
+              const sameConversation = participantIds.has(String(t.sender_id)) && participantIds.has(String(t.recipient_id));
+              return sameConversation ? { ...t, is_read: true } : t;
+            });
           }
 
           renderUtConversationPane();
+          startUtRealtimePolling();
         } catch (err) {
           if (convBody) convBody.innerHTML = `<div class="ut-empty-state"><i class="ri-error-warning-line"></i><div>${escHtml(err.message)}</div></div>`;
         }
@@ -9758,9 +11424,393 @@ function renderUtThreadList() {
   requestAnimationFrame(_render);
 }
 
-function renderUtConversationPane(draft = null) {
+function getUtMessageSenderId(message) {
+  return Number(message?.senderId ?? message?.sender_id);
+}
+
+function getUtMessageCreatedAt(message) {
+  return message?.createdAt || message?.created_at || new Date().toISOString();
+}
+
+function getUtAttachmentFromMessage(message) {
+  const name = message?.attachment?.name || message?.attachment_name;
+  const url = message?.attachment?.url || message?.attachment_path;
+  if (!name || !url) return null;
+  return {
+    id: `att_${message.id || Date.now()}_${String(name).replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    name,
+    type: message?.attachment?.type || message?.attachment_type || '',
+    size: message?.attachment?.size || message?.attachment_size || null,
+    url
+  };
+}
+
+function getUtAttachmentKind(attachment) {
+  const name = String(attachment?.name || '').toLowerCase();
+  const type = String(attachment?.type || '').toLowerCase();
+  if (type.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(name)) return 'image';
+  if (type === 'application/pdf' || /\.pdf$/i.test(name)) return 'pdf';
+  if (type.startsWith('text/') || /\.txt$/i.test(name)) return 'text';
+  if (/\.(doc|docx)$/i.test(name)) return 'word';
+  if (/\.(xls|xlsx)$/i.test(name)) return 'excel';
+  return 'file';
+}
+
+function formatUtAttachmentSize(size) {
+  const bytes = Number(size);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function registerUtAttachment(attachment) {
+  if (!attachment?.url) return '';
+  const id = attachment.id || `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  utAttachmentRegistry.set(id, { ...attachment, id });
+  return id;
+}
+
+function previewAttachment(attachment) {
+  if (!attachment?.url) return;
+  const kind = getUtAttachmentKind(attachment);
+  if (!['image', 'pdf', 'text'].includes(kind)) {
+    window.open(attachment.url, '_blank', 'noopener');
+    return;
+  }
+  document.getElementById('utAttachmentPreviewModal')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'utAttachmentPreviewModal';
+  modal.className = 'modal-overlay ut-attachment-preview-modal';
+  const previewBody = kind === 'image'
+    ? `<img class="ut-attachment-preview-img" src="${escHtml(attachment.url)}" alt="${escHtml(attachment.name)}">`
+    : `<iframe class="ut-attachment-preview-frame" src="${escHtml(attachment.url)}" title="${escHtml(attachment.name)}"></iframe>`;
+  modal.innerHTML = `
+    <div class="ut-attachment-preview-box">
+      <div class="ut-attachment-preview-header">
+        <div class="ut-attachment-preview-title">
+          <i class="${kind === 'image' ? 'ri-image-line' : 'ri-file-text-line'}"></i>
+          <span>${escHtml(attachment.name)}</span>
+        </div>
+        <div class="ut-attachment-preview-actions">
+          <button type="button" class="tool-btn" id="utAttachmentPreviewDownload"><i class="ri-download-2-line"></i> Download</button>
+          <button type="button" class="modal-close-btn" id="utAttachmentPreviewClose" aria-label="Close"><i class="ri-close-line"></i></button>
+        </div>
+      </div>
+      <div class="ut-attachment-preview-body">${previewBody}</div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  document.getElementById('utAttachmentPreviewClose')?.addEventListener('click', () => modal.remove());
+  document.getElementById('utAttachmentPreviewDownload')?.addEventListener('click', e => {
+    e.stopPropagation();
+    downloadAttachment(attachment);
+  });
+  modal.addEventListener('click', e => {
+    if (e.target === modal) modal.remove();
+  });
+}
+
+async function downloadAttachment(attachment) {
+  if (!attachment?.url) return;
+  const filename = attachment.name || 'attachment';
+  try {
+    const res = await fetch(attachment.url);
+    if (!res.ok) throw new Error('Download failed');
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch {
+    const a = document.createElement('a');
+    a.href = attachment.url;
+    a.download = filename;
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+}
+
+function getUtThreadPartner(thread) {
+  if (thread?.group_id || thread?.thread_id?.startsWith?.('grp_')) {
+    return {
+      id: null,
+      name: thread.group_name || thread.title || 'Group chat',
+      isGroup: true
+    };
+  }
+  const raw = thread?.raw || {};
+  const senderId = Number(raw.sender_id ?? thread?.sender_id);
+  const recipientId = Number(raw.recipient_id ?? thread?.recipient_id);
+  const currentUserId = Number(user.id);
+
+  if (senderId === currentUserId) {
+    return {
+      id: recipientId,
+      name: raw.recipient_name || raw.recipient_email || thread?.recipient_name || thread?.title || 'Conversation'
+    };
+  }
+
+  return {
+    id: senderId,
+    name: raw.sender_name || raw.sender_email || thread?.sender_name || thread?.title || 'Conversation'
+  };
+}
+
+function scrollUtMessagesToBottom(behavior = 'smooth') {
+  const area = document.getElementById('utMessagesArea');
+  if (area) area.scrollTo({ top: area.scrollHeight, behavior });
+}
+
+function getUtThreadPeerId(thread) {
+  if (thread?.group_id || thread?.thread_id?.startsWith?.('grp_')) return null;
+  const isSender = Number(thread?.sender_id) === Number(user.id);
+  return Number(isSender ? thread?.recipient_id : thread?.sender_id);
+}
+
+function buildUtGroupName(recipientIds = []) {
+  const names = recipientIds
+    .map(id => stgUsers.find(u => Number(u.id) === Number(id)))
+    .filter(Boolean)
+    .map(u => u.full_name || u.email || 'User');
+  return names.length > 1 ? names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '') : (names[0] || 'Chat');
+}
+
+function isUtConversationActiveForThread(thread) {
+  if (!utSelectedThread || utSelectedThread.type !== 'message') return false;
+  if (thread?.group_id || thread?.thread_id?.startsWith?.('grp_')) {
+    const activeGroupId = String(utSelectedThread.group_id || utSelectedThread.thread_id || '').replace(/^grp_/, '');
+    const nextGroupId = String(thread.group_id || thread.thread_id || '').replace(/^grp_/, '');
+    return activeGroupId === nextGroupId;
+  }
+  return Number(getUtThreadPartner(utSelectedThread).id) === getUtThreadPeerId(thread);
+}
+
+async function openUtConversationFromNotification(thread) {
+  if (!thread?.thread_id) return;
+  utSelectedThreadId = thread.thread_id;
+  utView = 'thread';
+  utFolder = 'inbox';
+  utFilter = 'messages';
+
+  if (!document.getElementById('utInboxMount') && typeof openPage === 'function') {
+    openPage('settings');
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+
+  const inboxBtn = document.querySelector('.stg-navitem[data-tab="inbox"]');
+  if (inboxBtn && !inboxBtn.classList.contains('active')) inboxBtn.click();
+  await new Promise(resolve => setTimeout(resolve, 120));
+
+  const mount = document.getElementById('utInboxMount');
+  if (mount && !mount.querySelector('.ut-shell')) await loadUnifiedInbox();
+
+  try {
+    const res = await fetch(`/api/users/${user.id}/threads/${encodeURIComponent(thread.thread_id)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || 'Failed to load thread');
+    utSelectedThread = data;
+    utSelectedThread.messages = (utSelectedThread.messages || []).map(normalizeUtRealtimeMessage);
+    await markUtConversationSeen(utSelectedThread);
+    document.querySelector('.ut-shell')?.classList.add('ut-mobile-thread-open');
+    renderUtThreadList();
+    renderUtConversationPane();
+    startUtRealtimePolling();
+  } catch (err) {
+    showToast(err.message || 'Failed to open message.', 'error');
+  }
+}
+
+async function startUtNotificationPolling() {
+  if (utNotificationTimer || !user?.id) return;
+
+  const poll = async (initial = false) => {
+    try {
+      const res = await fetch(`/api/users/${user.id}/threads?filter=messages&status=all`);
+      const data = await res.json().catch(() => []);
+      if (!res.ok || !Array.isArray(data)) return;
+
+      const unreadTotal = data.filter(t => !t.is_read && Number(t.recipient_id) === Number(user.id)).length;
+      updateStgInboxUnreadBadge(unreadTotal);
+
+      if (initial && utKnownMessageIds.size === 0) {
+        data.forEach(t => utKnownMessageIds.add(String(t.raw?.id || t.id || t.thread_id)));
+        return;
+      }
+
+      const incoming = data
+        .filter(t => Number(t.sender_id) !== Number(user.id))
+        .filter(t => !t.is_read && Number(t.recipient_id) === Number(user.id))
+        .filter(t => !utKnownMessageIds.has(String(t.raw?.id || t.id || t.thread_id)))
+        .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+
+      data.forEach(t => utKnownMessageIds.add(String(t.raw?.id || t.id || t.thread_id)));
+
+      if (incoming.length && Array.isArray(utThreads) && utThreads.length) {
+        const knownThreadIds = new Set(utThreads.map(t => String(t.raw?.id || t.id || t.thread_id)));
+        const merged = incoming.filter(t => !knownThreadIds.has(String(t.raw?.id || t.id || t.thread_id)));
+        if (merged.length) {
+          utThreads = [...merged, ...utThreads].sort((a, b) =>
+            new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+          );
+          if (document.getElementById('utThreadListBody')) renderUtThreadList();
+        }
+      }
+
+      incoming.forEach(thread => {
+        if (isUtConversationActiveForThread(thread)) return;
+        const preview = String(thread.summary || '').replace(/\s+/g, ' ').trim().slice(0, 50);
+        showMessageNotificationToast({
+          senderName: thread.sender_name || 'New message',
+          preview,
+          createdAt: thread.created_at,
+          onClick: () => openUtConversationFromNotification(thread)
+        });
+        playMessageNotificationSound();
+      });
+    } catch {}
+  };
+
+  await poll(true);
+  utNotificationTimer = setInterval(() => poll(false), 3000);
+}
+
+function getUtMessageSeen(message) {
+  return Boolean(message?.seen ?? message?.is_read);
+}
+
+function getUtMessageSeenAt(message) {
+  return message?.seenAt || message?.seen_at || null;
+}
+
+function formatUtLastSeen(dateStr) {
+  if (!dateStr) return 'Offline';
+  return `Last seen ${relativeTime(dateStr)}`;
+}
+
+function normalizeUtRealtimeMessage(message) {
+  return {
+    ...message,
+    seen: Boolean(message.seen ?? message.is_read),
+    seenAt: message.seenAt || message.seen_at || null
+  };
+}
+
+function getUtMessageSignature(messages = []) {
+  return messages.map(msg => [
+    msg.id,
+    getUtMessageSenderId(msg),
+    msg.body || '',
+    getUtMessageCreatedAt(msg),
+    getUtMessageSeen(msg) ? 1 : 0,
+    getUtMessageSeenAt(msg) || ''
+  ].join(':')).join('|');
+}
+
+async function markUtConversationSeen(thread = utSelectedThread) {
+  if (!thread?.messages?.length) return;
+  const now = new Date().toISOString();
+  const unreadReceived = thread.messages.filter(msg =>
+    !getUtMessageSeen(msg) && getUtMessageSenderId(msg) !== Number(user.id)
+  );
+  if (!unreadReceived.length) return;
+
+  thread.messages = thread.messages.map(msg =>
+    unreadReceived.some(unread => String(unread.id) === String(msg.id))
+      ? { ...msg, is_read: true, seen: true, seen_at: now, seenAt: now }
+      : msg
+  );
+
+  await Promise.allSettled(unreadReceived.map(msg => fetch(`/api/messages/${msg.id}/read`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: user.id, is_read: true })
+  })));
+}
+
+function startUtPresenceHeartbeat() {
+  if (utPresenceTimer) return;
+  const sendPresence = (isOnline = true) => {
+    if (!user?.id) return;
+    fetch('/api/messages/presence', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: Number(user.id), is_online: isOnline })
+    }).catch(() => {});
+  };
+  sendPresence(true);
+  utPresenceTimer = setInterval(() => sendPresence(true), 15000);
+  window.addEventListener('beforeunload', () => {
+    navigator.sendBeacon?.('/api/messages/presence', new Blob([
+      JSON.stringify({ user_id: Number(user.id), is_online: false })
+    ], { type: 'application/json' }));
+  }, { once: true });
+}
+
+async function emitUtTyping(isTyping) {
+  const partner = getUtThreadPartner(utSelectedThread);
+  if (!partner.id) return;
+  await fetch('/api/messages/typing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sender_id: Number(user.id),
+      recipient_id: Number(partner.id),
+      is_typing: Boolean(isTyping)
+    })
+  }).catch(() => {});
+}
+
+function startUtRealtimePolling() {
+  if (utRealtimeTimer) clearInterval(utRealtimeTimer);
+  if (!utSelectedThread || utSelectedThread.type !== 'message') return;
+
+  utRealtimeTimer = setInterval(async () => {
+    if (!utSelectedThread || utSelectedThread.type !== 'message') return;
+    const partner = getUtThreadPartner(utSelectedThread);
+
+    try {
+      if (partner.id) {
+        const realtimeRes = await fetch(`/api/messages/realtime?user_id=${user.id}&peer_id=${partner.id}`);
+        const realtime = await realtimeRes.json().catch(() => ({}));
+        if (realtimeRes.ok) {
+          utPresenceByUser[String(partner.id)] = realtime.presence;
+          const nextTyping = realtime.typing || { isTyping: false, typingUserId: null };
+          const typingChanged = nextTyping.isTyping !== utTypingState.isTyping || nextTyping.typingUserId !== utTypingState.typingUserId;
+          utTypingState = nextTyping;
+          if (typingChanged) renderUtConversationPane();
+        }
+      }
+
+      const input = document.getElementById('utChatInput');
+      if (document.activeElement === input && input?.value.trim()) return;
+
+      const threadRes = await fetch(`/api/users/${user.id}/threads/${encodeURIComponent(utSelectedThreadId)}`);
+      const thread = await threadRes.json().catch(() => null);
+      if (!threadRes.ok || !thread) return;
+      thread.messages = (thread.messages || []).map(normalizeUtRealtimeMessage);
+      const oldSig = getUtMessageSignature(utSelectedThread.messages || []);
+      const newSig = getUtMessageSignature(thread.messages || []);
+      if (oldSig !== newSig) {
+        utSelectedThread = thread;
+        await markUtConversationSeen(utSelectedThread);
+        renderUtConversationPane(null, 'smooth');
+        renderUtThreadList();
+      }
+    } catch {}
+  }, 2500);
+}
+
+function renderUtConversationPane(draft = null, scrollBehavior = 'auto') {
   const panel = document.getElementById('utConversationBody');
   if (!panel) return;
+  utAttachmentRegistry = new Map();
 
   if (utView === 'compose') {
     renderUtComposeView(panel, draft);
@@ -9770,8 +11820,8 @@ function renderUtConversationPane(draft = null) {
   if (!utSelectedThread) {
     panel.innerHTML = `<div class="ut-empty-state">
       <i class="ri-chat-smile-3-line" style="font-size:52px;opacity:0.25;"></i>
-      <div style="font-weight:600;font-size:15px;">Your Messages</div>
-      <div style="font-size:13px;opacity:0.6;">Select a conversation or start a new one</div>
+      <div style="font-weight:600;font-size:15px;">Select a conversation to start messaging</div>
+      <div style="font-size:13px;opacity:0.6;">Your messages will appear here</div>
     </div>`;
     return;
   }
@@ -9782,28 +11832,55 @@ function renderUtConversationPane(draft = null) {
   const statusLower = (status || '').toLowerCase();
   const canCancel = isReq && statusLower === 'pending';
 
-  // Determine partner name for header
-  const partnerName = (() => {
-    if (t.messages && t.messages.length) {
-      for (const m of t.messages) {
-        if (Number(m.sender_id) !== Number(user.id)) return m.sender_name || 'Unknown';
-      }
-      return t.messages[0]?.sender_name || t.title || 'Conversation';
-    }
-    return t.title || 'Conversation';
-  })();
+  const partner = getUtThreadPartner(t);
+  const isGroupChat = Boolean(partner.isGroup || t.group_id);
+  const partnerName = partner.name || 'Conversation';
+  const partnerPresence = partner.id ? (utPresenceByUser[String(partner.id)] || {}) : {};
+  const partnerOnline = Boolean(partnerPresence.isOnline);
+  const presenceText = isGroupChat
+    ? (getUtGroupMembersPreview(t) || `${(t.participants || []).length || 'Group'} members`)
+    : (partnerOnline ? 'Online' : formatUtLastSeen(partnerPresence.lastSeen));
   const partnerInitial = partnerName.charAt(0).toUpperCase();
   const colors = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#f97316'];
   const colorIdx = partnerName.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length;
   const avatarBg = colors[colorIdx];
 
+  const sortedMessages = [...(t.messages || [])].sort((a, b) =>
+    new Date(getUtMessageCreatedAt(a)) - new Date(getUtMessageCreatedAt(b))
+  );
+  const showTyping = Boolean(utTypingState.isTyping && String(utTypingState.typingUserId) === String(partner.id));
+  const formatDateDivider = dateStr => {
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return '';
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    if (sameDay(d, today)) return 'Today';
+    if (sameDay(d, yesterday)) return 'Yesterday';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+  };
+
   // Build message bubbles HTML
-  const bubblesHtml = (t.messages || []).map(msg => {
-    const isMine   = Number(msg.sender_id) === Number(user.id);
+  const bubblesHtml = sortedMessages.map((msg, idx) => {
+    const isMine   = getUtMessageSenderId(msg) === Number(user.id);
     const isSystem = msg.is_system;
-    const timeStr  = msg.created_at ? new Date(msg.created_at).toLocaleTimeString('en-US', {
+    const prevMsg = sortedMessages[idx - 1];
+    const startsGroup = !prevMsg ||
+      prevMsg.is_system ||
+      getUtMessageSenderId(prevMsg) !== getUtMessageSenderId(msg) ||
+      Math.abs(new Date(getUtMessageCreatedAt(msg)) - new Date(getUtMessageCreatedAt(prevMsg))) > 5 * 60 * 1000;
+    const createdAt = getUtMessageCreatedAt(msg);
+    const seen = getUtMessageSeen(msg);
+    const seenAt = getUtMessageSeenAt(msg);
+    const timeStr  = createdAt ? new Date(createdAt).toLocaleTimeString('en-US', {
       hour: 'numeric', minute: '2-digit', hour12: true
     }) : '';
+    const currentDay = createdAt ? new Date(createdAt).toDateString() : '';
+    const previousDay = prevMsg ? new Date(getUtMessageCreatedAt(prevMsg)).toDateString() : '';
+    const dateDivider = currentDay && currentDay !== previousDay
+      ? `<div class="ut-chat-date-divider"><span>${escHtml(formatDateDivider(createdAt))}</span></div>`
+      : '';
     const senderInitial = (msg.sender_name || 'U').charAt(0).toUpperCase();
     const senderColors  = ['#3b82f6','#8b5cf6','#ec4899','#f59e0b','#10b981','#06b6d4','#f97316'];
     const sIdx = (msg.sender_name || '').split('').reduce((a, c) => a + c.charCodeAt(0), 0) % senderColors.length;
@@ -9816,27 +11893,55 @@ function renderUtConversationPane(draft = null) {
         : sLower === 'rejected'
           ? '<i class="ri-close-circle-fill ut-email-sys-icon rejected"></i>'
           : '<i class="ri-information-line ut-email-sys-icon"></i>';
-      return `<div class="ut-chat-sys-row">${sIcon}<span class="ut-email-sys-body">${escHtml(msg.body)}</span><span class="ut-email-sys-time">${escHtml(timeStr)}</span></div>`;
+      return `${dateDivider}<div class="ut-chat-sys-row">${sIcon}<span class="ut-email-sys-body">${escHtml(msg.body)}</span><span class="ut-email-sys-time">${escHtml(timeStr)}</span></div>`;
     }
 
-    const isFile = msg.attachment_name && msg.attachment_path;
-    const isImg  = isFile && /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(msg.attachment_name || '');
+    const attachment = getUtAttachmentFromMessage(msg);
+    const attachmentId = attachment ? registerUtAttachment(attachment) : '';
+    const attachmentKind = attachment ? getUtAttachmentKind(attachment) : '';
+    const isFile = Boolean(attachment);
+    const isImg  = attachmentKind === 'image';
+    const replyText = msg.reply_preview || msg.reply_body || msg.reply_to_body || msg.quoted_body || '';
+    const replyName = msg.reply_sender_name || msg.reply_to_sender_name || 'Reply';
+    const forwardedFrom = msg.forwarded_from || msg.forwarded_from_name || msg.original_sender_name || '';
+    const replyHtml = replyText
+      ? `<div class="ut-chat-reply-preview"><strong>${escHtml(replyName)}</strong><span>${escHtml(String(replyText))}</span></div>`
+      : '';
+    const forwardedHtml = forwardedFrom
+      ? `<div class="ut-chat-forwarded"><i class="ri-share-forward-line"></i> Forwarded from ${escHtml(String(forwardedFrom))}</div>`
+      : '';
+    const attachMeta = attachment ? formatUtAttachmentSize(attachment.size) : '';
+    const attachIcon = attachmentKind === 'pdf' ? 'ri-file-pdf-2-line'
+      : attachmentKind === 'word' ? 'ri-file-word-line'
+        : attachmentKind === 'excel' ? 'ri-file-excel-line'
+          : attachmentKind === 'text' ? 'ri-file-text-line'
+            : isImg ? 'ri-image-line' : 'ri-file-line';
     const attachHtml = isFile ? (isImg
-      ? `<div class="ut-chat-img-wrap"><img src="${escHtml(msg.attachment_path)}" class="ut-chat-img-preview" alt="${escHtml(msg.attachment_name)}"><div class="ut-chat-attachment" style="margin-top:4px;"><i class="ri-image-line"></i><span class="ut-chat-attach-name">${escHtml(msg.attachment_name)}</span><a class="ut-chat-attach-dl" href="${escHtml(msg.attachment_path)}" download target="_blank"><i class="ri-download-2-line"></i></a></div></div>`
-      : `<div class="ut-chat-attachment"><i class="ri-file-line"></i><span class="ut-chat-attach-name">${escHtml(msg.attachment_name)}</span><a class="ut-chat-attach-dl" href="${escHtml(msg.attachment_path)}" download target="_blank" title="Download"><i class="ri-download-2-line"></i></a></div>`
+      ? `<div class="ut-chat-img-wrap"><button type="button" class="ut-chat-img-preview-btn" data-attachment-id="${escHtml(attachmentId)}"><img src="${escHtml(attachment.url)}" class="ut-chat-img-preview" alt="${escHtml(attachment.name)}"></button><div class="ut-chat-attachment" data-attachment-id="${escHtml(attachmentId)}"><i class="${attachIcon}"></i><span class="ut-chat-attach-name">${escHtml(attachment.name)}${attachMeta ? `<small>${escHtml(attachMeta)}</small>` : ''}</span><button type="button" class="ut-chat-attach-dl" data-attachment-download="${escHtml(attachmentId)}" title="Download"><i class="ri-download-2-line"></i></button></div></div>`
+      : `<button type="button" class="ut-chat-attachment" data-attachment-id="${escHtml(attachmentId)}"><i class="${attachIcon}"></i><span class="ut-chat-attach-name">${escHtml(attachment.name)}${attachMeta ? `<small>${escHtml(attachMeta)}</small>` : ''}</span><span class="ut-chat-attach-dl" data-attachment-download="${escHtml(attachmentId)}" title="Download"><i class="ri-download-2-line"></i></span></button>`
     ) : '';
 
     return `
-      <div class="ut-chat-row ${isMine ? 'ut-chat-row-mine' : 'ut-chat-row-theirs'}">
-        ${!isMine ? `<div class="ut-chat-avatar" style="background:${sBg};">${senderInitial}</div>` : ''}
+      ${dateDivider}
+      <div class="ut-chat-row ${isMine ? 'ut-chat-row-mine' : 'ut-chat-row-theirs'} ${startsGroup ? 'ut-chat-group-start' : ''}">
+        ${!isMine ? `<div class="ut-chat-avatar" style="background:${sBg};">${startsGroup ? senderInitial : ''}</div>` : ''}
         <div class="ut-chat-bubble-wrap">
+          ${isGroupChat && !isMine && startsGroup ? `<div class="ut-chat-sender-name">${escHtml(msg.sender_name || 'Unknown')}</div>` : ''}
           <div class="ut-chat-bubble ${isMine ? 'ut-chat-bubble-mine' : 'ut-chat-bubble-theirs'}">
+            ${forwardedHtml}
+            ${replyHtml}
             ${msg.body ? `<div class="ut-chat-text">${escHtml(msg.body).replace(/\n/g, '<br>')}</div>` : ''}
             ${attachHtml}
-            <div class="ut-chat-time-inline">${escHtml(timeStr)}</div>
+            <div class="ut-chat-inline-meta">
+              <span>${escHtml(timeStr)}</span>
+              ${isMine ? `<span class="ut-chat-checks" title="${seenAt ? `Seen ${escHtml(new Date(seenAt).toLocaleString())}` : 'Sent'}">${seen ? '&#10003;&#10003;' : '&#10003;'}</span>` : ''}
+            </div>
+          </div>
+          <div class="ut-chat-message-meta">
+            <span>${escHtml(timeStr)}</span>
+            ${isMine ? `<span title="${seenAt ? `Seen ${escHtml(new Date(seenAt).toLocaleString())}` : 'Sent'}">${seen ? '&#10003;&#10003; Seen' : '&#10003; Sent'}</span>` : ''}
           </div>
         </div>
-        ${isMine ? `<div class="ut-chat-avatar ut-chat-avatar-mine">${(user.full_name || user.email || 'Y').charAt(0).toUpperCase()}</div>` : ''}
       </div>`;
   }).join('');
 
@@ -9845,48 +11950,80 @@ function renderUtConversationPane(draft = null) {
 
       <!-- ── Messenger Chat Header ── -->
       <div class="ut-chat-header">
-        <button class="ut-back-btn" id="utConvBackBtn"><i class="ri-arrow-left-line"></i></button>
-        <div class="ut-chat-header-avatar" style="background:${avatarBg};">${partnerInitial}</div>
+        <button class="ut-back-btn" id="utConvBackBtn" aria-label="Back to conversations"><i class="ri-arrow-left-line"></i></button>
+        <div class="ut-chat-header-avatar-wrap">
+          ${isGroupChat ? getUtGroupAvatarHtml(t, avatarBg, 'ut-chat-header-avatar') : `<div class="ut-chat-header-avatar" style="background:${avatarBg};">${partnerInitial}</div>`}
+          ${isGroupChat ? '' : `<span class="ut-status-presence-dot ${partnerOnline ? 'online' : 'offline'}"></span>`}
+        </div>
         <div class="ut-chat-header-info">
           <div class="ut-chat-header-name">${escHtml(partnerName)}</div>
-          ${status ? `<span class="ut-badge ut-badge-${statusLower}" style="margin-top:2px;">${escHtml(status)}</span>` : ''}
+          ${status ? `<span class="ut-badge ut-badge-${statusLower}" style="margin-top:2px;">${escHtml(status)}</span>` : `<span class="ut-chat-presence ${partnerOnline ? 'online' : 'offline'}"><span></span> ${escHtml(presenceText)}</span>`}
         </div>
         <div class="ut-chat-header-actions">
-          ${canCancel ? `<button class="ut-icon-btn danger" id="utConvCancelBtn" title="Cancel Request"><i class="ri-close-circle-line"></i></button>` : ''}
-          ${!isReq ? `<button class="ut-icon-btn danger" id="utConvDeleteBtn" title="Delete Conversation"><i class="ri-delete-bin-line"></i></button>` : ''}
+          <button class="ut-icon-btn" title="Search in chat" aria-label="Search in chat"><i class="ri-search-line"></i></button>
+          ${canCancel ? `<button class="ut-icon-btn danger" id="utConvCancelBtn" title="Cancel Request" aria-label="Cancel request"><i class="ri-close-circle-line"></i></button>` : ''}
+          ${!isReq ? `<button class="ut-icon-btn danger" id="utConvDeleteBtn" title="Delete Conversation" aria-label="Delete conversation"><i class="ri-delete-bin-line"></i></button>` : ''}
+          <button class="ut-icon-btn" title="More" aria-label="More options"><i class="ri-more-2-fill"></i></button>
         </div>
       </div>
 
       <!-- ── Chat Messages Area ── -->
       <div class="ut-messages-area ut-chat-area" id="utMessagesArea">
         ${bubblesHtml || '<div class="ut-chat-no-msgs"><i class="ri-chat-3-line"></i> No messages yet.</div>'}
+        ${showTyping ? `<div class="ut-typing-indicator"><span>${escHtml(partnerName)} is typing</span><i></i><i></i><i></i></div>` : ''}
+        <div id="utMessagesEnd"></div>
       </div>
 
       <!-- ── Fixed Bottom Input Bar ── -->
       ${!isReq ? `
       <div class="ut-chat-input-bar">
-        <label class="ut-attach-btn" id="utChatAttachLabel" title="Attach file">
+        <button class="ut-emoji-btn" id="utEmojiBtn" type="button" title="Emoji" aria-label="Emoji"><i class="ri-emotion-line"></i></button>
+        <label class="ut-attach-btn" id="utChatAttachLabel" title="Attach file" aria-label="Attach file">
           <i class="ri-attachment-2"></i>
           <input type="file" id="utChatFile" style="display:none;" accept="*/*">
         </label>
         <div class="ut-chat-input-wrap">
-          <textarea id="utChatInput" class="ut-chat-textarea" placeholder="Type a message…" rows="1"></textarea>
+          <textarea id="utChatInput" class="ut-chat-textarea" placeholder="Write a message..." rows="1"></textarea>
           <span class="ut-file-chip" id="utFileChip" style="display:none;"></span>
         </div>
-        <button class="ut-chat-send-btn" id="utChatSendBtn"><i class="ri-send-plane-fill"></i></button>
+        <div class="ut-emoji-picker" id="utEmojiPicker" hidden>
+          ${['😀','😁','😂','😊','😍','😎','🙂','😅','👍','👏','🙏','💪','🔥','✨','🎉','❤️','✅','📎','💬','🚀'].map(emoji => `<button type="button" class="ut-emoji-option" data-emoji="${emoji}">${emoji}</button>`).join('')}
+        </div>
+        <button class="ut-chat-send-btn" id="utChatSendBtn" aria-label="Send message" disabled><i class="ri-send-plane-fill"></i></button>
       </div>
       ` : ''}
     </div>
   `;
 
-  // Auto-scroll
-  const area = document.getElementById('utMessagesArea');
-  if (area) setTimeout(() => { area.scrollTop = area.scrollHeight; }, 60);
+  setTimeout(() => scrollUtMessagesToBottom(scrollBehavior), 0);
+
+  panel.querySelectorAll('[data-attachment-id]').forEach(el => {
+    el.addEventListener('click', e => {
+      const downloadTarget = e.target.closest('[data-attachment-download]');
+      if (downloadTarget) return;
+      const attachment = utAttachmentRegistry.get(el.dataset.attachmentId);
+      if (attachment) previewAttachment(attachment);
+    });
+  });
+
+  panel.querySelectorAll('[data-attachment-download]').forEach(el => {
+    el.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      const attachment = utAttachmentRegistry.get(el.dataset.attachmentDownload);
+      if (attachment) downloadAttachment(attachment);
+    });
+  });
 
   document.getElementById('utConvBackBtn')?.addEventListener('click', () => {
     utSelectedThread   = null;
     utSelectedThreadId = null;
     utView = 'list';
+    utTypingState = { isTyping: false, typingUserId: null };
+    clearTimeout(utTypingIdleTimer);
+    emitUtTyping(false);
+    if (utRealtimeTimer) { clearInterval(utRealtimeTimer); utRealtimeTimer = null; }
+    document.querySelector('.ut-shell')?.classList.remove('ut-mobile-thread-open');
     renderUtConversationPane();
     document.querySelectorAll('.ut-thread-row').forEach(r => r.classList.remove('active'));
   });
@@ -9896,7 +12033,18 @@ function renderUtConversationPane(draft = null) {
     if (!confirm('Delete this conversation?')) return;
     const msgId = t.raw.id;
     const threadId = utSelectedThreadId;
-    utThreads = utThreads.filter(th => th.thread_id !== threadId);
+    const selectedParticipantIds = new Set(
+      (utSelectedThread?.messages || [])
+        .flatMap(msg => [String(msg.sender_id), String(msg.recipient_id)])
+        .filter(Boolean)
+    );
+    const isSameDeletedConversation = th => {
+      if (String(th.thread_id) === String(threadId)) return true;
+      if (t.group_id) return String(th.group_id || '') === String(t.group_id);
+      return selectedParticipantIds.has(String(th.sender_id)) && selectedParticipantIds.has(String(th.recipient_id));
+    };
+    const previousThreads = [...utThreads];
+    utThreads = utThreads.filter(th => !isSameDeletedConversation(th));
     utSelectedThread = null;
     utSelectedThreadId = null;
     utView = 'list';
@@ -9905,10 +12053,21 @@ function renderUtConversationPane(draft = null) {
     renderUtThreadList();
     try {
       const res = await fetch(`/api/messages/${msgId}?user_id=${user.id}`, { method: 'DELETE' });
-      if (!res.ok) { showToast('Delete failed.', 'error'); loadUnifiedInbox(); return; }
+      if (!res.ok) {
+        utThreads = previousThreads;
+        renderUtThreadList();
+        showToast('Delete failed.', 'error');
+        loadUnifiedInbox();
+        return;
+      }
       showToast('Conversation deleted.', 'success');
       loadUnifiedInbox();
-    } catch { showToast('Network error.', 'error'); loadUnifiedInbox(); }
+    } catch {
+      utThreads = previousThreads;
+      renderUtThreadList();
+      showToast('Network error.', 'error');
+      loadUnifiedInbox();
+    }
   });
 
   document.getElementById('utConvCancelBtn')?.addEventListener('click', async () => {
@@ -9932,6 +12091,11 @@ function renderUtConversationPane(draft = null) {
 
   // ── File attach
   let _pendingFile = null;
+  document.getElementById('utChatAttachLabel')?.addEventListener('click', e => {
+    if (e.target?.id === 'utChatFile') return;
+    e.preventDefault();
+    document.getElementById('utChatFile')?.click();
+  });
   document.getElementById('utChatFile')?.addEventListener('change', function() {
     _pendingFile = this.files?.[0] || null;
     const chip = document.getElementById('utFileChip');
@@ -9939,14 +12103,29 @@ function renderUtConversationPane(draft = null) {
       chip.textContent = _pendingFile ? _pendingFile.name : '';
       chip.style.display = _pendingFile ? 'inline-flex' : 'none';
     }
+    updateSendButton();
   });
 
   // ── Auto-resize textarea
   const chatInput = document.getElementById('utChatInput');
+  const updateSendButton = () => {
+    const sendBtn = document.getElementById('utChatSendBtn');
+    if (!sendBtn) return;
+    const hasText = Boolean((document.getElementById('utChatInput')?.value || '').trim());
+    sendBtn.disabled = !hasText && !_pendingFile;
+  };
   if (chatInput) {
     chatInput.addEventListener('input', function() {
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+      updateSendButton();
+      const now = Date.now();
+      if (now - utLastTypingEmitAt > 300) {
+        utLastTypingEmitAt = now;
+        emitUtTyping(true);
+      }
+      clearTimeout(utTypingIdleTimer);
+      utTypingIdleTimer = setTimeout(() => emitUtTyping(false), 1500);
     });
     // Send on Enter (Shift+Enter = newline)
     chatInput.addEventListener('keydown', function(e) {
@@ -9957,31 +12136,111 @@ function renderUtConversationPane(draft = null) {
     });
   }
 
+  const emojiBtn = document.getElementById('utEmojiBtn');
+  const emojiPicker = document.getElementById('utEmojiPicker');
+  const closeEmojiPicker = () => {
+    if (emojiPicker) emojiPicker.hidden = true;
+  };
+  emojiBtn?.addEventListener('click', e => {
+    e.stopPropagation();
+    if (emojiPicker) emojiPicker.hidden = !emojiPicker.hidden;
+  });
+  emojiPicker?.addEventListener('click', e => {
+    const option = e.target.closest('.ut-emoji-option');
+    if (!option || !chatInput) return;
+    const emoji = option.dataset.emoji || '';
+    const start = chatInput.selectionStart ?? chatInput.value.length;
+    const end = chatInput.selectionEnd ?? chatInput.value.length;
+    chatInput.value = `${chatInput.value.slice(0, start)}${emoji}${chatInput.value.slice(end)}`;
+    const nextPos = start + emoji.length;
+    chatInput.focus();
+    chatInput.setSelectionRange(nextPos, nextPos);
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+    closeEmojiPicker();
+  });
+  document.addEventListener('click', e => {
+    if (!emojiPicker || emojiPicker.hidden) return;
+    if (emojiPicker.contains(e.target) || emojiBtn?.contains(e.target)) return;
+    closeEmojiPicker();
+  });
+
   // ── Send message from bottom bar
   document.getElementById('utChatSendBtn')?.addEventListener('click', async () => {
     const inputEl = document.getElementById('utChatInput');
     const text = (inputEl?.value || '').trim();
     if (!text && !_pendingFile) return;
+    clearTimeout(utTypingIdleTimer);
+    emitUtTyping(false);
 
-    // Determine recipient from the thread
-    const isSender = Number(t.raw?.sender_id || t.sender_id) === Number(user.id);
-    const recipientId = isSender
-      ? (t.raw?.recipient_id || t.recipient_id)
-      : (t.raw?.sender_id || t.sender_id);
+    const threadPartner = getUtThreadPartner(t);
+    const recipientIds = threadPartner.isGroup
+      ? (t.participants || []).map(p => Number(p.id)).filter(id => id && id !== Number(user.id))
+      : [Number(threadPartner.id)];
+    const recipientId = recipientIds[0];
+    if (!recipientIds.length) {
+      showToast('Could not determine the recipient.', 'error');
+      return;
+    }
 
     const sendBtn = document.getElementById('utChatSendBtn');
     if (sendBtn) { sendBtn.disabled = true; sendBtn.innerHTML = '<i class="ri-loader-4-line spin"></i>'; }
 
+    const fileToSend = _pendingFile;
+    const optimisticAttachmentUrl = fileToSend ? URL.createObjectURL(fileToSend) : null;
+    const createdAt = new Date().toISOString();
+    const tempId = `tmp_${Date.now()}`;
+    const optimisticMessage = {
+      id: tempId,
+      sender_id: Number(user.id),
+      senderId: Number(user.id),
+      sender_name: user.full_name || user.email || 'You',
+      recipient_id: Number(recipientId),
+      group_id: t.group_id || null,
+      group_name: t.group_name || null,
+      group_photo: t.group_photo || null,
+      body: text,
+      attachment_name: fileToSend?.name || null,
+      attachment_path: optimisticAttachmentUrl,
+      attachment_type: fileToSend?.type || '',
+      attachment_size: fileToSend?.size || null,
+      attachment: fileToSend ? {
+        name: fileToSend.name,
+        type: fileToSend.type,
+        size: fileToSend.size,
+        url: optimisticAttachmentUrl
+      } : null,
+      created_at: createdAt,
+      createdAt,
+      seen: false,
+      seenAt: null,
+      is_system: false
+    };
+
+    if (utSelectedThread) {
+      utSelectedThread.messages = [...(utSelectedThread.messages || []), optimisticMessage];
+    }
+    if (inputEl) { inputEl.value = ''; inputEl.style.height = 'auto'; }
+    _pendingFile = null;
+    const chip = document.getElementById('utFileChip');
+    if (chip) { chip.style.display = 'none'; chip.textContent = ''; }
+    const fileInput = document.getElementById('utChatFile');
+    if (fileInput) fileInput.value = '';
+    renderUtConversationPane(null, 'smooth');
+
     try {
       let result;
-      if (_pendingFile) {
+      if (fileToSend) {
         const fd = new FormData();
         fd.append('sender_id', String(user.id));
         fd.append('recipient_id', String(recipientId));
+        fd.append('recipient_ids', JSON.stringify(recipientIds));
+        fd.append('group_id', t.group_id || '');
+        fd.append('group_name', t.group_name || '');
+        fd.append('group_photo', t.group_photo || '');
         fd.append('subject', t.title || 'Chat');
         fd.append('body', text || '');
         fd.append('parent_message_id', t.raw?.id ? String(t.raw.id) : '');
-        fd.append('attachment', _pendingFile);
+        fd.append('attachment', fileToSend);
         const res = await fetch('/api/messages/with-attachment', { method: 'POST', body: fd });
         result = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(result.error || 'Send failed');
@@ -9992,6 +12251,10 @@ function renderUtConversationPane(draft = null) {
           body: JSON.stringify({
             sender_id: Number(user.id),
             recipient_id: Number(recipientId),
+            recipient_ids: recipientIds,
+            group_id: t.group_id || null,
+            group_name: t.group_name || null,
+            group_photo: t.group_photo || null,
             subject: t.title || 'Chat',
             body: text,
             parent_message_id: t.raw?.id ? Number(t.raw.id) : null
@@ -10001,36 +12264,51 @@ function renderUtConversationPane(draft = null) {
         if (!res.ok) throw new Error(result.error || 'Send failed');
       }
 
-      // Optimistically append new bubble to the chat area
-      const newMsg = {
-        sender_id: user.id,
-        sender_name: 'You',
-        body: text,
-        attachment_name: _pendingFile?.name || null,
-        attachment_path: result.attachment_path || null,
-        created_at: new Date().toISOString()
-      };
       if (utSelectedThread) {
-        utSelectedThread.messages = [...(utSelectedThread.messages || []), newMsg];
+        const resultMessage = Array.isArray(result.messages) ? result.messages[0] : result;
+        const savedMessage = {
+          ...optimisticMessage,
+          ...resultMessage,
+          sender_id: Number(resultMessage.sender_id ?? user.id),
+          senderId: Number(resultMessage.sender_id ?? user.id),
+          sender_name: user.full_name || user.email || 'You',
+          recipient_id: Number(resultMessage.recipient_id ?? recipientId),
+          attachment_name: resultMessage.attachment_name || optimisticMessage.attachment_name,
+          attachment_path: resultMessage.attachment_path || optimisticMessage.attachment_path,
+          attachment_type: resultMessage.attachment_type || optimisticMessage.attachment_type,
+          attachment_size: resultMessage.attachment_size || optimisticMessage.attachment_size,
+          attachment: {
+            name: resultMessage.attachment_name || optimisticMessage.attachment_name,
+            type: resultMessage.attachment_type || optimisticMessage.attachment_type || '',
+            size: resultMessage.attachment_size || optimisticMessage.attachment_size || null,
+            url: resultMessage.attachment_path || optimisticMessage.attachment_path
+          },
+          created_at: resultMessage.created_at || optimisticMessage.created_at,
+          createdAt: resultMessage.created_at || optimisticMessage.created_at,
+          seen: Boolean(resultMessage.seen ?? resultMessage.is_read ?? false),
+          seenAt: resultMessage.seenAt || resultMessage.seen_at || null,
+          is_system: false
+        };
+        utSelectedThread.messages = (utSelectedThread.messages || []).map(msg =>
+          String(msg.id) === String(tempId) ? savedMessage : msg
+        );
       }
 
-      // Clear input
-      if (inputEl) { inputEl.value = ''; inputEl.style.height = 'auto'; }
-      _pendingFile = null;
-      const chip = document.getElementById('utFileChip');
-      if (chip) { chip.style.display = 'none'; chip.textContent = ''; }
-      const fileInput = document.getElementById('utChatFile');
-      if (fileInput) fileInput.value = '';
-
-      // Re-render pane with new message
-      renderUtConversationPane();
-      // Background refresh
-      loadUnifiedInbox();
+      const updatedAt = result.created_at || optimisticMessage.created_at;
+      utThreads = utThreads.map(thread => String(thread.thread_id) === String(utSelectedThreadId)
+        ? { ...thread, summary: text || fileToSend?.name || 'Attachment', updated_at: updatedAt }
+        : thread
+      ).sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
+      renderUtThreadList();
     } catch (err) {
+      if (utSelectedThread) {
+        utSelectedThread.messages = (utSelectedThread.messages || []).filter(msg => String(msg.id) !== String(tempId));
+        renderUtConversationPane();
+      }
       showToast(err.message || 'Failed to send.', 'error');
     } finally {
       const btn = document.getElementById('utChatSendBtn');
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ri-send-plane-fill"></i>'; }
+      if (btn) { btn.innerHTML = '<i class="ri-send-plane-fill"></i>'; updateSendButton(); }
     }
   });
 }
@@ -10052,7 +12330,7 @@ function renderUtComposeView(container, existingDraft = null) {
       <div class="ut-new-chat-to">
         <span class="ut-new-chat-to-label">To:</span>
         <select id="utMsgRecipient" class="ut-new-chat-select" ${stgUsers.length ? '' : 'disabled'}>
-          <option value="">${stgUsers.length ? 'Choose someone…' : 'No users available'}</option>
+          <option value="">${stgUsers.length ? 'Choose someone&hellip;' : 'No users available'}</option>
           ${stgUsers.map(u => `
             <option value="${u.id}" ${Number(defaultRecipient) === Number(u.id) ? 'selected' : ''}>
               ${escHtml(u.full_name || u.email)}${u.role ? ` · ${escHtml(u.role)}` : ''}
@@ -10064,7 +12342,7 @@ function renderUtComposeView(container, existingDraft = null) {
       <div class="ut-messages-area ut-chat-area" style="flex:1;justify-content:center;align-items:center;">
         <div style="text-align:center;color:#94a3b8;font-size:13px;">
           <i class="ri-chat-new-line" style="font-size:40px;opacity:0.3;display:block;margin-bottom:8px;"></i>
-          Select a recipient and type your first message below
+          Choose a recipient and type your first message below
         </div>
       </div>
 
@@ -10113,11 +12391,13 @@ function renderUtComposeView(container, existingDraft = null) {
   });
 
   document.getElementById('utComposeSendBtn')?.addEventListener('click', async () => {
-    const recipient_id = document.getElementById('utMsgRecipient')?.value;
+    const recipientSelect = document.getElementById('utMsgRecipient');
+    const recipientIds = recipientSelect?.value ? [Number(recipientSelect.value)].filter(Boolean) : [];
+    const recipient_id = recipientIds[0];
     const body         = (document.getElementById('utMsgBody')?.value || '').trim();
     const btn          = document.getElementById('utComposeSendBtn');
 
-    if (!recipient_id) { showToast('Please select a recipient.', 'error'); return; }
+    if (!recipientIds.length) { showToast('Please select at least one recipient.', 'error'); return; }
     if (!body && !_pendingFile) { showToast('Please write a message or attach a file.', 'error'); return; }
 
     btn.disabled = true;
@@ -10142,6 +12422,8 @@ function renderUtComposeView(container, existingDraft = null) {
           body: JSON.stringify({
             sender_id: Number(user.id),
             recipient_id: Number(recipient_id),
+            recipient_ids: recipientIds,
+            group_name: recipientIds.length > 1 ? buildUtGroupName(recipientIds) : null,
             subject: 'Chat',
             body,
             parent_message_id: null
@@ -10152,15 +12434,18 @@ function renderUtComposeView(container, existingDraft = null) {
       }
 
       const recipientUser = stgUsers.find(u => Number(u.id) === Number(recipient_id));
+      const groupName = recipientIds.length > 1 ? buildUtGroupName(recipientIds) : null;
       const optimisticThread = {
-        thread_id: `msg_${result.id}`,
+        thread_id: result.group_id ? `grp_${result.group_id}` : `msg_${result.id}`,
         type: 'message',
-        title: 'Chat',
+        title: groupName || 'Chat',
         summary: body.slice(0, 120),
         sender_id: Number(user.id),
         sender_name: user.full_name || 'You',
         recipient_id: Number(recipient_id),
         recipient_name: recipientUser ? (recipientUser.full_name || recipientUser.email) : 'Unknown',
+        group_id: result.group_id || null,
+        group_name: groupName,
         is_read: true,
         created_at: result.created_at || new Date().toISOString(),
         updated_at: result.created_at || new Date().toISOString(),
@@ -10187,6 +12472,7 @@ function renderUtComposeView(container, existingDraft = null) {
 /* ═══════════════════════════════════════════════════════════
    RELATIVE TIME HELPER
 ═══════════════════════════════════════════════════════════ */
+
 function relativeTime(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins  = Math.floor(diff / 60000);
@@ -10355,7 +12641,7 @@ function renderStgMessagingLayout() {
           </div>
 
           <div class="stg-chat-input">
-            <textarea id="stgChatInput" placeholder="Type a message..." rows="1"></textarea>
+            <textarea id="stgChatInput" placeholder="Write a message..." rows="1"></textarea>
             <button id="stgChatSendBtn"><i class="ri-send-plane-fill"></i></button>
           </div>
         ` : `
@@ -10386,7 +12672,8 @@ function renderStgMessagingLayout() {
   });
 
   setTimeout(() => {
-    document.getElementById('stgMessagesEnd')?.scrollIntoView({ behavior: 'smooth' });
+    const area = document.getElementById('stgChatBody');
+    if (area) area.scrollTo({ top: area.scrollHeight, behavior: 'smooth' });
   }, 50);
 }
 
@@ -10454,7 +12741,7 @@ function renderStgChatWindow(container, conversation) {
         <button type="button" class="stg-chat-icon-btn" id="stgAttachmentBtn" aria-label="Attach file">
           <i class="ri-attachment-2"></i>
         </button>
-        <textarea id="stgChatInput" rows="1" placeholder="Type a message..."></textarea>
+        <textarea id="stgChatInput" rows="1" placeholder="Write a message..."></textarea>
         <button type="button" class="stg-chat-send-btn" id="stgChatSendBtn" aria-label="Send message" disabled>
           <i class="ri-send-plane-fill"></i>
         </button>
@@ -10613,10 +12900,8 @@ async function sendStgChatMessage() {
 
 function scrollStgChatToBottom(smooth = true) {
   setTimeout(() => {
-    document.getElementById('stgMessagesEnd')?.scrollIntoView({
-      behavior: smooth ? 'smooth' : 'auto',
-      block: 'end'
-    });
+    const area = document.getElementById('stgChatBody');
+    if (area) area.scrollTo({ top: area.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
   }, 40);
 }
 
@@ -10986,25 +13271,21 @@ async function sendRequestNotification(requestType, details) {
    Kept for backward-compat (called from request forms, cancel, etc.)
 ═══════════════════════════════════════════════════════════ */
 function loadMyRequestsPage() {
-  // Open Settings and activate the Inbox tab with Requests filter
+  // Open Settings and activate the dedicated My Requests tab.
   loadSettings();
   requestAnimationFrame(() => {
-    const inboxNavBtn = document.querySelector('.stg-navitem[data-tab="inbox"]');
-    const inboxPanel  = document.getElementById('stg-tab-inbox');
-    if (inboxNavBtn && inboxPanel) {
+    const reqNavBtn = document.querySelector('.stg-navitem[data-tab="myrequests"]');
+    const reqPanel  = document.getElementById('stg-tab-myrequests');
+    if (reqNavBtn && reqPanel) {
       document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
-      inboxNavBtn.classList.add('active');
-      inboxPanel.classList.add('active');
+      reqNavBtn.classList.add('active');
+      reqPanel.classList.add('active');
     }
-    utFilter           = 'requests';
-    utFolder           = 'requests';
-    utStatusFilter     = 'all';
-    utSearch           = '';
-    utSelectedThreadId = null;
-    utSelectedThread   = null;
-    utView             = 'list';
-    loadUnifiedInbox();
+    utSearch = '';
+    const si = document.getElementById('utSearchInput');
+    if (si) si.value = '';
+    loadMyRequests();
   });
 }
 
@@ -11081,8 +13362,8 @@ function renderMyRequestsTable(mount, rows) {
         <td class="req-date-cell">${escHtml(dateUpdated)}</td>
         <td>
           <div class="req-actions-cell">
-            <button class="req-action-btn req-view-btn" data-id="${r.id}" data-type="${escHtml(r.type)}" title="View in Messaging">
-              <i class="ri-mail-open-line"></i> View
+            <button class="req-action-btn req-view-btn" data-id="${r.id}" data-type="${escHtml(r.type)}" title="View Request">
+              <i class="ri-eye-line"></i> View
             </button>
             ${canCancel ? `<button class="req-action-btn req-cancel-btn" data-id="${r.id}" data-type="${escHtml(r.type)}" title="Cancel Request">
               <i class="ri-close-circle-line"></i> Cancel
@@ -11109,31 +13390,10 @@ function renderMyRequestsTable(mount, rows) {
       </table>
     </div>`;
 
-  // ── View → jump to Settings → Messaging inbox, highlight thread ─────────
+  // View opens a dedicated request details modal, separate from Messaging.
   mount.querySelectorAll('.req-view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const type = btn.dataset.type;
-      const tc   = typeConfig[type] || { label: type };
-      // Open unified inbox with Requests filter
-      loadSettings();
-      requestAnimationFrame(() => {
-        const inboxNavBtn = document.querySelector('.stg-navitem[data-tab="inbox"]');
-        const inboxPanel  = document.getElementById('stg-tab-inbox');
-        if (inboxNavBtn && inboxPanel) {
-          document.querySelectorAll('.stg-navitem').forEach(b => b.classList.remove('active'));
-          document.querySelectorAll('.stg-panel').forEach(p => p.classList.remove('active'));
-          inboxNavBtn.classList.add('active');
-          inboxPanel.classList.add('active');
-        }
-        utFilter           = 'requests';
-        utFolder           = 'requests';
-        utStatusFilter     = 'all';
-        utSearch           = '';
-        utSelectedThreadId = null;
-        utSelectedThread   = null;
-        utView             = 'list';
-        loadUnifiedInbox();
-      });
+      openMyRequestDetailModal(btn.dataset.type, btn.dataset.id, typeConfig, statusConfig);
     });
   });
 
@@ -11162,6 +13422,116 @@ function renderMyRequestsTable(mount, rows) {
       finally { btn.disabled = false; btn.innerHTML = '<i class="ri-close-circle-line"></i> Cancel'; }
     });
   });
+}
+
+async function openMyRequestDetailModal(reqType, reqId, typeConfig = {}, statusConfig = {}) {
+  document.getElementById('myReqDetailModal')?.remove();
+
+  const typeMeta = typeConfig[reqType] || { label: reqType || 'Request', icon: 'ri-file-list-3-line', color: '#64748b' };
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'myReqDetailModal';
+  modal.innerHTML = `
+    <div class="myreq-detail-modal">
+      <div class="myreq-detail-header">
+        <div class="myreq-detail-title">
+          <span class="req-type-icon" style="color:${typeMeta.color};background:${typeMeta.color}18"><i class="${typeMeta.icon}"></i></span>
+          <div>
+            <h3>${escHtml(typeMeta.label)}</h3>
+            <p>Request details</p>
+          </div>
+        </div>
+        <button class="modal-close-btn myreq-detail-close" type="button"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="myreq-detail-body" id="myReqDetailBody">
+        <div class="stg-req-empty"><i class="ri-loader-4-line spin"></i><span>Loading request details...</span></div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  modal.querySelector('.myreq-detail-close')?.addEventListener('click', close);
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+
+  try {
+    const res = await fetch(`/api/users/${user.id}/threads/${encodeURIComponent(`req_${reqType}_${reqId}`)}`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || 'Failed to load request details');
+    renderMyRequestDetailModal(data, typeMeta, statusConfig);
+  } catch (err) {
+    const body = document.getElementById('myReqDetailBody');
+    if (body) body.innerHTML = `<div class="stg-req-empty"><i class="ri-error-warning-line"></i><span>${escHtml(err.message || 'Failed to load request details.')}</span></div>`;
+  }
+}
+
+function renderMyRequestDetailModal(data, typeMeta, statusConfig = {}) {
+  const body = document.getElementById('myReqDetailBody');
+  if (!body) return;
+
+  const raw = data.raw || {};
+  const createdAt = raw.submitted_at || raw.created_at || data.messages?.[0]?.created_at || null;
+  const statusKey = String(data.status || raw.status || 'pending').toLowerCase();
+  const statusMeta = statusConfig[statusKey] || { cls: 'req-badge-pending', label: data.status || raw.status || 'Pending' };
+  const remarks = raw.remarks || raw.comment || raw.admin_response || '';
+  const hiddenKeys = new Set(['id', 'employee_id', 'requested_by', 'owner_id', 'created_at', 'updated_at', 'submitted_at', 'status']);
+  const labelMap = {
+    request_date: 'Date Submitted',
+    leave_type: 'Leave Type',
+    id_type: 'ID Type',
+    current_salary: 'Current Salary',
+    requested_salary: 'Requested Salary',
+    effective_date: 'Effective Date',
+    document_name: 'Document Name',
+    request_action: 'Request Action',
+    copy_type: 'Copy Type',
+    proof_of_return: 'Proof of Return',
+    start_date: 'Start Date',
+    end_date: 'End Date',
+  };
+  const formatLabel = key => labelMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const formatValue = (key, value) => {
+    if (value == null || value === '') return '&mdash;';
+    if (String(key).includes('date') || ['created_at', 'updated_at', 'submitted_at'].includes(key)) {
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return escHtml(d.toLocaleString());
+    }
+    if (key === 'proof_of_return' && String(value).startsWith('/')) {
+      return `<a href="${escHtml(value)}" target="_blank" rel="noopener">View attachment</a>`;
+    }
+    return escHtml(String(value));
+  };
+
+  const detailRows = Object.entries(raw)
+    .filter(([key, value]) => !hiddenKeys.has(key) && key !== 'remarks' && key !== 'comment' && key !== 'admin_response' && value != null && value !== '')
+    .map(([key, value]) => `
+      <div class="myreq-detail-field">
+        <dt>${escHtml(formatLabel(key))}</dt>
+        <dd>${formatValue(key, value)}</dd>
+      </div>`)
+    .join('');
+
+  body.innerHTML = `
+    <div class="myreq-detail-summary">
+      <div>
+        <span>Request Type</span>
+        <strong>${escHtml(typeMeta.label || data.title || 'Request')}</strong>
+      </div>
+      <div>
+        <span>Status</span>
+        <strong><span class="req-badge ${statusMeta.cls}">${escHtml(statusMeta.label)}</span></strong>
+      </div>
+      <div>
+        <span>Date Submitted</span>
+        <strong>${createdAt ? escHtml(new Date(createdAt).toLocaleString()) : '&mdash;'}</strong>
+      </div>
+    </div>
+    <dl class="myreq-detail-grid">
+      ${detailRows || `<div class="myreq-detail-field"><dt>Details</dt><dd>No additional form data available.</dd></div>`}
+    </dl>
+    <div class="myreq-detail-remarks">
+      <h4>Remarks / Admin Response</h4>
+      <p>${remarks ? escHtml(String(remarks)) : 'No remarks yet.'}</p>
+    </div>`;
 }
 
 function _stgApplyDisplaySettings() {

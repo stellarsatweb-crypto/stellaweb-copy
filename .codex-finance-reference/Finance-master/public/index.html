@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Finance Dashboard</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/remixicon/fonts/remixicon.css" rel="stylesheet">
+
+  <link rel="stylesheet" href="finance-dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script defer src="finance-dashboard.js"></script>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+
+    <div class="logo">
+      <img src="logo.png" alt="Logo" class="logo-img">
+    </div>
+
+    <ul class="menu">
+      <li class="active"><i class="ri-dashboard-line"></i><span>Dashboard</span></li>
+      <li><i class="ri-line-chart-line"></i><span>Company Income</span></li>
+      <li><i class="ri-shopping-cart-line"></i><span>Company Expenses </span></li>
+      <li><i class="ri-file-list-3-line"></i><span>Project Expenses </span></li>
+      <li><i class="ri-user-line"></i><span>Employee</span></li>
+      <li><i class="ri-bar-chart-2-line"></i><span>Financial Report</span></li>
+      <li><i class="ri-hand-coin-line"></i><span>Collections</span></li>
+      <li><i class="ri-file-line"></i><span>Letters</span></li>
+      <li><i class="ri-settings-3-line"></i><span>Settings</span></li>
+    </ul>
+
+    <button id="toggleSidebar" class="collapse-btn">
+      <i class="ri-arrow-left-s-line"></i>
+    </button>
+
+  </aside>
+
+  <!-- MAIN CONTENT — populated by finance-dashboard.js -->
+  <main class="main">
+    <div id="mainContent"></div>
+  </main>
+
+</div>
+
+</body>
+</html>
