@@ -1,4 +1,4 @@
-@import url("./dashboard.css");
+@import url("../../dashboard.css");
 
 /* Standalone Finance page styles only. Sidebar/layout remain owned by dashboard.css. */
 /* ================= COMPANY INCOME PAGE ================= */
@@ -26,17 +26,18 @@
   display:flex; flex-direction:column; min-height:100%;
   background:linear-gradient(145deg,#ddeef8 0%,#c8ddf0 35%,#b8d0e8 70%,#c2d8ed 100%);
   position:relative;
+  isolation: isolate;
 }
 .inc-page::before {
   content:''; position:absolute; width:500px; height:500px; border-radius:50%;
   background:radial-gradient(circle,rgba(30,58,110,.09) 0%,transparent 70%);
-  top:-120px; right:-120px; pointer-events:none; z-index:0;
+  top:-120px; right:-120px; pointer-events:none; z-index:-1;
   animation:inc-spin-slow 30s linear infinite;
 }
 .inc-page::after {
   content:''; position:absolute; width:350px; height:350px; border-radius:50%;
   background:radial-gradient(circle,rgba(77,217,192,.08) 0%,transparent 70%);
-  bottom:60px; left:-80px; pointer-events:none; z-index:0;
+  bottom:60px; left:-80px; pointer-events:none; z-index:-1;
 }
 body.dark .inc-page { background:linear-gradient(145deg,#060c18 0%,#0a1120 40%,#0f172a 70%,#0d1525 100%); }
 
@@ -634,155 +635,7 @@ body.dark .exp-chart-card { background: rgba(10,17,34,.8); border-color: rgba(30
    PAGE TAB ROW  — consistent across ALL pages
    Tabs on the LEFT, filters/controls on the RIGHT, same height
 ════════════════════════════════════════════════════════════ */
-.page-tab-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 32px;
-  gap: 12px;
-  flex-wrap: wrap;
-  background: #f0f4fa;
-  position: relative;
-  z-index: 10;
-}
-
-/* Tab pill container */
-.page-tabs {
-  display: inline-flex;
-  background: white;
-  border-radius: 12px;
-  padding: 5px;
-  gap: 3px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-  flex-shrink: 0;
-}
-
-/* Right-side controls wrapper */
-.page-tab-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* Shared filter input styles */
-.pe-filter-date {
-  padding: 8px 10px;
-  border: 1.5px solid #c8d8e8;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #374151;
-  outline: none;
-  background: white;
-  font-family: inherit;
-  transition: border-color .2s;
-}
-.pe-filter-date:focus { border-color: #1e3a6e; }
-
-.pe-filter-text {
-  padding: 8px 12px;
-  border: 1.5px solid #c8d8e8;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #374151;
-  outline: none;
-  background: white;
-  min-width: 130px;
-  font-family: inherit;
-  transition: border-color .2s;
-}
-.pe-filter-text:focus { border-color: #1e3a6e; }
-
-.pe-filter-select {
-  padding: 8px 12px;
-  border: 1.5px solid #c8d8e8;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #374151;
-  background: white;
-  outline: none;
-  cursor: pointer;
-  font-family: inherit;
-  transition: border-color .2s;
-}
-.pe-filter-select:focus { border-color: #1e3a6e; }
-
-.pe-apply-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 8px 16px;
-  background: linear-gradient(135deg, #1e3a6e, #2d5fa8);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 12.5px;
-  font-weight: 700;
-  cursor: pointer;
-  font-family: inherit;
-  transition: opacity .2s;
-  white-space: nowrap;
-}
-.pe-apply-btn:hover { opacity: .88; }
-
-.pe-clear-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 8px 14px;
-  background: white;
-  color: #6b7280;
-  border: 1.5px solid #c8d8e8;
-  border-radius: 8px;
-  font-size: 12.5px;
-  font-weight: 700;
-  cursor: pointer;
-  font-family: inherit;
-  transition: all .2s;
-  white-space: nowrap;
-}
-.pe-clear-btn:hover { border-color: #1e3a6e; color: #1e3a6e; }
-
-/* pe-filter-bar is the existing class — keep compatible */
-.pe-filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* Dark mode */
-body.dark .page-tab-row  { background: rgba(6,12,24,.8); }
-body.dark .page-tabs      { background: rgba(20,30,60,.8); box-shadow: 0 2px 12px rgba(0,0,0,.3); }
-body.dark .pe-filter-date,
-body.dark .pe-filter-text,
-body.dark .pe-filter-select {
-  background: rgba(20,30,60,.7);
-  border-color: rgba(30,58,110,.4);
-  color: #93c5fd;
-}
-body.dark .pe-clear-btn {
-  background: rgba(20,30,60,.7);
-  border-color: rgba(30,58,110,.4);
-  color: #64748b;
-}
-
-.exp-tab {
-  padding: 9px 22px; border: none; background: transparent;
-  border-radius: 8px; font-size: 13.5px; font-weight: 600;
-  font-family: inherit; cursor: pointer; color: #6b7280;
-  transition: all 0.22s cubic-bezier(.4,0,.2,1);
-  position: relative;
-}
-.exp-tab:hover { background: #eef3ff; color: #1e3a6e; transform: translateY(-1px); }
-.exp-tab.active {
-  background: linear-gradient(135deg, #1e3a6e, #2d5fa8);
-  color: white;
-  box-shadow: 0 4px 14px rgba(30,58,110,.35);
-  transform: translateY(-1px);
-}
-body.dark /* ═══════════════════════════════════════════════════════════
+/* ═══════════════════════════════════════════════════════════
    PAGE TAB ROW  — consistent across ALL pages
    Tabs on the LEFT, filters/controls on the RIGHT, same height
 ════════════════════════════════════════════════════════════ */
@@ -793,20 +646,27 @@ body.dark /* ══════════════════════�
   padding: 14px 32px;
   gap: 12px;
   flex-wrap: wrap;
-  background: #f0f4fa;
+  background: transparent;  /* matches NOC transparent tab rows */
   position: relative;
-  z-index: 10;
+  z-index: 500;
 }
 
 /* Tab pill container */
 .page-tabs {
   display: inline-flex;
-  background: white;
+  background: rgba(255,255,255,.85);
+  backdrop-filter: blur(12px);
   border-radius: 12px;
   padding: 5px;
   gap: 3px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  box-shadow: 0 2px 12px rgba(30,58,110,.1);
+  border: 1.5px solid rgba(255,255,255,.9);
   flex-shrink: 0;
+}
+body.dark .page-tabs {
+  background: rgba(15,23,42,.8);
+  border-color: rgba(30,58,110,.4);
+  box-shadow: 0 2px 12px rgba(0,0,0,.3);
 }
 
 /* Right-side controls wrapper */
@@ -817,6 +677,25 @@ body.dark /* ══════════════════════�
   flex-wrap: wrap;
 }
 
+/* Tab buttons */
+.exp-tab {
+  padding: 9px 22px; border: none; background: transparent;
+  border-radius: 8px; font-size: 13.5px; font-weight: 600;
+  font-family: inherit; cursor: pointer; color: #4b6a90;
+  transition: all 0.22s cubic-bezier(.4,0,.2,1);
+  position: relative;
+}
+.exp-tab:hover { background: rgba(255,255,255,.7); color: #1e3a6e; transform: translateY(-1px); }
+.exp-tab.active {
+  background: linear-gradient(135deg, #1e3a6e, #2d5fa8);
+  color: white;
+  box-shadow: 0 4px 14px rgba(30,58,110,.35);
+  transform: translateY(-1px);
+}
+body.dark .exp-tab { color: #475569; }
+body.dark .exp-tab:hover { color: #93c5fd; background: rgba(30,41,59,.5); }
+body.dark .exp-tab.active { background: linear-gradient(135deg, #1e3a6e, #1e40af); color: white; }
+
 /* Shared filter input styles */
 .pe-filter-date {
   padding: 8px 10px;
@@ -825,11 +704,17 @@ body.dark /* ══════════════════════�
   font-size: 13px;
   color: #374151;
   outline: none;
-  background: white;
+  background: rgba(255,255,255,.85);
+  backdrop-filter: blur(8px);
   font-family: inherit;
-  transition: border-color .2s;
+  transition: border-color .2s, box-shadow .2s;
 }
-.pe-filter-date:focus { border-color: #1e3a6e; }
+.pe-filter-date:focus { border-color: #1e3a6e; box-shadow: 0 0 0 3px rgba(30,58,110,.1); }
+body.dark .pe-filter-date {
+  background: rgba(15,23,42,.75);
+  border-color: rgba(30,58,110,.4);
+  color: #e2e8f0;
+}
 
 .pe-filter-text {
   padding: 8px 12px;
@@ -838,12 +723,18 @@ body.dark /* ══════════════════════�
   font-size: 13px;
   color: #374151;
   outline: none;
-  background: white;
+  background: rgba(255,255,255,.85);
+  backdrop-filter: blur(8px);
   min-width: 130px;
   font-family: inherit;
-  transition: border-color .2s;
+  transition: border-color .2s, box-shadow .2s;
 }
-.pe-filter-text:focus { border-color: #1e3a6e; }
+.pe-filter-text:focus { border-color: #1e3a6e; box-shadow: 0 0 0 3px rgba(30,58,110,.1); }
+body.dark .pe-filter-text {
+  background: rgba(15,23,42,.75);
+  border-color: rgba(30,58,110,.4);
+  color: #93c5fd;
+}
 
 .pe-filter-select {
   padding: 8px 12px;
@@ -852,13 +743,19 @@ body.dark /* ══════════════════════�
   font-size: 13px;
   font-weight: 600;
   color: #374151;
-  background: white;
+  background: rgba(255,255,255,.85);
+  backdrop-filter: blur(8px);
   outline: none;
   cursor: pointer;
   font-family: inherit;
-  transition: border-color .2s;
+  transition: border-color .2s, box-shadow .2s;
 }
-.pe-filter-select:focus { border-color: #1e3a6e; }
+.pe-filter-select:focus { border-color: #1e3a6e; box-shadow: 0 0 0 3px rgba(30,58,110,.1); }
+body.dark .pe-filter-select {
+  background: rgba(15,23,42,.75);
+  border-color: rgba(30,58,110,.4);
+  color: #93c5fd;
+}
 
 .pe-apply-btn {
   display: inline-flex;
@@ -873,17 +770,22 @@ body.dark /* ══════════════════════�
   font-weight: 700;
   cursor: pointer;
   font-family: inherit;
-  transition: opacity .2s;
+  transition: all 0.22s cubic-bezier(.34,1.56,.64,1);
   white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(30,58,110,.3);
 }
-.pe-apply-btn:hover { opacity: .88; }
+.pe-apply-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(30,58,110,.4);
+}
 
 .pe-clear-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   padding: 8px 14px;
-  background: white;
+  background: rgba(255,255,255,.78);
+  backdrop-filter: blur(8px);
   color: #6b7280;
   border: 1.5px solid #c8d8e8;
   border-radius: 8px;
@@ -894,7 +796,12 @@ body.dark /* ══════════════════════�
   transition: all .2s;
   white-space: nowrap;
 }
-.pe-clear-btn:hover { border-color: #1e3a6e; color: #1e3a6e; }
+.pe-clear-btn:hover { border-color: #1e3a6e; color: #1e3a6e; background: white; }
+body.dark .pe-clear-btn {
+  background: rgba(15,23,42,.75);
+  border-color: rgba(30,58,110,.4);
+  color: #64748b;
+}
 
 /* pe-filter-bar is the existing class — keep compatible */
 .pe-filter-bar {
@@ -903,25 +810,6 @@ body.dark /* ══════════════════════�
   gap: 8px;
   flex-wrap: wrap;
 }
-
-/* Dark mode */
-body.dark .page-tab-row  { background: rgba(6,12,24,.8); }
-body.dark .page-tabs      { background: rgba(20,30,60,.8); box-shadow: 0 2px 12px rgba(0,0,0,.3); }
-body.dark .pe-filter-date,
-body.dark .pe-filter-text,
-body.dark .pe-filter-select {
-  background: rgba(20,30,60,.7);
-  border-color: rgba(30,58,110,.4);
-  color: #93c5fd;
-}
-body.dark .pe-clear-btn {
-  background: rgba(20,30,60,.7);
-  border-color: rgba(30,58,110,.4);
-  color: #64748b;
-}
-
-.exp-tab { color: #64748b; }
-body.dark .exp-tab.active { background: #1e3a6e; color: white; }
 
 /* Banner header dropdowns */
 .inc-tbl-banner { position: relative; }
@@ -972,85 +860,6 @@ body.dark .exp-sub-dd-btn { background: rgba(15,23,42,.75); border-color: #1e3a5
 }
 .exp-sub-dd.show { display: block; animation: dd-drop 0.2s cubic-bezier(.34,1.56,.64,1); }
 body.dark .exp-sub-dd { background: #1e293b; border-color: #334155; }
-/* ═══════════════════════════════════════════════════════════
-   UNIFIED FILTER BAR — Project Expenses & Company Expenses
-   Filter controls sit on the RIGHT side of the tabs row
-═══════════════════════════════════════════════════════════ */
-
-.pe-filter-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.pe-filter-select {
-  padding: 9px 14px;
-  border: 1.5px solid #c8d8e8;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: inherit;
-  outline: none;
-  background: white;
-  color: #1e3a6e;
-  cursor: pointer;
-  min-width: 130px;
-  box-shadow: 0 2px 10px rgba(30,58,110,.08);
-  transition: border-color 0.2s, box-shadow 0.2s;
-  appearance: auto;
-}
-.pe-filter-select:focus,
-.pe-filter-select:hover {
-  border-color: #1e3a6e;
-  box-shadow: 0 4px 14px rgba(30,58,110,.15);
-}
-body.dark .pe-filter-select {
-  background: rgba(15,23,42,.75);
-  border-color: #1e3a5f;
-  color: #93c5fd;
-}
-
-.pe-filter-date {
-  padding: 9px 12px;
-  border: 1.5px solid #c8d8e8;
-  border-radius: 10px;
-  font-size: 13px;
-  font-family: inherit;
-  outline: none;
-  background: white;
-  color: #374151;
-  box-shadow: 0 2px 10px rgba(30,58,110,.08);
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.pe-filter-date:focus {
-  border-color: #1e3a6e;
-  box-shadow: 0 4px 14px rgba(30,58,110,.15);
-}
-body.dark .pe-filter-date {
-  background: rgba(15,23,42,.75);
-  border-color: #1e3a5f;
-  color: #e2e8f0;
-}
-
-.pe-apply-btn {
-  padding: 9px 22px;
-  background: linear-gradient(135deg, #1e3a6e, #2d5fa8);
-  color: white;
-  border: none;
-  border-radius: 10px;
-  font-size: 13px;
-  font-weight: 700;
-  font-family: inherit;
-  cursor: pointer;
-  box-shadow: 0 4px 14px rgba(30,58,110,.3);
-  transition: all 0.22s cubic-bezier(.34,1.56,.64,1);
-}
-.pe-apply-btn:hover {
-  background: linear-gradient(135deg, #2d5fa8, #3b7fd4);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 22px rgba(30,58,110,.4);
-}
 /* ============================================================
    PAGE LAYOUT SYSTEM — consistent across all pages
    ============================================================ */
@@ -1062,7 +871,8 @@ body.dark .pe-filter-date {
   position: relative;
   background: linear-gradient(135deg, #1a3460 0%, #1e3a6e 45%, #2a52a0 80%, #1e4080 100%);
   padding: 22px 32px;
-  z-index: 1;
+  z-index: 2;
+  isolation: isolate;
   /* NO overflow:hidden — critical for dropdown visibility */
 }
 body.dark .page-header-banner {
@@ -1158,14 +968,17 @@ body.dark .page-header-banner {
 /* ── Tab pill container ─────────────────────────────────────  */
 .tabs-wrap {
   display: inline-flex;
-  background: white;
+  background: rgba(255,255,255,.85);
+  backdrop-filter: blur(12px);
   border-radius: 12px;
   padding: 5px;
   gap: 3px;
-  box-shadow: 0 2px 12px rgba(0,0,0,.08);
+  box-shadow: 0 2px 12px rgba(30,58,110,.1);
+  border: 1.5px solid rgba(255,255,255,.9);
 }
 body.dark .tabs-wrap {
   background: rgba(15,23,42,.8);
+  border-color: rgba(30,58,110,.4);
   box-shadow: 0 2px 12px rgba(0,0,0,.3);
 }
 

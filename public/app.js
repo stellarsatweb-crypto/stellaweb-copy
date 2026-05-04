@@ -23,13 +23,13 @@ const toggleConfirmPassword = document.getElementById("toggleConfirmPassword");
 let mode = "signin";
 
 const DASHBOARD_BY_ROLE = {
-  finance: "finance-dashboard.html",
-  noc: "noc-dashboard.html",
+  finance: "/modules/finance/finance-dashboard.html",
+  noc: "/modules/noc/noc-dashboard.html",
 };
 
 function getDashboardPathForRole(role) {
   const key = String(role || "").trim().toLowerCase();
-  return DASHBOARD_BY_ROLE[key] || "noc-dashboard.html";
+  return DASHBOARD_BY_ROLE[key] || "/modules/noc/noc-dashboard.html";
 }
 
 /* ================= API CALL ================= */

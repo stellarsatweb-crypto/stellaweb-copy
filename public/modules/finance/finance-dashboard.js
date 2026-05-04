@@ -1,11 +1,22 @@
-/* ================= FINANCE STANDALONE ADAPTER =================
-   Loaded after dashboard.js. Keeps shared sidebar/auth/layout intact and replaces
-   only Finance page implementations with adapted standalone Finance functions.
+/* ================= FINANCE MODULE ADAPTER =================
+   Keeps shared sidebar/auth/layout intact and renders adapted standalone
+   Finance functions inside this role module.
 */
 
-const financeMainContent = document.getElementById("mainContent");
+const getFinanceMainContent = () => document.getElementById("mainContent");
 const financeUser = (() => { try { return JSON.parse(localStorage.getItem("user") || "{}"); } catch { return {}; } })();
 const FINANCE_STANDALONE_API = "";
+
+/* ── Safe fallbacks for shared utilities from session.js ── */
+if (typeof formatCurrency === "undefined") {
+  window.formatCurrency = (n) => "\u20b1" + (Number(n) || 0).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+if (typeof formatDate === "undefined") {
+  window.formatDate = (d) => { try { return new Date(d).toLocaleDateString("en-PH", { year:"numeric", month:"short", day:"numeric" }); } catch(e) { return d || "\u2014"; } };
+}
+if (typeof showToast === "undefined") {
+  window.showToast = (msg, type) => console.log("[Toast]", type, msg);
+}
 
 function financeStandaloneEnsureCharts() {
   if (window.Chart) return Promise.resolve();
@@ -21,93 +32,91 @@ function financeStandaloneEnsureCharts() {
 }
 
 function loadDashboard() {
-  financeMainContent.innerHTML = `
-    <div class="topbar">
-      <div class="left">
-        <h2><i class="ri-dashboard-line" style="color:#2f4b85;"></i> Finance Dashboard</h2>
-        <p style="color:#6b7280;font-size:13px;margin-top:2px;">Welcome back, ${financeUser?.full_name || financeUser?.email || "Finance Officer"}</p>
-      </div>
-      <div class="right">
-        <div class="search-box">
-          <i class="ri-search-line"></i>
-          <input type="text" placeholder="Search records…">
+  getFinanceMainContent().innerHTML = `
+  <div class="exp-page">
+
+    <!-- Page Header — matches NOC page-header-banner pattern -->
+    <div class="page-header-banner" style="position:relative;z-index:2;">
+      <div class="dec-circle-1"></div>
+      <div class="dec-circle-2"></div>
+      <div class="header-inner">
+        <div class="header-identity">
+          <div class="header-icon"><i class="ri-dashboard-line"></i></div>
+          <div>
+            <h2>Finance Dashboard</h2>
+            <p class="header-sub">Welcome back, ${financeUser?.full_name || financeUser?.email || "Finance Officer"}</p>
+          </div>
         </div>
-        <button class="icon-btn" title="Toggle Dark Mode" onclick="document.body.classList.toggle('dark'); localStorage.setItem('darkMode', document.body.classList.contains('dark'))">
-          <i class="ri-moon-line"></i>
-        </button>
-        <button class="icon-btn" title="Notifications">
-          <i class="ri-notification-3-line"></i>
-        </button>
+        <div class="search-box" style="max-width:300px;">
+          <i class="ri-search-line"></i>
+          <input type="text" placeholder="Search here">
+        </div>
       </div>
     </div>
 
-    <div class="section-title">Key Financial Indicators</div>
-
-    <div class="cards" id="dashKpiCards">
-      <div class="card">
-        <div class="card-top"><div class="icon-box green"><i class="ri-line-chart-line"></i></div>
-          <div class="stat"><h1 id="kpiIncome">0</h1><span class="trend up">↑ this year</span></div>
-        </div><p>Total Company Income</p>
+    <!-- KPI Cards -->
+    <div class="exp-kpi-row" style="padding:24px 32px 0;">
+      <div class="exp-kpi-card exp-kpi-teal" style="cursor:pointer;" onclick="openPage('companyIncome')">
+        <div class="exp-kpi-icon"><i class="ri-line-chart-line"></i></div>
+        <div>
+          <div class="exp-kpi-val" id="kpiIncome">—</div>
+          <div class="exp-kpi-lbl">Total Company Income</div>
+        </div>
       </div>
-      <div class="card pulse">
-        <div class="card-top"><div class="icon-box red"><i class="ri-shopping-cart-line"></i></div>
-          <div class="stat"><h1 id="kpiCompExp">0</h1><span class="trend down">this year</span></div>
-        </div><p>Company Expenses</p>
+      <div class="exp-kpi-card exp-kpi-blue" style="cursor:pointer;" onclick="openPage('companyExpenses')">
+        <div class="exp-kpi-icon"><i class="ri-shopping-cart-line"></i></div>
+        <div>
+          <div class="exp-kpi-val" id="kpiCompExp">—</div>
+          <div class="exp-kpi-lbl">Company Expenses</div>
+        </div>
       </div>
-      <div class="card">
-        <div class="card-top"><div class="icon-box orange"><i class="ri-file-list-3-line"></i></div>
-          <div class="stat"><h1 id="kpiProjExp">0</h1><span class="trend down">this year</span></div>
-        </div><p>Project Expenses</p>
+      <div class="exp-kpi-card exp-kpi-cyan" style="cursor:pointer;" onclick="openPage('projectExpenses')">
+        <div class="exp-kpi-icon"><i class="ri-file-list-3-line"></i></div>
+        <div>
+          <div class="exp-kpi-val" id="kpiProjExp">—</div>
+          <div class="exp-kpi-lbl">Project Expenses</div>
+        </div>
       </div>
-      <div class="card">
-        <div class="card-top"><div class="icon-box blue"><i class="ri-hand-coin-line"></i></div>
-          <div class="stat"><h1 id="kpiCollections">0</h1><span class="trend up">↑ this year</span></div>
-        </div><p>Total Collections</p>
+      <div class="exp-kpi-card exp-kpi-indigo" style="cursor:pointer;" onclick="openPage('collections')">
+        <div class="exp-kpi-icon"><i class="ri-hand-coin-line"></i></div>
+        <div>
+          <div class="exp-kpi-val" id="kpiCollections">—</div>
+          <div class="exp-kpi-lbl">Total Collections</div>
+        </div>
       </div>
     </div>
 
-    <div class="section-title">Recent Transactions</div>
-
-    <div class="table-container">
-      <div class="table-title"><i class="ri-exchange-funds-line"></i> Latest Financial Activity</div>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Date</th>
-            <th>Description</th>
-            <th>Category</th>
-            <th>Amount</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${generateDashboardRows()}
-        </tbody>
-      </table>
+    <!-- Recent Transactions -->
+    <div style="padding:24px 32px 0;">
+      <div class="inc-tbl-wrap">
+        <div class="inc-tbl-banner"><i class="ri-exchange-funds-line"></i> LATEST FINANCIAL ACTIVITY</div>
+        <table class="inc-tbl">
+          <thead>
+            <tr><th>#</th><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            ${generateDashboardRows()}
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <div class="section-title">Collections Overview</div>
-    <div class="table-container">
-      <div class="table-title"><i class="ri-hand-coin-line"></i> Pending & Recent Collections</div>
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            <th>Client / Project</th>
-            <th>Due Date</th>
-            <th>Amount Due</th>
-            <th>Collected</th>
-            <th>Balance</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${generateCollectionRows()}
-        </tbody>
-      </table>
+    <!-- Collections Overview -->
+    <div style="padding:24px 32px 32px;">
+      <div class="inc-tbl-wrap">
+        <div class="inc-tbl-banner"><i class="ri-hand-coin-line"></i> PENDING &amp; RECENT COLLECTIONS</div>
+        <table class="inc-tbl">
+          <thead>
+            <tr><th>#</th><th>Client / Project</th><th>Due Date</th><th>Amount Due</th><th>Collected</th><th>Balance</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            ${generateCollectionRows()}
+          </tbody>
+        </table>
+      </div>
     </div>
-  `;
+
+  </div>`;
   // Load KPIs from FINANCE_STANDALONE_API
   financeStandaloneApi("GET", "/api/report/kpis").then(kpis => {
     const fmt = (n) => formatCurrency(n);
@@ -140,9 +149,9 @@ function generateDashboardRows() {
       <td>${i + 1}</td>
       <td>${formatDate(r.date)}</td>
       <td>${r.desc}</td>
-      <td><span class="badge ${r.cat === "Income" || r.cat === "Collection" ? "completed" : r.cat === "Project Expense" ? "medium" : "high"}">${r.cat}</span></td>
-      <td style="font-weight:600;color:${r.cat === "Income" || r.cat === "Collection" ? "#16a34a" : "#dc2626"}">${formatCurrency(r.amount)}</td>
-      <td><span class="badge ${r.status}">${r.status.charAt(0).toUpperCase() + r.status.slice(1)}</span></td>
+      <td>${(() => { const cfg={Income:['#dcfce7','#14532d'],Collection:['#dbeafe','#1e40af'],'Project Expense':['#fef3c7','#92400e'],Expense:['#fee2e2','#991b1b']}; const [bg,fg]=cfg[r.cat]||['#e5e7eb','#374151']; return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800;background:${bg};color:${fg};letter-spacing:.4px;">${r.cat}</span>`; })()}</td>
+      <td><span style="font-size:14px;font-weight:900;color:${r.cat === "Income" || r.cat === "Collection" ? "#16a34a" : "#dc2626"};background:${r.cat === "Income" || r.cat === "Collection" ? "rgba(22,163,74,.07)" : "rgba(220,38,38,.07)"};padding:3px 9px;border-radius:7px;display:inline-block;">${formatCurrency(r.amount)}</span></td>
+      <td>${(() => { const cfg={completed:['#dcfce7','#14532d','Completed'],pending:['#f1f5f9','#475569','Pending'],progress:['#fef3c7','#92400e','In Progress']}; const [bg,fg,lbl]=cfg[r.status]||['#e5e7eb','#374151',r.status]; return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800;background:${bg};color:${fg};letter-spacing:.4px;">${lbl}</span>`; })()}</td>
     </tr>
   `).join("");
 }
@@ -163,12 +172,12 @@ function generateCollectionRows() {
     return `
       <tr>
         <td>${i + 1}</td>
-        <td>${r.client}</td>
-        <td>${formatDate(r.due)}</td>
-        <td style="font-weight:600;">${formatCurrency(r.due_amt)}</td>
-        <td style="color:#16a34a;font-weight:600;">${formatCurrency(r.collected)}</td>
-        <td style="color:${balance > 0 ? "#dc2626" : "#16a34a"};font-weight:600;">${formatCurrency(balance)}</td>
-        <td><span class="badge ${status}">${statusLabel}</span></td>
+        <td style="font-weight:700;color:#374151;">${r.client}</td>
+        <td style="color:#64748b;">${formatDate(r.due)}</td>
+        <td><span style="font-size:13.5px;font-weight:900;color:#1e3a6e;background:rgba(30,58,110,.07);padding:3px 9px;border-radius:7px;display:inline-block;">${formatCurrency(r.due_amt)}</span></td>
+        <td><span style="font-size:13.5px;font-weight:900;color:#16a34a;background:rgba(22,163,74,.07);padding:3px 9px;border-radius:7px;display:inline-block;">${formatCurrency(r.collected)}</span></td>
+        <td><span style="font-size:13.5px;font-weight:900;color:${balance > 0 ? "#dc2626" : "#16a34a"};background:${balance > 0 ? "rgba(220,38,38,.07)" : "rgba(22,163,74,.07)"};padding:3px 9px;border-radius:7px;display:inline-block;">${formatCurrency(balance)}</span></td>
+        <td>${(() => { const cfg={completed:['#dcfce7','#14532d','Paid'],progress:['#fef3c7','#92400e','Partial'],pending:['#f1f5f9','#475569','Unpaid']}; const [bg,fg,lbl]=cfg[status]||['#e5e7eb','#374151',statusLabel]; return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800;background:${bg};color:${fg};letter-spacing:.4px;">${lbl}</span>`; })()}</td>
       </tr>
     `;
   }).join("");
@@ -235,7 +244,7 @@ function loadCompanyIncome() {
   incSearchQuery  = "";
   incFilterLot = incFilterSource = incFilterFrom = incFilterTo = "";
 
-  financeMainContent.innerHTML = `
+  getFinanceMainContent().innerHTML = `
   <div class="inc-page">
 
     <!-- Header -->
@@ -682,7 +691,7 @@ function loadCompanyExpenses() {
   expFilterCat    = "";
   expFilterStatus = "";
 
-  financeMainContent.innerHTML = `
+  getFinanceMainContent().innerHTML = `
   <div class="exp-page">
 
     <!-- Header -->
@@ -1599,7 +1608,7 @@ function loadProjectExpenses() {
   if (peBarChart) { peBarChart.destroy(); peBarChart = null; }
   if (pePieChart) { pePieChart.destroy(); pePieChart = null; }
 
-  financeMainContent.innerHTML = `
+  getFinanceMainContent().innerHTML = `
   <div class="exp-page">
 
     <!-- Header -->
@@ -1643,6 +1652,7 @@ function loadProjectExpenses() {
         <input type="date" id="peToDate"   class="pe-filter-date" style="display:none;">
         <button id="peApplyBtn" onclick="peApplyFilter()" class="pe-apply-btn" style="display:none;">Apply Filter</button>
       </div>
+    </div>
     <!-- Body -->
     <div class="exp-body">
 
@@ -2103,7 +2113,7 @@ async function loadFinancialReport() {
   const yearOpts = [yr-2,yr-1,yr,yr+1]
     .map(y => `<option value="${y}" ${y===yr?"selected":""}>${y}</option>`).join("");
 
-  financeMainContent.innerHTML = `
+  getFinanceMainContent().innerHTML = `
   <div style="background:#f0f4fa;min-height:100%;padding-bottom:48px;">
 
     <!-- Header -->
@@ -2908,7 +2918,7 @@ function loadCollections() {
   if (colBarChart) { colBarChart.destroy(); colBarChart = null; }
   if (colPieChart) { colPieChart.destroy(); colPieChart = null; }
 
-  financeMainContent.innerHTML = `
+  getFinanceMainContent().innerHTML = `
   <div style="background:#f0f4fa;min-height:100%;padding-bottom:40px;">
 
     <!-- Page Header -->
@@ -3649,7 +3659,7 @@ function loadEmployee() {
   empActiveTab = "reimburse";
   empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = "";
 
-  financeMainContent.innerHTML = `
+  getFinanceMainContent().innerHTML = `
   <div style="background:#f0f4fa;min-height:100%;">
 
     <!-- Header -->
@@ -4967,9 +4977,9 @@ function capitalize(str) {
 
 /* ================= FINANCE LOADER OVERRIDES ================= */
 (function installFinanceStandaloneLoaders() {
-  const wrap = (fn) => async function financeStandaloneWrappedLoader() {
+  const wrap = (fn) => async function financeStandaloneWrappedLoader(...args) {
     await financeStandaloneEnsureCharts().catch(() => {});
-    return fn();
+    return fn(...args);
   };
 
   window.loadFinanceDashboard = wrap(loadDashboard);
@@ -4983,7 +4993,21 @@ function capitalize(str) {
     return loadDashboard();
   });
 
-  if (String(financeUser?.role || "").toLowerCase() === "finance") {
-    window.loadFinanceDashboard();
-  }
+  window.FINANCE_PAGE_DEFS = {
+    financeDashboard: { label: "Dashboard", icon: "ri-dashboard-line", loader: () => window.loadFinanceDashboard() },
+    companyIncome: { label: "Company Income", icon: "ri-line-chart-line", loader: () => window.loadFinanceCompanyIncome() },
+    companyExpenses: { label: "Company Expenses", icon: "ri-shopping-cart-line", loader: () => window.loadFinanceCompanyExpenses() },
+    projectExpenses: { label: "Project Expenses", icon: "ri-file-list-3-line", loader: () => window.loadFinanceLedger("project_expenses") },
+    collections: { label: "Collections", icon: "ri-hand-coin-line", loader: () => window.loadFinanceLedger("collections") },
+    employee: { label: "Employee", icon: "ri-user-line", loader: () => window.loadFinanceEmployeeCenter() },
+    financialReport: { label: "Financial Report", icon: "ri-bar-chart-2-line", loader: () => window.loadFinanceReportV2() },
+    logout: { label: "Log Out", icon: "ri-logout-circle-r-line", loader: () => showLogoutModal() }
+  };
+  window.FINANCE_SIDEBAR_SECTIONS = [
+    { label: "Main", pages: ["financeDashboard"] },
+    { label: "Finance", pages: ["companyIncome", "companyExpenses", "projectExpenses", "collections"] },
+    { label: "Management", pages: ["employee", "financialReport"] },
+    { label: "System", pages: ["logout"] }
+  ];
+  window.FINANCE_START_PAGE = "financeDashboard";
 })();
