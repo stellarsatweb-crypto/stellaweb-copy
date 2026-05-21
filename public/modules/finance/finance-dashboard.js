@@ -2129,6 +2129,12 @@ async function peRenderSubTable() {
 /* ── Add / Edit modal ── */
 let peEditId = null;
 
+function peSetModalOpen(isOpen) {
+  const modal = document.getElementById("peModal");
+  if (modal) modal.style.display = isOpen ? "flex" : "none";
+  document.body.classList.toggle("finance-modal-lock", isOpen);
+}
+
 function peOpenAdd() {
   peEditId = null;
   const type = peActiveTab === "purchases" ? "purchases" : "expenses";
@@ -2141,7 +2147,7 @@ function peOpenAdd() {
   document.getElementById("peFVendor").value  = "";
   document.getElementById("peFAmount").value  = "";
   document.getElementById("peFStatus").value  = "pending";
-  document.getElementById("peModal").style.display = "flex";
+  peSetModalOpen(true);
 }
 function peOpenEdit(id, date, project, desc, cat, vendor, amount, status, type) {
   peEditId = id;
@@ -2154,9 +2160,9 @@ function peOpenEdit(id, date, project, desc, cat, vendor, amount, status, type) 
   document.getElementById("peFAmount").value  = amount;
   document.getElementById("peFStatus").value  = status;
   document.getElementById("peFProject").value = project || "";
-  document.getElementById("peModal").style.display = "flex";
+  peSetModalOpen(true);
 }
-function peCloseModal() { document.getElementById("peModal").style.display = "none"; peEditId = null; }
+function peCloseModal() { peSetModalOpen(false); peEditId = null; }
 async function peSave() {
   const date    = document.getElementById("peFDate").value;
   const project = document.getElementById("peFProject").value;
@@ -3014,6 +3020,7 @@ let colExpandedRow = null;
 let colActiveTab  = "overview";
 let colBarChart   = null;
 let colPieChart   = null;
+let colRowsCache   = [];
 
 function loadCollections() {
   colFilterFrom = ""; colFilterTo = ""; colFilterSt = "";
@@ -3039,10 +3046,6 @@ function loadCollections() {
             <h2 style="font-size:22px;font-weight:800;color:white;margin:0;letter-spacing:-.3px;">Collections</h2>
             <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Track client payments and outstanding balances</p>
           </div>
-        </div>
-        <div id="colSearchWrap" class="search-box" style="max-width:300px;background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);">
-          <i class="ri-search-line" style="color:rgba(255,255,255,.7);"></i>
-          <input type="text" id="colSearch" placeholder="Search here" style="color:white;width:100%;">
         </div>
       </div>
     </div>
@@ -3089,20 +3092,14 @@ function loadCollections() {
 
         <!-- Status Filter -->
         <div style="position:relative;" id="colFltWrap">
-          <button id="colFltBtn"
-            style="display:inline-flex;align-items:center;gap:7px;padding:9px 16px;border-radius:9px;
-                   border:1.5px solid #c8d8e8;background:white;color:#1e3a6e;font-size:13px;font-weight:700;
-                   cursor:pointer;font-family:inherit;">
+          <button id="colFltBtn" class="collection-filter-btn">
             <i class="ri-equalizer-line"></i> Filter <i class="ri-arrow-down-s-line"></i>
           </button>
-          <div id="colFltDd"
-            style="display:none;position:absolute;right:0;top:calc(100% + 6px);background:white;
-                   border:1.5px solid #c8d8e8;border-radius:12px;box-shadow:0 8px 28px rgba(30,58,110,.13);
-                   min-width:160px;z-index:9999;overflow:hidden;">
-            <div class="col-flt-opt active" onclick="colSetStatus('')">All Status</div>
-            <div class="col-flt-opt" onclick="colSetStatus('Approved')">Approved</div>
-            <div class="col-flt-opt" onclick="colSetStatus('Pending')">Pending</div>
-            <div class="col-flt-opt" onclick="colSetStatus('Decline')">Decline</div>
+          <div id="colFltDd" class="collection-dropdown">
+            <div class="col-flt-opt collection-dropdown-option active" onclick="colSetStatus('')">All Status</div>
+            <div class="col-flt-opt collection-dropdown-option" onclick="colSetStatus('Approved')">Approved</div>
+            <div class="col-flt-opt collection-dropdown-option" onclick="colSetStatus('Pending')">Pending</div>
+            <div class="col-flt-opt collection-dropdown-option" onclick="colSetStatus('Decline')">Decline</div>
           </div>
         </div>
       </div>
@@ -3179,20 +3176,14 @@ function loadCollections() {
 
           <!-- Status Filter -->
           <div style="position:relative;" id="colFltWrap2">
-            <button id="colFltBtn2"
-              style="display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:9px;
-                     border:1.5px solid #c8d8e8;background:white;color:#1e3a6e;font-size:13px;font-weight:700;
-                     cursor:pointer;font-family:inherit;">
+            <button id="colFltBtn2" class="collection-filter-btn">
               <i class="ri-equalizer-line"></i> Filter
             </button>
-            <div id="colFltDd2"
-              style="display:none;position:absolute;right:0;top:calc(100% + 6px);background:white;
-                     border:1.5px solid #c8d8e8;border-radius:12px;box-shadow:0 8px 28px rgba(30,58,110,.13);
-                     min-width:160px;z-index:9999;overflow:hidden;">
-              <div class="col-flt-opt2 active" onclick="colSetStatus2('')">All Status</div>
-              <div class="col-flt-opt2" onclick="colSetStatus2('Approved')">Approved</div>
-              <div class="col-flt-opt2" onclick="colSetStatus2('Pending')">Pending</div>
-              <div class="col-flt-opt2" onclick="colSetStatus2('Decline')">Decline</div>
+            <div id="colFltDd2" class="collection-dropdown">
+              <div class="col-flt-opt2 collection-dropdown-option active" onclick="colSetStatus2('')">All Status</div>
+              <div class="col-flt-opt2 collection-dropdown-option" onclick="colSetStatus2('Approved')">Approved</div>
+              <div class="col-flt-opt2 collection-dropdown-option" onclick="colSetStatus2('Pending')">Pending</div>
+              <div class="col-flt-opt2 collection-dropdown-option" onclick="colSetStatus2('Decline')">Decline</div>
             </div>
           </div>
 
@@ -3235,11 +3226,11 @@ function loadCollections() {
   </div>
 
   <style>
-    .col-flt-opt  { padding:10px 16px;font-size:13px;color:#374151;cursor:pointer;transition:.15s; }
-    .col-flt-opt:hover  { background:#f0f4ff; }
-    .col-flt-opt.active { color:#1e3a6e;font-weight:700;background:#eef4ff; }
-    .col-flt-opt2  { padding:10px 16px;font-size:13px;color:#374151;cursor:pointer;transition:.15s; }
-    .col-flt-opt2:hover  { background:#f0f4ff; }
+    .col-flt-opt,
+    .col-flt-opt2 { padding:10px 16px;font-size:13px;color:#374151;cursor:pointer;transition:.15s; }
+    .col-flt-opt:hover,
+    .col-flt-opt2:hover { background:#f0f4ff; }
+    .col-flt-opt.active,
     .col-flt-opt2.active { color:#1e3a6e;font-weight:700;background:#eef4ff; }
   </style>`;
 
@@ -3491,6 +3482,7 @@ async function colRenderTable() {
   if (colDataSt)   url += `&status=${encodeURIComponent(colDataSt)}`;
   try {
     const rows = await financeStandaloneApi("GET", url);
+    colRowsCache = rows;
     if (!rows.length) {
       tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:44px;color:#9ca3af;">
         <i class="ri-inbox-line" style="font-size:28px;display:block;margin-bottom:8px;opacity:.4;"></i>No records found.</td></tr>`;
@@ -3536,7 +3528,7 @@ async function colRenderTable() {
         <td style="padding:14px 16px;text-align:center;"><span class="badge ${sClass}">${r.status||"Pending"}</span></td>
         <td style="padding:14px 16px;text-align:center;">
           <div style="display:flex;gap:6px;justify-content:center;">
-            <button onclick="colOpenEdit(${r.id},'${r.date}','${clientEsc}','${projEsc}','${orEsc}',${r.amount_due},'${r.status||"Pending"}')"
+            <button onclick="colOpenEdit(${r.id})"
               style="width:32px;height:32px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:14px;" title="Edit">
               <i class="ri-pencil-line"></i>
             </button>
@@ -3557,6 +3549,7 @@ async function colRenderTable() {
     }).join("");
     if (colExpandedRow) colLoadPayments(colExpandedRow);
   } catch (err) {
+    colRowsCache = [];
     tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:40px;color:#dc2626;">Error loading records: ${err.message}</td></tr>`;
   }
 }
@@ -3572,15 +3565,22 @@ function colOpenAdd() {
   document.getElementById("colFStatus").value    = "Pending";
   document.getElementById("colModal").style.display = "flex";
 }
-function colOpenEdit(id, date, client, project, orNum, due, status) {
+function colOpenEdit(id) {
+  const record = colRowsCache.find(row => String(row.id) === String(id));
+  if (!record) {
+    showToast("Unable to load the selected collection. Please refresh and try again.", "error");
+    return;
+  }
+  const date = String(record.date || "").slice(0, 10);
+  const project = record.project || record.project_name || "";
   document.getElementById("colModalTitle").textContent = "Edit Collection";
   document.getElementById("colEditId").value     = id;
   document.getElementById("colFDate").value      = date;
-  document.getElementById("colFClient").value    = client;
+  document.getElementById("colFClient").value    = record.client || record.client_name || "";
   document.getElementById("colFProject").value   = project === "—" ? "" : project;
-  document.getElementById("colFOR").value        = orNum;
-  document.getElementById("colFDue").value       = due;
-  document.getElementById("colFStatus").value    = status || "Pending";
+  document.getElementById("colFOR").value        = record.or_number || "";
+  document.getElementById("colFDue").value       = record.amount_due ?? "";
+  document.getElementById("colFStatus").value    = record.status || "Pending";
   document.getElementById("colModal").style.display = "flex";
 }
 function colCloseModal() { document.getElementById("colModal").style.display = "none"; }
@@ -3604,7 +3604,7 @@ async function colSave() {
       showToast("Collection added.", "success");
     }
     colCloseModal();
-    colRenderTable();
+    await colRenderTable();
     colLoadKpis();
     colRenderCharts();
   } catch (err) { showToast("Save failed: " + err.message, "error"); }
@@ -3666,11 +3666,7 @@ async function colLoadPayments(collectionId) {
       `<p style="font-size:13px;color:#94a3b8;margin:0 0 14px;">No payment records yet.</p>`;
 
     container.innerHTML = `
-      <p style="font-size:12px;font-weight:700;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px;">
-        <i class="ri-history-line"></i> Payment History
-      </p>
-      ${tableHtml}
-      <div style="background:white;border:1.5px solid #dbeafe;border-radius:10px;padding:14px 18px;">
+      <div style="margin-bottom:18px;">
         <p style="font-size:12px;font-weight:700;color:#1e3a6e;text-transform:uppercase;letter-spacing:.6px;margin:0 0 12px;">
           <i class="ri-add-circle-line"></i> Add Payment
         </p>
@@ -3700,7 +3696,11 @@ async function colLoadPayments(collectionId) {
             <i class="ri-save-line"></i> Save
           </button>
         </div>
-      </div>`;
+      </div>
+      <p style="font-size:12px;font-weight:700;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:12px;">
+        <i class="ri-history-line"></i> Payment History
+      </p>
+      ${tableHtml}`;
   } catch (err) {
     container.innerHTML = `<p style="color:#dc2626;font-size:13px;">Failed: ${err.message}</p>`;
   }
