@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/remixicon/fonts/remixicon.css" rel="stylesheet">
+
+  <link rel="stylesheet" href="admin-dashboard.css">
+  <script>window.__dashboardShell = "admin";</script>
+  <script defer src="../../shared/session.js"></script>
+  <script defer src="admin-dashboard.js"></script>
+</head>
+<body>
+
+<div class="admin-layout">
+  <aside class="admin-sidebar" id="adminSidebar">
+    <div class="admin-sidebar-logo">
+      <img src="../../logo.png" alt="Logo" class="admin-logo-img">
+    </div>
+
+    <nav class="admin-sidebar-nav" id="adminSidebarNav" aria-label="Admin navigation"></nav>
+
+    <div class="admin-sidebar-profile" id="adminSidebarProfile"></div>
+
+    <button id="adminToggleSidebar" class="admin-collapse-btn" type="button" aria-label="Toggle sidebar">
+      <i class="ri-arrow-left-s-line"></i>
+    </button>
+  </aside>
+
+  <main class="admin-main">
+    <div id="mainContent"></div>
+  </main>
+</div>
+
+</body>
+</html>

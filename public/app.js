@@ -23,6 +23,7 @@ const toggleConfirmPassword = document.getElementById("toggleConfirmPassword");
 let mode = "signin";
 
 const DASHBOARD_BY_ROLE = {
+  admin: "/modules/admin/admin-dashboard.html",
   finance: "/modules/finance/finance-dashboard.html",
   noc: "/modules/noc/noc-dashboard.html",
 };
@@ -73,7 +74,7 @@ toggleBtn.addEventListener("click", () => {
 
     fullNameInput.parentElement.style.display = "block";
     emailInput.parentElement.style.display = "block";
-    roleField.style.display = "block";
+    roleField.style.display = "none";
     confirmPasswordField.style.display = "block";
     extraOptions.style.display = "none";
 
@@ -113,7 +114,6 @@ form.addEventListener("submit", async (e) => {
   const email = emailInput?.value.trim();
   const password = passwordInput.value;
   const confirmPassword = confirmPasswordInput.value;
-  const role = document.getElementById("role").value;
 
   message.textContent = "";
 
@@ -140,14 +140,21 @@ form.addEventListener("submit", async (e) => {
       return;
     }
 
-    if (!role) {
-      message.style.color = "red";
-      message.textContent = "Please select a role.";
-      return;
-    }
-
     try {
       submitBtn.disabled = true;
+
+      await fetch("/api/auth/validate-staff-id", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ staff_id: id_no }),
+      }).then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 404) {
+          throw new Error("Staff ID validation is not available. Restart the server to load the latest backend changes.");
+        }
+        if (!res.ok || !data.valid) throw new Error(data.error || "Invalid Staff ID.");
+        return data;
+      });
 
       await callAuthApi({
         action: "signup",
@@ -155,7 +162,6 @@ form.addEventListener("submit", async (e) => {
         full_name,
         email,
         password,
-        role,
       });
 
       message.style.color = "green";

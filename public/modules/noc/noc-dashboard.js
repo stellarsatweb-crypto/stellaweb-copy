@@ -86,8 +86,11 @@ function loadInventory() {
   mainContent.innerHTML = `
     <div class="inventory-page">
       <div class="inventory-header">
-        <div>
-          <h2>${title}</h2>
+        <div class="inventory-header-identity">
+          <div class="inventory-header-icon"><i class="ri-dashboard-line"></i></div>
+          <div>
+            <h2>${title}</h2>
+          </div>
         </div>
         <div class="inventory-search">
           <i class="ri-search-line"></i>

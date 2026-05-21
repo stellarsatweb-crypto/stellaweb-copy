@@ -6,6 +6,14 @@
 const getFinanceMainContent = () => document.getElementById("mainContent");
 const financeUser = (() => { try { return JSON.parse(localStorage.getItem("user") || "{}"); } catch { return {}; } })();
 const FINANCE_STANDALONE_API = "";
+const financeChartColors = {
+  income: "#2563eb",
+  expense: "#dc2626",
+  collection: "#16a34a",
+  project: "#d97706",
+  muted: "#64748b",
+  card: "#ffffff"
+};
 
 /* ── Safe fallbacks for shared utilities from session.js ── */
 if (typeof formatCurrency === "undefined") {
@@ -33,17 +41,17 @@ function financeStandaloneEnsureCharts() {
 
 function loadDashboard() {
   getFinanceMainContent().innerHTML = `
-  <div class="exp-page">
+  <div class="exp-page finance-dashboard">
 
     <!-- Page Header — matches NOC page-header-banner pattern -->
-    <div class="page-header-banner" style="position:relative;z-index:2;">
+    <div class="page-header-banner finance-dashboard-header" style="position:relative;z-index:2;">
       <div class="dec-circle-1"></div>
       <div class="dec-circle-2"></div>
       <div class="header-inner">
         <div class="header-identity">
           <div class="header-icon"><i class="ri-dashboard-line"></i></div>
           <div>
-            <h2>Finance Dashboard</h2>
+            <h2>Dashboard</h2>
             <p class="header-sub">Welcome back, ${financeUser?.full_name || financeUser?.email || "Finance Officer"}</p>
           </div>
         </div>
@@ -55,7 +63,7 @@ function loadDashboard() {
     </div>
 
     <!-- KPI Cards -->
-    <div class="exp-kpi-row" style="padding:24px 32px 0;">
+    <div class="exp-kpi-row finance-summary-cards" style="padding:24px 32px 0;">
       <div class="exp-kpi-card exp-kpi-teal" style="cursor:pointer;" onclick="openPage('companyIncome')">
         <div class="exp-kpi-icon"><i class="ri-line-chart-line"></i></div>
         <div>
@@ -87,7 +95,7 @@ function loadDashboard() {
     </div>
 
     <!-- Recent Transactions -->
-    <div style="padding:24px 32px 0;">
+    <div class="finance-table-section" style="padding:24px 32px 0;">
       <div class="inc-tbl-wrap">
         <div class="inc-tbl-banner"><i class="ri-exchange-funds-line"></i> LATEST FINANCIAL ACTIVITY</div>
         <table class="inc-tbl">
@@ -102,7 +110,7 @@ function loadDashboard() {
     </div>
 
     <!-- Collections Overview -->
-    <div style="padding:24px 32px 32px;">
+    <div class="finance-table-section finance-table-section-secondary" style="padding:24px 32px 32px;">
       <div class="inc-tbl-wrap">
         <div class="inc-tbl-banner"><i class="ri-hand-coin-line"></i> PENDING &amp; RECENT COLLECTIONS</div>
         <table class="inc-tbl">
@@ -230,6 +238,7 @@ let incFilterTo     = "";       // income tab to
 let incLineChartInst = null;
 let incBarChartInst  = null;
 let incDeleteId      = null;
+let incTableRows     = [];
 
 function incDestroyCharts() {
   if (incLineChartInst) { incLineChartInst.destroy(); incLineChartInst = null; }
@@ -276,6 +285,7 @@ function loadCompanyIncome() {
     </div>
 
     <!-- Tabs row — tabs left, controls right (consistent across pages) -->
+    <div class="company-income-workspace">
     <div class="page-tab-row">
       <div class="page-tabs">
         <button class="exp-tab active" id="incTabOv">Overview</button>
@@ -341,17 +351,17 @@ function loadCompanyIncome() {
       </div>
 
       <!-- INCOME TABLE -->
-      <div id="incPanelIn" style="display:none;">
+      <div id="incPanelIn" style="display:none;" hidden>
         <!-- Total card at top -->
-        <div style="display:flex;align-items:center;justify-content:space-between;background:#1e3a6e;border-radius:13px;padding:18px 28px;margin-bottom:16px;">
+        <div class="inc-total-summary" style="display:flex;align-items:center;justify-content:space-between;background:#1e3a6e;border-radius:13px;padding:18px 28px;margin-bottom:16px;">
           <div style="display:flex;align-items:center;gap:14px;">
-            <div style="width:46px;height:46px;background:rgba(255,255,255,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;">&#128176;</div>
+            <div class="inc-total-summary-icon" style="width:46px;height:46px;background:rgba(255,255,255,0.15);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;">&#128176;</div>
             <div>
-              <div style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.65);text-transform:uppercase;letter-spacing:.6px;">Total Income</div>
-              <div id="incTableTotal" style="font-size:28px;font-weight:900;color:white;line-height:1.2;">&#8369; 0</div>
+              <div class="inc-total-summary-label" style="font-size:11px;font-weight:600;color:rgba(255,255,255,0.65);text-transform:uppercase;letter-spacing:.6px;">Total Income</div>
+              <div id="incTableTotal" class="inc-total-summary-amount" style="font-size:28px;font-weight:900;color:white;line-height:1.2;">&#8369; 0</div>
             </div>
           </div>
-          <div style="text-align:right;">
+          <div class="inc-total-summary-meta" style="text-align:right;">
             <div id="incTableCount" style="font-size:13px;color:rgba(255,255,255,0.7);"></div>
             <div id="incTableRange" style="font-size:12px;color:rgba(255,255,255,0.5);margin-top:2px;"></div>
           </div>
@@ -368,6 +378,7 @@ function loadCompanyIncome() {
         </div>
       </div>
 
+    </div>
     </div>
   </div>`;
 
@@ -425,10 +436,14 @@ function loadCompanyIncome() {
 function incSwitchTab(tab) {
   incActiveTab = tab;
   const isOv = tab === "overview";
+  const overviewPanel = document.getElementById("incPanelOv");
+  const incomePanel = document.getElementById("incPanelIn");
   document.getElementById("incTabOv").classList.toggle("active",  isOv);
   document.getElementById("incTabIn").classList.toggle("active", !isOv);
-  document.getElementById("incPanelOv").style.display    = isOv ? "" : "none";
-  document.getElementById("incPanelIn").style.display    = isOv ? "none" : "";
+  overviewPanel.hidden = !isOv;
+  incomePanel.hidden = isOv;
+  overviewPanel.style.display = isOv ? "grid" : "none";
+  incomePanel.style.display = isOv ? "none" : "";
   document.getElementById("incAddBtn").style.display     = isOv ? "none" : "inline-flex";
   document.getElementById("incPeriodWrap").style.display = isOv ? "flex" : "none";
   document.getElementById("incFilterBar").style.display  = isOv ? "none" : "flex";
@@ -521,8 +536,8 @@ function incDrawCharts(monthly, byLot) {
   const vals = lbls.map(m => monthMap[m] || 0);
   incLineChartInst = new Chart(lc, {
     type:"line",
-    data:{labels:lbls,datasets:[{data:vals,borderColor:"#3b82f6",backgroundColor:"rgba(59,130,246,.06)",
-      borderWidth:2.5,pointBackgroundColor:"#3b82f6",pointRadius:5,tension:.35,fill:true}]},
+    data:{labels:lbls,datasets:[{data:vals,borderColor:financeChartColors.income,backgroundColor:"rgba(37, 99, 235, 0.12)",
+      borderWidth:2.5,pointBackgroundColor:financeChartColors.income,pointRadius:5,tension:.35,fill:true}]},
     options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>"\u20b1"+c.parsed.y.toLocaleString()}}},
       scales:{y:{ticks:{callback:v=>v.toLocaleString(),font:{size:11}},grid:{color:"rgba(0,0,0,.05)"}},
               x:{ticks:{font:{size:11}},grid:{display:false}}}}
@@ -530,7 +545,7 @@ function incDrawCharts(monthly, byLot) {
   incBarChartInst = new Chart(bc, {
     type:"bar",
     data:{labels:byLot.map(p=>p.label),datasets:[{data:byLot.map(p=>Number(p.amount)),
-      backgroundColor:["#3b82f6","#10b981","#f59e0b","#ec4899","#8b5cf6","#f97316","#14b8a6"],
+      backgroundColor:[financeChartColors.income, financeChartColors.collection, financeChartColors.project, financeChartColors.expense, financeChartColors.muted],
       borderRadius:9, barPercentage:.6, categoryPercentage:.7}]},
     options:{
       plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>"\u20b1"+c.parsed.y.toLocaleString()}}},
@@ -549,6 +564,7 @@ async function incRefreshTable() {
   tbody.innerHTML = '<tr><td colspan="8" class="inc-empty">Loading...</td></tr>';
   try {
     const rows = await financeStandaloneApi("GET", "/api/income/projects?" + incBuildQuery());
+    incTableRows = Array.isArray(rows) ? rows : [];
     const total = rows.reduce((s, r) => s + Number(r.amount), 0);
     const totalEl = document.getElementById("incTableTotal");
     const countEl = document.getElementById("incTableCount");
@@ -571,6 +587,7 @@ async function incRefreshTable() {
       rangeEl.textContent = parts.length ? parts.join(" \u00b7 ") : "All records";
     }
     if (!rows.length) {
+      incTableRows = [];
       tbody.innerHTML = '<tr><td colspan="8" class="inc-empty">No records found.</td></tr>';
       return;
     }
@@ -595,12 +612,16 @@ async function incRefreshTable() {
         <td>${statusBadge(r.status || 'received')}</td>
         <td style="font-size:12px;color:#64748b;">${r.or_number ? `<code>${r.or_number}</code>` : '—'}</td>
         <td><div class="inc-row-btns">
-          <button class="inc-row-btn inc-btn-edit" onclick="incOpenEditModal(${r.id},'${(project||'').replace(/'/g,"\\'")}','${(r.source||'').replace(/'/g,"\\'")}','${(r.description||'').replace(/'/g,"\\'")}',${r.amount},'${r.date}','${r.status||'received'}','${(r.or_number||'').replace(/'/g,"\\'")}')"><i class="ri-pencil-line"></i> Edit</button>
+          <button class="inc-row-btn inc-btn-edit" type="button" data-inc-edit-id="${r.id}"><i class="ri-pencil-line"></i> Edit</button>
           <button class="inc-row-btn inc-btn-del" onclick="incOpenDeleteModal(${r.id},'${(project||'General').replace(/'/g,"\\'")}',${r.amount})"><i class="ri-delete-bin-line"></i> Delete</button>
         </div></td>
       </tr>`;
     }).join("");
+    tbody.querySelectorAll("[data-inc-edit-id]").forEach(btn => {
+      btn.addEventListener("click", () => incOpenEditModal(btn.dataset.incEditId));
+    });
   } catch (err) {
+    incTableRows = [];
     tbody.innerHTML = '<tr><td colspan="8" class="inc-empty" style="color:#dc2626;">Cannot connect to server. Make sure server.js is running.</td></tr>';
   }
 }
@@ -619,9 +640,23 @@ function incOpenAddModal() {
   document.getElementById("incRecordModal").style.display = "flex";
 }
 function incOpenEditModal(id, project, source, description, amount, date, status, or_number) {
+  if (arguments.length === 1) {
+    const row = incTableRows.find(item => String(item.id) === String(id));
+    if (!row) {
+      showToast("Income record not found. Please refresh and try again.", "error");
+      return;
+    }
+    project = row.project_name || row.lot || "";
+    source = row.source || "";
+    description = row.description || "";
+    amount = row.amount;
+    date = row.date;
+    status = row.status || "received";
+    or_number = row.or_number || "";
+  }
   document.getElementById("incModalTitle").innerHTML = '<i class="ri-pencil-line"></i> Edit Income';
   document.getElementById("incEditId").value    = id;
-  document.getElementById("incFDate").value     = date;
+  document.getElementById("incFDate").value     = formatFinanceInventoryInputValue(date, "date");
   document.getElementById("incFProject").value  = project;
   document.getElementById("incFSource").value   = source;
   document.getElementById("incFDesc").value     = description;
@@ -677,6 +712,7 @@ let expPieChart  = null;
 let expFilterPeriod = "year";   // today|week|month|year
 let expFilterCat    = "";
 let expFilterStatus = "";
+let expSubRows      = [];
 
 /* ── destroy charts on tab change ── */
 function expDestroyCharts() {
@@ -717,6 +753,7 @@ function loadCompanyExpenses() {
     </div>
 
     <!-- Tabs row — tabs left, period filter right -->
+    <div class="company-expenses-workspace">
     <div class="page-tab-row">
       <div class="page-tabs">
         <button class="exp-tab active" id="expTabOv"   onclick="expSwitchTab('overview')">Overview</button>
@@ -835,7 +872,7 @@ function loadCompanyExpenses() {
       </div><!-- /expPanelOv -->
 
       <!-- ===== EXPENSES / PURCHASES / OVERHEAD PANELS (shared layout) ===== -->
-      <div id="expPanelSub" style="display:none;">
+      <div id="expPanelSub" style="display:none;" hidden>
 
         <!-- Sub KPI row -->
         <div class="exp-kpi-row" id="expSubKpiRow">
@@ -900,7 +937,7 @@ function loadCompanyExpenses() {
       </div><!-- /expPanelSub -->
 
       <!-- ===== CONTRIBUTION PANEL ===== -->
-      <div id="expPanelCon" style="display:none;">
+      <div id="expPanelCon" style="display:none;" hidden>
 
         <!-- KPI cards -->
         <div class="exp-kpi-row">
@@ -961,6 +998,7 @@ function loadCompanyExpenses() {
       </div><!-- /expPanelCon -->
 
     </div><!-- /exp-body -->
+    </div><!-- /company-expenses-workspace -->
   </div><!-- /exp-page -->`;
 
   // Wire events
@@ -1011,9 +1049,15 @@ function expSwitchTab(tab) {
 
   const isOv  = tab === "overview";
   const isCon = tab === "contribution";
-  document.getElementById("expPanelOv").style.display  = isOv ? "" : "none";
-  document.getElementById("expPanelSub").style.display = (!isOv && !isCon) ? "" : "none";
-  document.getElementById("expPanelCon").style.display = isCon ? "" : "none";
+  const panelOv = document.getElementById("expPanelOv");
+  const panelSub = document.getElementById("expPanelSub");
+  const panelCon = document.getElementById("expPanelCon");
+  panelOv.hidden = !isOv;
+  panelSub.hidden = isOv || isCon;
+  panelCon.hidden = !isCon;
+  panelOv.style.display  = isOv ? "grid" : "none";
+  panelSub.style.display = (!isOv && !isCon) ? "block" : "none";
+  panelCon.style.display = isCon ? "block" : "none";
   // Show period filter only on overview tab
   const prEl = document.getElementById("expPeriodRow");
   if (prEl) prEl.style.display = isOv ? "flex" : "none";
@@ -1211,7 +1255,7 @@ async function expRenderBarChart() {
       labels,
       datasets: [{
         data,
-        backgroundColor: labels.map((_, i) => i % 2 === 0 ? "#4dd9c0" : "#29b6e0"),
+        backgroundColor: labels.map(() => financeChartColors.expense),
         borderRadius: 8,
         borderSkipped: false,
       }]
@@ -1253,9 +1297,9 @@ async function expRenderPieChart() {
       labels,
       datasets: [{
         data,
-        backgroundColor: ["#29b6e0","#4dd9c0","#a5f3fc","#6366f1"],
+        backgroundColor: [financeChartColors.expense, financeChartColors.project, financeChartColors.income, financeChartColors.muted],
         borderWidth: 2,
-        borderColor: "#fff",
+        borderColor: financeChartColors.card,
       }]
     },
     options: {
@@ -1304,26 +1348,38 @@ async function expRenderSubTable() {
   const type = expActiveTab;
   try {
     const rows = await financeStandaloneApi("GET", `/api/expenses/list?type=${type}&cat=${encodeURIComponent(expSubFilterCat)}&status=${encodeURIComponent(expSubFilterStatus)}&search=${encodeURIComponent(q)}`);
+    expSubRows = Array.isArray(rows) ? rows : [];
     if (!rows.length) {
+      expSubRows = [];
       tbody.innerHTML = `<tr><td colspan="6" class="inc-empty">No records found.</td></tr>`; return;
     }
     tbody.innerHTML = rows.map(r => {
       const sc = r.status==="paid"?"completed":r.status==="unpaid"?"pending":"progress";
       return `<tr>
         <td>${formatDate(r.date)}</td>
-        <td>${r.category}</td>
-        <td>${r.description}</td>
+        <td>${escapeHtml(r.category || "")}</td>
+        <td>${escapeHtml(r.description || "")}</td>
         <td style="font-weight:700;color:#dc2626;">${formatCurrency(r.amount)}</td>
         <td><span class="badge ${sc}" style="border-radius:20px;padding:5px 14px;">${capitalize(r.status)}</span></td>
         <td>
           <div style="display:flex;gap:6px;align-items:center;justify-content:center;">
-            <button style="width:32px;height:32px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;" onclick="expOpenEdit(${r.id},'${r.date}','${r.description}','${r.category}','${r.vendor||""}',${r.amount},'${r.status}','${r.type}')"><i class="ri-pencil-line"></i></button>
-            <button style="width:32px;height:32px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;" onclick="expOpenDelete(${r.id},'${r.description}',${r.amount})"><i class="ri-delete-bin-line"></i></button>
+            <button type="button" data-exp-edit-id="${r.id}" style="width:32px;height:32px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;"><i class="ri-pencil-line"></i></button>
+            <button type="button" data-exp-delete-id="${r.id}" style="width:32px;height:32px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;"><i class="ri-delete-bin-line"></i></button>
           </div>
         </td>
       </tr>`;
     }).join("");
+    tbody.querySelectorAll("[data-exp-edit-id]").forEach(btn => {
+      btn.addEventListener("click", () => expOpenEdit(btn.dataset.expEditId));
+    });
+    tbody.querySelectorAll("[data-exp-delete-id]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const row = expSubRows.find(item => String(item.id) === String(btn.dataset.expDeleteId));
+        if (row) expOpenDelete(row.id, row.description || "", row.amount);
+      });
+    });
   } catch {
+    expSubRows = [];
     tbody.innerHTML = expFallbackSubRows();
   }
 }
@@ -1379,10 +1435,24 @@ function expOpenAdd() {
   document.getElementById("expModal").style.display = "flex";
 }
 function expOpenEdit(id, date, desc, cat, vendor, amount, status, type) {
+  if (arguments.length === 1) {
+    const row = expSubRows.find(item => String(item.id) === String(id));
+    if (!row) {
+      showToast("Expense record not found. Please refresh and try again.", "error");
+      return;
+    }
+    date = row.date;
+    desc = row.description || "";
+    cat = row.category || "";
+    vendor = row.vendor || "";
+    amount = row.amount;
+    status = row.status || "pending";
+    type = row.type || row.expense_group || expActiveTab;
+  }
   document.getElementById("expModalTitle").textContent = "Edit Record";
   document.getElementById("expEditId").value    = id;
   document.getElementById("expFType").value     = type || expActiveTab;
-  document.getElementById("expFDate").value     = date;
+  document.getElementById("expFDate").value     = formatFinanceInventoryInputValue(date, "date");
   document.getElementById("expFDesc").value     = desc;
   document.getElementById("expFVendor").value   = vendor;
   document.getElementById("expFAmount").value   = amount;
@@ -1412,7 +1482,7 @@ async function expSave() {
   const status = document.getElementById("expFStatus").value;
   const type   = document.getElementById("expFType").value;
   const editId = document.getElementById("expEditId").value;
-  if (!date || !desc || !amount || isNaN(amount)) {
+  if (!date || !desc || !cat || !amount || isNaN(amount)) {
     showToast("Please fill in all required fields.", "error"); return;
   }
   try {
@@ -1450,6 +1520,7 @@ async function expConfirmDelete() {
 
 let conEditId     = null;
 let conDeleteId   = null;
+let conRows       = [];
 
 async function conLoadKpis() {
   try {
@@ -1477,7 +1548,9 @@ async function conRenderTable() {
   try {
     let url = `/api/contributions?type=${encodeURIComponent(type)}&status=${encodeURIComponent(status)}&search=${encodeURIComponent(search)}`;
     const rows = await financeStandaloneApi("GET", url);
+    conRows = Array.isArray(rows) ? rows : [];
     if (!rows.length) {
+      conRows = [];
       tbody.innerHTML = `<tr><td colspan="8" class="inc-empty">No records found.</td></tr>`; return;
     }
     tbody.innerHTML = rows.map(r => {
@@ -1494,7 +1567,7 @@ async function conRenderTable() {
                                  "background:linear-gradient(135deg,#475569,#64748b);";
       const typeBadge = `<span style="${typeStyle}color:white;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;display:inline-block;">${r.type}</span>`;
       return `<tr style="border-bottom:1px solid #eef2f8;transition:background .15s;" onmouseover="this.style.background='#f8faff'" onmouseout="this.style.background=''">
-        <td style="padding:14px 20px;font-weight:600;">${r.name}</td>
+        <td style="padding:14px 20px;font-weight:600;">${escapeHtml(r.name || "")}</td>
         <td style="padding:14px 20px;text-align:center;">
           ${typeBadge}
         </td>
@@ -1507,11 +1580,11 @@ async function conRenderTable() {
         </td>
         <td style="padding:14px 20px;text-align:center;">
           <div style="display:flex;gap:6px;justify-content:center;">
-            <button onclick="conOpenEdit(${r.id},'${(r.name||"").replace(/'/g,"&apos;")}','${r.type}',${r.employee_share},${r.employer_share},'${r.due_date?.slice(0,10)}','${r.status}')"
+            <button type="button" data-con-edit-id="${r.id}"
               style="width:32px;height:32px;border-radius:50%;border:none;background:#e8f4fd;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#1e3a6e;font-size:15px;" title="Edit">
               <i class="ri-pencil-line"></i>
             </button>
-            <button onclick="conOpenDelete(${r.id},'${(r.name||"").replace(/'/g,"&apos;")}')"
+            <button type="button" data-con-delete-id="${r.id}"
               style="width:32px;height:32px;border-radius:50%;border:none;background:#fee2e2;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:15px;" title="Delete">
               <i class="ri-delete-bin-line"></i>
             </button>
@@ -1519,7 +1592,17 @@ async function conRenderTable() {
         </td>
       </tr>`;
     }).join("");
+    tbody.querySelectorAll("[data-con-edit-id]").forEach(btn => {
+      btn.addEventListener("click", () => conOpenEdit(btn.dataset.conEditId));
+    });
+    tbody.querySelectorAll("[data-con-delete-id]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const row = conRows.find(item => String(item.id) === String(btn.dataset.conDeleteId));
+        if (row) conOpenDelete(row.id, row.name || "");
+      });
+    });
   } catch(err) {
+    conRows = [];
     tbody.innerHTML = `<tr><td colspan="8" class="inc-empty" style="color:#dc2626;">Error: ${err.message}</td></tr>`;
   }
 }
@@ -1536,13 +1619,26 @@ function conOpenAdd() {
   document.getElementById("conModal").style.display = "flex";
 }
 function conOpenEdit(id, name, type, empShare, erShare, dueDate, status) {
+  if (arguments.length === 1) {
+    const row = conRows.find(item => String(item.id) === String(id));
+    if (!row) {
+      showToast("Contribution record not found. Please refresh and try again.", "error");
+      return;
+    }
+    name = row.name || "";
+    type = row.type || "SSS";
+    empShare = row.employee_share;
+    erShare = row.employer_share;
+    dueDate = row.due_date;
+    status = row.status || "Unpaid";
+  }
   conEditId = id;
   document.getElementById("conModalTitle").textContent = "Edit Contribution";
   document.getElementById("conFName").value         = name;
   document.getElementById("conFType").value         = type;
   document.getElementById("conFEmpShare").value     = empShare;
   document.getElementById("conFErShare").value      = erShare;
-  document.getElementById("conFDueDate").value      = dueDate || "";
+  document.getElementById("conFDueDate").value      = formatFinanceInventoryInputValue(dueDate, "date");
   document.getElementById("conFStatus").value       = status;
   document.getElementById("conModal").style.display = "flex";
 }
@@ -1634,6 +1730,7 @@ function loadProjectExpenses() {
     </div>
 
     <!-- Tabs row — tabs left, filter right -->
+    <div class="project-expenses-workspace">
     <div class="page-tab-row">
       <div class="page-tabs">
         <button class="exp-tab active" id="peTabOv"  onclick="peSwitchTab('overview')">Overview</button>
@@ -1704,7 +1801,7 @@ function loadProjectExpenses() {
       </div><!-- /pePanelOv -->
 
       <!-- ===== PURCHASES / EXPENSES SUB PANEL ===== -->
-      <div id="pePanelSub" style="display:none;">
+      <div id="pePanelSub" style="display:none;" hidden>
         <!-- KPI row -->
         <div class="exp-kpi-row" style="margin-bottom:20px;">
           <div class="exp-kpi-card exp-kpi-blue">
@@ -1763,6 +1860,7 @@ function loadProjectExpenses() {
       </div><!-- /pePanelSub -->
 
     </div><!-- /exp-body -->
+    </div><!-- /project-expenses-workspace -->
   </div><!-- /exp-page -->`;
 
   document.getElementById("peSearchInput").addEventListener("input", () => {
@@ -1819,8 +1917,14 @@ function peSwitchTab(tab) {
   const ab = document.getElementById("peTab"+map[tab]); if (ab) ab.classList.add("active");
 
   const isOv = tab === "overview";
-  document.getElementById("pePanelOv").style.display  = isOv ? "" : "none";
-  document.getElementById("pePanelSub").style.display = isOv ? "none" : "";
+  const panelOv = document.getElementById("pePanelOv");
+  const panelSub = document.getElementById("pePanelSub");
+  panelOv.hidden = !isOv;
+  panelSub.hidden = isOv;
+  panelOv.style.display = isOv ? "grid" : "none";
+  panelSub.style.display = isOv ? "none" : "block";
+  const filterBar = document.getElementById("peFilterBar");
+  if (filterBar) filterBar.style.display = isOv ? "flex" : "none";
 
   if (isOv) {
     peLoadOverview();
@@ -1893,8 +1997,8 @@ function peRenderGroupedBarChart(purRows, expRows) {
     data: {
       labels,
       datasets: [
-        { label: "Purchases", data: labels.map(getPurVal), backgroundColor: "#29b6e0", borderRadius: 6, borderSkipped: false },
-        { label: "Expenses",  data: labels.map(getExpVal), backgroundColor: "#4dd9c0", borderRadius: 6, borderSkipped: false }
+        { label: "Purchases", data: labels.map(getPurVal), backgroundColor: financeChartColors.project, borderRadius: 6, borderSkipped: false },
+        { label: "Expenses",  data: labels.map(getExpVal), backgroundColor: financeChartColors.expense, borderRadius: 6, borderSkipped: false }
       ]
     },
     options: {
@@ -1919,7 +2023,7 @@ function peRenderPieChart(purTotal, expTotal) {
     type: "doughnut",
     data: {
       labels: ["Purchases", "Expenses"],
-      datasets: [{ data, backgroundColor: ["#29b6e0", "#4dd9c0"], borderWidth: 2, borderColor: "#fff" }]
+      datasets: [{ data, backgroundColor: [financeChartColors.project, financeChartColors.expense], borderWidth: 2, borderColor: financeChartColors.card }]
     },
     options: {
       responsive: true,
@@ -2114,10 +2218,10 @@ async function loadFinancialReport() {
     .map(y => `<option value="${y}" ${y===yr?"selected":""}>${y}</option>`).join("");
 
   getFinanceMainContent().innerHTML = `
-  <div style="background:#f0f4fa;min-height:100%;padding-bottom:48px;">
+  <div class="finance-page-shell finance-report-page" style="background:#f0f4fa;min-height:100%;padding-bottom:48px;">
 
     <!-- Header -->
-    <div style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
+    <div class="finance-page-header" style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
                 padding:28px 32px;position:relative;">
       <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
       <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
@@ -2157,7 +2261,7 @@ async function loadFinancialReport() {
       </div>
 
       <!-- Inline mini-KPIs inside header -->
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:1px;
+      <div class="finance-report-kpi-strip" style="display:grid;grid-template-columns:repeat(5,1fr);gap:1px;
                   background:rgba(255,255,255,.08);border-radius:14px;overflow:hidden;margin-top:24px;">
         ${[
           ['rpKpiIncome','Total Income','ri-arrow-up-circle-line'],
@@ -2166,12 +2270,12 @@ async function loadFinancialReport() {
           ['rpKpiCol','Collections','ri-hand-coin-line'],
           ['rpKpiNet','Net Income','ri-money-dollar-circle-line'],
         ].map(([id,lbl,ico]) => `
-          <div style="padding:16px 18px;background:rgba(255,255,255,.06);">
+          <div class="finance-report-kpi-card" style="padding:16px 18px;background:rgba(255,255,255,.06);">
             <div style="display:flex;align-items:center;gap:5px;margin-bottom:5px;">
               <i class="${ico}" style="color:rgba(255,255,255,.5);font-size:13px;"></i>
-              <span style="color:rgba(255,255,255,.55);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">${lbl}</span>
+              <span class="finance-report-kpi-label" style="color:rgba(255,255,255,.55);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;">${lbl}</span>
             </div>
-            <div id="${id}" style="color:white;font-size:18px;font-weight:900;line-height:1;">—</div>
+            <div id="${id}" class="finance-report-kpi-value" style="color:white;font-size:18px;font-weight:900;line-height:1;">—</div>
           </div>`).join('')}
       </div>
     </div>
@@ -2203,10 +2307,10 @@ async function loadFinancialReport() {
     </div>
 
     <!-- ══ Trend cards row ════════════════════════════════════════ -->
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:20px 32px 0;">
+    <div class="finance-report-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:20px 32px 0;">
 
       <!-- Income vs Expense doughnut -->
-      <div style="background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
+      <div class="finance-report-card" style="background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
         <div style="font-size:12px;font-weight:800;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px;display:flex;align-items:center;gap:6px;">
           <span style="width:3px;height:14px;background:#1e3a6e;border-radius:2px;display:inline-block;"></span>
           Expense Breakdown
@@ -2216,7 +2320,7 @@ async function loadFinancialReport() {
       </div>
 
       <!-- Best/Worst month highlights -->
-      <div style="background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
+      <div class="finance-report-card" style="background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
         <div style="font-size:12px;font-weight:800;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px;display:flex;align-items:center;gap:6px;">
           <span style="width:3px;height:14px;background:#1e3a6e;border-radius:2px;display:inline-block;"></span>
           Period Highlights
@@ -2227,7 +2331,7 @@ async function loadFinancialReport() {
       </div>
 
       <!-- Net sparkline -->
-      <div style="background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
+      <div class="finance-report-card" style="background:white;border-radius:16px;padding:20px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
         <div style="font-size:12px;font-weight:800;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;margin-bottom:14px;display:flex;align-items:center;gap:6px;">
           <span style="width:3px;height:14px;background:#1e3a6e;border-radius:2px;display:inline-block;"></span>
           Net Income Trend
@@ -2237,10 +2341,10 @@ async function loadFinancialReport() {
     </div>
 
     <!-- ══ Main bar+line chart ════════════════════════════════════ -->
-    <div style="margin:16px 32px 0;background:white;border-radius:16px;padding:22px 24px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
+    <div class="finance-report-card finance-report-wide-card" style="margin:16px 32px 0;background:white;border-radius:16px;padding:22px 24px;box-shadow:0 4px 18px rgba(0,0,0,.07);">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
         <div style="font-size:12px;font-weight:800;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;display:flex;align-items:center;gap:8px;">
-          <span style="width:3px;height:16px;background:linear-gradient(180deg,#1e3a6e,#4dd9c0);border-radius:2px;display:inline-block;"></span>
+          <span style="width:3px;height:16px;background:linear-gradient(180deg,#1f3a5f,#2563eb);border-radius:2px;display:inline-block;"></span>
           Income vs Expenses
         </div>
         <div style="display:flex;gap:14px;font-size:12px;font-weight:600;">
@@ -2253,7 +2357,7 @@ async function loadFinancialReport() {
     </div>
 
     <!-- ══ Monthly Table ══════════════════════════════════════════ -->
-    <div style="margin:16px 32px 0;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,.07);">
+    <div class="finance-table-card finance-report-table-card" style="margin:16px 32px 0;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,.07);">
       <div style="background:linear-gradient(135deg,#0f2147,#1e3a6e);padding:16px 24px;
                   display:flex;align-items:center;justify-content:space-between;">
         <span style="color:white;font-size:12px;font-weight:800;letter-spacing:2px;text-transform:uppercase;">
@@ -2332,7 +2436,7 @@ async function rpLoad() {
     const netEl = document.getElementById("rpKpiNet");
     if (netEl) {
       netEl.textContent  = fmt(net);
-      netEl.style.color  = net >= 0 ? "#4ade80" : "#fca5a5";
+      netEl.style.color  = net >= 0 ? financeChartColors.collection : financeChartColors.expense;
     }
 
     // ── Charts ─────────────────────────────────────────────────
@@ -2363,12 +2467,12 @@ function rpDrawMainChart(monthly) {
       labels: monthly.map(r => r.month_label),
       datasets:[
         { label:"Income",   data: monthly.map(r=>Number(r.total_income||0)),
-          backgroundColor:"rgba(22,163,74,.75)", borderRadius:5, order:2 },
+          backgroundColor:"rgba(37, 99, 235, 0.72)", borderRadius:5, order:2 },
         { label:"Expenses", data: monthly.map(r=>Number(r.total_expenses||0)),
-          backgroundColor:"rgba(220,38,38,.65)", borderRadius:5, order:3 },
+          backgroundColor:"rgba(220, 38, 38, 0.68)", borderRadius:5, order:3 },
         { label:"Net",      data: monthly.map(r=>Number(r.net_income||0)),
-          type:"line", borderColor:"#3b82f6", backgroundColor:"rgba(59,130,246,.07)",
-          pointBackgroundColor:"#3b82f6", pointRadius:4, pointHoverRadius:6,
+          type:"line", borderColor:financeChartColors.income, backgroundColor:"rgba(37, 99, 235, 0.12)",
+          pointBackgroundColor:financeChartColors.income, pointRadius:4, pointHoverRadius:6,
           borderWidth:2.5, tension:.35, fill:true, order:1 },
       ]
     },
@@ -2407,8 +2511,8 @@ function rpDrawDoughnut(comp, proj) {
     data:{
       labels:["Company Expenses","Project Expenses"],
       datasets:[{ data:[comp,proj],
-        backgroundColor:["#dc2626","#f59e0b"],
-        borderWidth:3, borderColor:"#fff", hoverOffset:6 }]
+        backgroundColor:[financeChartColors.expense, financeChartColors.project],
+        borderWidth:3, borderColor:financeChartColors.card, hoverOffset:6 }]
     },
     options:{ cutout:"65%", plugins:{ legend:{display:false},
       tooltip:{ callbacks:{ label: c => ` ${c.label}: ${formatCurrency(c.raw)}` } } } }
@@ -2437,7 +2541,7 @@ function rpDrawNetLine(monthly) {
   if (rpChart3) { rpChart3.destroy(); rpChart3 = null; }
   if (!monthly.length) return;
   const netData = monthly.map(r => Number(r.net_income || 0));
-  const colors  = netData.map(v => v >= 0 ? "rgba(22,163,74,.7)" : "rgba(220,38,38,.7)");
+  const colors  = netData.map(v => v >= 0 ? "rgba(22, 163, 74, 0.72)" : "rgba(220, 38, 38, 0.72)");
   rpChart3 = new Chart(canvas, {
     type:"bar",
     data:{
@@ -2550,12 +2654,12 @@ function rpDrawTable(monthly) {
   if (tfoot) tfoot.innerHTML = `
     <tr style="background:#0f2147;">
       <td style="padding:15px 20px;color:rgba(255,255,255,.7);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.5px;">TOTAL</td>
-      <td style="padding:15px 20px;text-align:right;color:#4ade80;font-weight:900;font-size:13.5px;">${formatCurrency(tot.income)}</td>
-      <td style="padding:15px 20px;text-align:right;color:#fca5a5;font-weight:700;">${formatCurrency(tot.comp)}</td>
+      <td style="padding:15px 20px;text-align:right;color:#16a34a;font-weight:900;font-size:13.5px;">${formatCurrency(tot.income)}</td>
+      <td style="padding:15px 20px;text-align:right;color:#dc2626;font-weight:700;">${formatCurrency(tot.comp)}</td>
       <td style="padding:15px 20px;text-align:right;color:#fcd34d;font-weight:700;">${formatCurrency(tot.proj)}</td>
-      <td style="padding:15px 20px;text-align:right;color:#fca5a5;font-weight:900;font-size:13.5px;">${formatCurrency(tot.expenses)}</td>
-      <td style="padding:15px 20px;text-align:right;color:#c4b5fd;font-weight:700;">${formatCurrency(tot.col)}</td>
-      <td style="padding:15px 20px;text-align:right;font-weight:900;font-size:13.5px;color:${tot.net>=0?"#4ade80":"#fca5a5"};">${formatCurrency(tot.net)}</td>
+      <td style="padding:15px 20px;text-align:right;color:#dc2626;font-weight:900;font-size:13.5px;">${formatCurrency(tot.expenses)}</td>
+      <td style="padding:15px 20px;text-align:right;color:#2563eb;font-weight:700;">${formatCurrency(tot.col)}</td>
+      <td style="padding:15px 20px;text-align:right;font-weight:900;font-size:13.5px;color:${tot.net>=0?financeChartColors.collection:financeChartColors.expense};">${formatCurrency(tot.net)}</td>
       <td style="padding:15px 20px;text-align:center;color:rgba(255,255,255,.75);font-weight:800;">${totMargin}</td>
     </tr>`;
 }
@@ -2862,7 +2966,7 @@ function rpPrint() {
   win.document.write(`<!DOCTYPE html><html><head>
   <title>Financial Report — ${period}</title>
   <style>
-    *{margin:0;padding:0;box-sizing:border-box;font-family:"Segoe UI",system-ui,sans-serif;}
+    *{margin:0;padding:0;box-sizing:border-box;font-family:"Inter","Segoe UI",Arial,sans-serif;}
     body{padding:36px;color:#1e293b;background:#fff;}
     .header{background:linear-gradient(135deg,#0f2147,#1e3a6e);color:white;padding:24px 28px;border-radius:12px;margin-bottom:24px;}
     .header h1{font-size:22px;font-weight:900;margin-bottom:4px;}
@@ -2919,10 +3023,10 @@ function loadCollections() {
   if (colPieChart) { colPieChart.destroy(); colPieChart = null; }
 
   getFinanceMainContent().innerHTML = `
-  <div style="background:#f0f4fa;min-height:100%;padding-bottom:40px;">
+  <div class="finance-page-shell finance-collections-page" style="background:#f0f4fa;min-height:100%;padding-bottom:40px;">
 
     <!-- Page Header -->
-    <div style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
+    <div class="finance-page-header" style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
                 padding:28px 32px;position:relative;">
       <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
       <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
@@ -2943,8 +3047,9 @@ function loadCollections() {
       </div>
     </div>
 
+    <div class="collections-workspace">
     <!-- Tabs -->
-    <div style="padding:0 32px 16px;">
+    <div class="collections-tab-row" style="padding:0 32px 16px;">
       <div style="display:inline-flex;background:white;border-radius:12px;padding:5px;gap:3px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
         <button class="exp-tab active" id="colTabOv"   onclick="colSwitchTab('overview')">
           <i class="ri-bar-chart-line"></i> Overview
@@ -3037,7 +3142,7 @@ function loadCollections() {
     </div><!-- /colPanelOv -->
 
     <!-- ═══════════════ COLLECTIONS DATA PANEL ═══════════════ -->
-    <div id="colPanelData" style="display:none;">
+    <div id="colPanelData" style="display:none;" hidden>
 
       <!-- Controls: Search + Custom Date + Filter + Add -->
       <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 32px;flex-wrap:wrap;gap:10px;">
@@ -3103,7 +3208,7 @@ function loadCollections() {
 
       <!-- Table -->
       <div style="padding:0 32px;">
-        <div style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08);">
+        <div class="finance-table-card" style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08);">
           <div id="colBanner"
             style="background:linear-gradient(135deg,#1a3460,#1e3a6e,#2a52a0);color:white;text-align:center;
                    font-size:15px;font-weight:700;padding:16px 24px;letter-spacing:.5px;">
@@ -3125,6 +3230,7 @@ function loadCollections() {
         </div>
       </div>
     </div><!-- /colPanelData -->
+    </div><!-- /collections-workspace -->
 
   </div>
 
@@ -3159,10 +3265,14 @@ function loadCollections() {
 function colSwitchTab(tab) {
   colActiveTab = tab;
   const isOv = tab === "overview";
+  const overviewPanel = document.getElementById("colPanelOv");
+  const dataPanel = document.getElementById("colPanelData");
   document.getElementById("colTabOv")  .classList.toggle("active",  isOv);
   document.getElementById("colTabData").classList.toggle("active", !isOv);
-  document.getElementById("colPanelOv")  .style.display = isOv ? "" : "none";
-  document.getElementById("colPanelData").style.display = isOv ? "none" : "";
+  overviewPanel.hidden = !isOv;
+  dataPanel.hidden = isOv;
+  overviewPanel.style.display = isOv ? "grid" : "none";
+  dataPanel.style.display = isOv ? "none" : "block";
 
   if (!isOv) {
     // Wire data tab events on first show
@@ -3330,8 +3440,8 @@ async function colRenderCharts() {
       data: {
         labels: data.projects.map(p => p.project || "General"),
         datasets: [
-          { label: "Amount Due",       data: data.projects.map(p => Number(p.total_due)),       backgroundColor: "rgba(59,130,246,.7)",  borderRadius: 6 },
-          { label: "Amount Collected", data: data.projects.map(p => Number(p.total_collected)), backgroundColor: "rgba(20,184,166,.7)",  borderRadius: 6 },
+          { label: "Amount Due",       data: data.projects.map(p => Number(p.total_due)),       backgroundColor: "rgba(37, 99, 235, 0.72)",  borderRadius: 6 },
+          { label: "Amount Collected", data: data.projects.map(p => Number(p.total_collected)), backgroundColor: "rgba(22, 163, 74, 0.72)",  borderRadius: 6 },
         ]
       },
       options: {
@@ -3351,8 +3461,8 @@ async function colRenderCharts() {
         labels: ["Approved","Pending","Decline"],
         datasets: [{
           data: [data.status.Approved || 0, data.status.Pending || 0, data.status.Decline || 0],
-          backgroundColor: ["#4ade80","#fbbf24","#f87171"],
-          borderWidth: 2, borderColor: "#fff"
+          backgroundColor: [financeChartColors.collection, financeChartColors.project, financeChartColors.expense],
+          borderWidth: 2, borderColor: financeChartColors.card
         }]
       },
       options: {
@@ -3660,10 +3770,10 @@ function loadEmployee() {
   empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = "";
 
   getFinanceMainContent().innerHTML = `
-  <div style="background:#f0f4fa;min-height:100%;">
+  <div class="finance-page-shell finance-employee-page" style="background:#f0f4fa;min-height:100%;">
 
     <!-- Header -->
-    <div style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
+    <div class="finance-page-header" style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
                 padding:28px 32px;position:relative;">
       <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
       <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
@@ -3705,7 +3815,7 @@ function loadEmployee() {
 
     <!-- Table card -->
     <div style="padding:0 32px 32px;">
-      <div style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+      <div class="finance-table-card" style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
         <div id="empBanner"
           style="background:linear-gradient(135deg,#1a3460,#1e3a6e,#2a52a0);color:white;text-align:center;
                  font-size:16px;font-weight:700;padding:18px 24px;letter-spacing:1px;">
@@ -4515,6 +4625,498 @@ function capitalize(str) {
   return str ? str.charAt(0).toUpperCase() + str.slice(1) : "";
 }
 
+/* ================= FINANCE INVENTORY ================= */
+let finInvItems = [];
+let finInvSummary = null;
+let finInvActiveTab = 'overview';
+let finInvSearch = '';
+let finInvStatusFilter = 'all';
+let finInvDateFrom = '';
+let finInvDateTo = '';
+let finInvEditingItem = null;
+let finInvStatusChart = null;
+let finInvDistributionChart = null;
+
+/* ================= INVENTORY ================= */
+
+const FIN_INV_STATUSES = ['In Stock', 'Deployed', 'For Repair', 'Returned', 'Condemned', 'Missing'];
+const FIN_INV_CATEGORIES = ['Network Cables', 'Router', 'Access Point Devices', 'Network Switches', 'Modem', 'Power Supply', 'Tools', 'Other'];
+const FIN_INV_CONDITIONS = ['New', 'Good', 'Fair', 'Needs Repair', 'Damaged'];
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function financeInventoryApiBase() {
+  return '/api/finance/inventory';
+}
+
+function financeInventoryFetchOptions(options = {}) {
+  return {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      'X-User-Id': financeUser?.id || '',
+      'X-User-Role': financeUser?.role || 'finance'
+    }
+  };
+}
+
+function loadFinanceInventory() {
+  finInvEditingItem = null;
+    getFinanceMainContent().innerHTML = `
+    <div class="inventory-page">
+      <div class="inventory-header">
+        <div class="inventory-header-identity">
+          <div class="inventory-header-icon"><i class="ri-dashboard-line"></i></div>
+          <div>
+            <h2>Inventory</h2>
+          </div>
+        </div>
+        <div class="inventory-search">
+          <i class="ri-search-line"></i>
+          <input id="invSearchInput" type="text" placeholder="Search inventory..." value="${escapeHtml(finInvSearch)}">
+        </div>
+      </div>
+
+      <div class="inventory-tabs">
+        <button class="inventory-tab ${finInvActiveTab === 'overview' ? 'active' : ''}" data-tab="overview">Overview</button>
+        <button class="inventory-tab ${finInvActiveTab === 'items' ? 'active' : ''}" data-tab="items">Inventory Items</button>
+      </div>
+
+      <div id="inventoryBody">
+        <div class="inventory-loading"><i class="ri-loader-4-line spin"></i> Loading inventory...</div>
+      </div>
+    </div>
+  `;
+
+  document.querySelectorAll('.inventory-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      finInvActiveTab = btn.dataset.tab;
+      finInvEditingItem = null;
+      renderFinanceInventory();
+    });
+  });
+
+  let searchTimer;
+  document.getElementById('invSearchInput')?.addEventListener('input', e => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      finInvSearch = e.target.value.trim();
+      loadFinanceInventoryData();
+    }, 220);
+  });
+
+  loadFinanceInventoryData();
+}
+
+async function loadFinanceInventoryData() {
+  const params = new URLSearchParams();
+  if (finInvSearch) params.set('q', finInvSearch);
+  if (finInvStatusFilter && finInvStatusFilter !== 'all') params.set('status', finInvStatusFilter);
+  if (finInvDateFrom) params.set('date_from', finInvDateFrom);
+  if (finInvDateTo) params.set('date_to', finInvDateTo);
+
+  try {
+    const [itemsRes, summaryRes] = await Promise.all([
+      fetch(`${financeInventoryApiBase()}/items?${params.toString()}`, financeInventoryFetchOptions()),
+      fetch(`${financeInventoryApiBase()}/summary`, financeInventoryFetchOptions())
+    ]);
+    const items = await itemsRes.json().catch(() => []);
+    const summary = await summaryRes.json().catch(() => ({}));
+    if (!itemsRes.ok) throw new Error(items.error || 'Failed to load inventory items');
+    if (!summaryRes.ok) throw new Error(summary.error || 'Failed to load inventory summary');
+    finInvItems = Array.isArray(items) ? items : [];
+    finInvSummary = summary || {};
+    renderFinanceInventory();
+  } catch (err) {
+    const body = document.getElementById('inventoryBody');
+    if (body) body.innerHTML = `<div class="inventory-empty"><i class="ri-error-warning-line"></i><span>${escapeHtml(err.message || 'Inventory failed to load.')}</span></div>`;
+  }
+}
+
+function renderFinanceInventory() {
+  const body = document.getElementById('inventoryBody');
+  if (!body) return;
+  body.innerHTML = finInvActiveTab === 'overview' ? financeInventoryOverviewHTML() : financeInventoryItemsHTML();
+  if (finInvActiveTab === 'overview') {
+    renderFinanceInventoryCharts();
+  } else {
+    bindFinanceInventoryItemsEvents();
+  }
+}
+
+function getFinanceInventoryStatusCount(status) {
+  const rows = finInvSummary?.byStatus || [];
+  const found = rows.find(r => String(r.status || '').toLowerCase() === status.toLowerCase());
+  return found ? Number(found.count || 0) : 0;
+}
+
+function financeInventoryOverviewHTML() {
+  const cards = [
+    { label: 'Total Items', value: finInvSummary?.totalItems || 0, icon: 'ri-stack-line', cls: 'blue' },
+    { label: 'Deployed', value: getFinanceInventoryStatusCount('Deployed'), icon: 'ri-send-plane-line', cls: 'green' },
+    { label: 'In Stock', value: getFinanceInventoryStatusCount('In Stock'), icon: 'ri-archive-line', cls: 'cyan' },
+    { label: 'For Repair', value: getFinanceInventoryStatusCount('For Repair'), icon: 'ri-tools-line', cls: 'amber' },
+    { label: 'Missing', value: getFinanceInventoryStatusCount('Missing'), icon: 'ri-error-warning-line', cls: 'red' }
+  ];
+  const activities = finInvSummary?.recentActivities || [];
+  return `
+    <div class="inventory-summary-grid">
+      ${cards.map(c => `
+        <div class="inventory-stat-card ${c.cls}">
+          <div class="inventory-stat-icon"><i class="${c.icon}"></i></div>
+          <div>
+            <strong>${Number(c.value || 0).toLocaleString()}</strong>
+            <span>${escapeHtml(c.label)}</span>
+          </div>
+        </div>`).join('')}
+    </div>
+
+    <div class="inventory-charts-grid">
+      <div class="inventory-card">
+        <div class="inventory-card-head">
+          <h3>Inventory Status</h3>
+          <span>Current item lifecycle</span>
+        </div>
+        <div class="inventory-chart-wrap"><canvas id="finInvStatusChart"></canvas></div>
+      </div>
+      <div class="inventory-card">
+        <div class="inventory-card-head">
+          <h3>Inventory Distribution</h3>
+          <span>Items by category</span>
+        </div>
+        <div class="inventory-chart-wrap"><canvas id="finInvDistributionChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="inventory-card inventory-activity-card">
+      <div class="inventory-card-head">
+        <h3>Recent Activities</h3>
+        <span>Latest inventory movement</span>
+      </div>
+      <div class="inventory-table-wrap">
+        <table class="inventory-table activity">
+          <thead><tr><th>Date</th><th>Time</th><th>Item</th><th>Action</th><th>Site</th></tr></thead>
+          <tbody>
+            ${activities.length ? activities.map(a => {
+              const d = a.created_at ? new Date(a.created_at) : null;
+              return `<tr>
+                <td>${d ? escapeHtml(d.toLocaleDateString()) : '&mdash;'}</td>
+                <td>${d ? escapeHtml(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : '&mdash;'}</td>
+                <td>${escapeHtml(a.item_label || 'Item')}</td>
+                <td><span class="inventory-action-pill">${escapeHtml(a.action || 'Updated')}</span></td>
+                <td>${escapeHtml(a.site || '—')}</td>
+              </tr>`;
+            }).join('') : `<tr><td colspan="5" class="inventory-empty-cell">No recent activities yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+async function renderFinanceInventoryCharts() {
+  try {
+    await financeStandaloneEnsureCharts();
+  } catch (err) {
+    document.querySelectorAll('.inventory-chart-wrap').forEach(wrap => {
+      wrap.innerHTML = `<div class="inventory-empty small">${escapeHtml(err.message || 'Charts unavailable.')}</div>`;
+    });
+    return;
+  }
+
+  const isDark = document.body.classList.contains('dark');
+  const textColor = isDark ? '#cbd5e1' : '#475569';
+  const gridColor = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(15,23,42,0.07)';
+  const statusLabels = ['In Stock', 'Deployed', 'For Repair', 'Returned', 'Condemned', 'Missing'];
+  const statusData = statusLabels.map(getFinanceInventoryStatusCount);
+  const statusCanvas = document.getElementById('finInvStatusChart');
+  const distCanvas = document.getElementById('finInvDistributionChart');
+
+  if (statusCanvas) {
+    if (finInvStatusChart) { try { finInvStatusChart.destroy(); } catch {} }
+    finInvStatusChart = new Chart(statusCanvas, {
+      type: 'bar',
+      data: {
+        labels: statusLabels,
+        datasets: [{
+          data: statusData,
+          backgroundColor: [financeChartColors.income, financeChartColors.income, financeChartColors.project, financeChartColors.collection, financeChartColors.muted, financeChartColors.expense],
+          borderRadius: 8,
+          barThickness: 28
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: textColor, font: { size: 11, weight: 700 } } },
+          y: { beginAtZero: true, grid: { color: gridColor }, ticks: { precision: 0, color: textColor } }
+        }
+      }
+    });
+  }
+
+  if (distCanvas) {
+    if (finInvDistributionChart) { try { finInvDistributionChart.destroy(); } catch {} }
+    const rows = finInvSummary?.byCategory?.length ? finInvSummary.byCategory : [
+      { category: 'Network Cables', count: 0 },
+      { category: 'Router', count: 0 },
+      { category: 'Access Point Devices', count: 0 },
+      { category: 'Network Switches', count: 0 }
+    ];
+    finInvDistributionChart = new Chart(distCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: rows.map(r => r.category),
+        datasets: [{
+          data: rows.map(r => Number(r.count || 0)),
+          backgroundColor: [financeChartColors.income, financeChartColors.project, financeChartColors.collection, financeChartColors.expense, financeChartColors.muted],
+          borderWidth: 0,
+          hoverOffset: 5
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '58%',
+        plugins: {
+          legend: { position: 'bottom', labels: { color: textColor, boxWidth: 10, usePointStyle: true, font: { size: 11 } } }
+        }
+      }
+    });
+  }
+}
+
+function financeInventoryItemsHTML() {
+  return `
+    <div class="inventory-items-toolbar">
+      <div class="inventory-filter-group">
+        <button class="inventory-outline-btn" id="invFilterBtn"><i class="ri-filter-3-line"></i> Filter</button>
+        <select id="finInvStatusFilter" class="inventory-filter-select">
+          <option value="all">All Status</option>
+          ${FIN_INV_STATUSES.map(s => `<option value="${escapeHtml(s)}" ${finInvStatusFilter === s ? 'selected' : ''}>${escapeHtml(s)}</option>`).join('')}
+        </select>
+        <span class="inventory-outline-btn inventory-date-label"><i class="ri-calendar-event-line"></i> Custom Date</span>
+        <label class="inventory-date-filter"><i class="ri-calendar-line"></i><input id="finInvDateFrom" type="date" value="${escapeHtml(finInvDateFrom)}"></label>
+        <label class="inventory-date-filter"><input id="finInvDateTo" type="date" value="${escapeHtml(finInvDateTo)}"></label>
+      </div>
+      <button class="inventory-add-btn" id="invAddBtn"><i class="ri-add-line"></i> Add</button>
+    </div>
+    <div id="inventoryFormHost">${finInvEditingItem ? financeInventoryFormHTML(finInvEditingItem) : ''}</div>
+    <div class="inventory-card">
+      <div class="inventory-table-wrap">
+        <table class="inventory-table">
+          <thead><tr><th>Date</th><th>Serial No</th><th>Category</th><th>Brand</th><th>Status</th><th>Site</th><th>Actions</th></tr></thead>
+          <tbody>
+            ${finInvItems.length ? finInvItems.map(item => `
+              <tr>
+                <td>${formatFinanceInventoryDate(item.date_received || item.created_at)}</td>
+                <td><strong>${escapeHtml(item.serial_no || '—')}</strong><small>${escapeHtml(item.item_code || '')}</small></td>
+                <td>${escapeHtml(item.category || '—')}</td>
+                <td>${escapeHtml(item.brand || '—')}</td>
+                <td>${financeInventoryStatusBadge(item.status)}</td>
+                <td>${escapeHtml(item.site_name || item.site_id || '—')}</td>
+                <td>
+                  <div class="inventory-row-actions">
+                    <button class="inventory-icon-btn edit" data-id="${item.id}" title="Edit"><i class="ri-edit-line"></i></button>
+                    <button class="inventory-icon-btn delete" data-id="${item.id}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+                  </div>
+                </td>
+              </tr>`).join('') : `<tr><td colspan="7" class="inventory-empty-cell">No inventory items found.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+function financeInventoryFormHTML(item = {}) {
+  const isEdit = Boolean(item.id);
+  const input = (name, label, type = 'text', extra = '') => `
+    <label class="inventory-field">
+      <span>${label}</span>
+      <input name="${name}" type="${type}" value="${escapeHtml(formatFinanceInventoryInputValue(item[name], type))}" ${extra}>
+    </label>`;
+  const select = (name, label, options) => `
+    <label class="inventory-field">
+      <span>${label}</span>
+      <select name="${name}">
+        ${options.map(opt => `<option value="${escapeHtml(opt)}" ${String(item[name] || '') === opt ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+      </select>
+    </label>`;
+  return `
+    <form class="inventory-form" id="inventoryItemForm" data-id="${isEdit ? item.id : ''}">
+      <div class="inventory-form-title">
+        <div><h3>${isEdit ? 'Edit Inventory Item' : 'Add Inventory Item'}</h3><span>${isEdit ? 'Update item details and status' : 'Create a new inventory record'}</span></div>
+        <button type="button" class="inventory-outline-btn" id="invCancelFormBtn">Cancel</button>
+      </div>
+      <div class="inventory-form-grid">
+        <div class="inventory-form-col">
+          <section class="inventory-form-section">
+            <h4>Basic Information</h4>
+            ${input('serial_no', 'Serial Number', 'text', 'required')}
+            ${select('category', 'Category', FIN_INV_CATEGORIES)}
+            ${input('item_code', 'Item Code / Secondary Number')}
+            ${input('brand', 'Brand')}
+            ${input('model', 'Model')}
+            <label class="inventory-field full"><span>Description</span><textarea name="description">${escapeHtml(item.description || '')}</textarea></label>
+          </section>
+          <section class="inventory-form-section">
+            <h4>Receiving Information</h4>
+            ${input('date_received', 'Date Received', 'date')}
+            ${input('received_by', 'Received By')}
+          </section>
+          <section class="inventory-form-section">
+            <h4>Deployment Information</h4>
+            ${input('site_id', 'Site ID')}
+            ${input('site_name', 'Site Name')}
+            ${input('deployed_at', 'Deployed At', 'date')}
+            ${input('deployed_by', 'Deployed By')}
+          </section>
+        </div>
+        <div class="inventory-form-col">
+          <section class="inventory-form-section">
+            <h4>Purchase Information</h4>
+            ${input('purchase_date', 'Purchase Date', 'date')}
+            ${input('price', 'Price', 'number', 'step="0.01" min="0"')}
+            ${input('supplier', 'Supplier')}
+            ${input('purchase_order_no', 'Purchase Order No.')}
+          </section>
+          <section class="inventory-form-section">
+            <h4>Condition & Status</h4>
+            ${select('condition', 'Condition', FIN_INV_CONDITIONS)}
+            ${select('status', 'Status', FIN_INV_STATUSES)}
+          </section>
+          <section class="inventory-form-section">
+            <h4>Project Information</h4>
+            ${input('project_name', 'Project Name')}
+            ${input('project_id', 'Project ID')}
+          </section>
+        </div>
+      </div>
+      <div class="inventory-form-footer">
+        <button type="submit" class="inventory-save-btn"><i class="ri-save-3-line"></i> Save</button>
+      </div>
+    </form>
+  `;
+}
+
+function bindFinanceInventoryItemsEvents() {
+  document.getElementById('invAddBtn')?.addEventListener('click', () => {
+    finInvEditingItem = {
+      category: FIN_INV_CATEGORIES[0],
+      condition: 'Good',
+      status: 'In Stock'
+    };
+    renderFinanceInventory();
+    document.getElementById('inventoryItemForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  document.getElementById('invCancelFormBtn')?.addEventListener('click', () => {
+    finInvEditingItem = null;
+    renderFinanceInventory();
+  });
+  document.getElementById('finInvStatusFilter')?.addEventListener('change', e => {
+    finInvStatusFilter = e.target.value;
+    loadFinanceInventoryData();
+  });
+  document.getElementById('finInvDateFrom')?.addEventListener('change', e => {
+    finInvDateFrom = e.target.value;
+    loadFinanceInventoryData();
+  });
+  document.getElementById('finInvDateTo')?.addEventListener('change', e => {
+    finInvDateTo = e.target.value;
+    loadFinanceInventoryData();
+  });
+  document.getElementById('invFilterBtn')?.addEventListener('click', () => {
+    finInvStatusFilter = 'all';
+    finInvDateFrom = '';
+    finInvDateTo = '';
+    loadFinanceInventoryData();
+  });
+  document.querySelectorAll('.inventory-icon-btn.edit').forEach(btn => {
+    btn.addEventListener('click', () => {
+      finInvEditingItem = finInvItems.find(item => String(item.id) === String(btn.dataset.id)) || null;
+      renderFinanceInventory();
+      document.getElementById('inventoryItemForm')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+  document.querySelectorAll('.inventory-icon-btn.delete').forEach(btn => {
+    btn.addEventListener('click', () => deleteFinanceInventoryItem(btn.dataset.id));
+  });
+  document.getElementById('inventoryItemForm')?.addEventListener('submit', saveFinanceInventoryItem);
+}
+
+async function saveFinanceInventoryItem(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const btn = form.querySelector('.inventory-save-btn');
+  const id = form.dataset.id;
+  const fd = new FormData(form);
+  const payload = Object.fromEntries(fd.entries());
+  payload.created_by = financeUser?.id || null;
+  payload.actor_name = financeUser?.full_name || financeUser?.email || 'User';
+  btn.disabled = true;
+  btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving';
+  try {
+    const res = await fetch(id ? `${financeInventoryApiBase()}/items/${id}` : `${financeInventoryApiBase()}/items`, financeInventoryFetchOptions({
+      method: id ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to save inventory item');
+    showToast(id ? 'Inventory item updated.' : 'Inventory item added.', 'success');
+    finInvEditingItem = null;
+    await loadFinanceInventoryData();
+  } catch (err) {
+    showToast(err.message || 'Failed to save inventory item.', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="ri-save-3-line"></i> Save';
+  }
+}
+
+async function deleteFinanceInventoryItem(id) {
+  const item = finInvItems.find(row => String(row.id) === String(id));
+  if (!confirm(`Delete ${item?.serial_no || 'this inventory item'}?`)) return;
+  try {
+    const actor = encodeURIComponent(financeUser?.full_name || financeUser?.email || 'User');
+    const res = await fetch(`${financeInventoryApiBase()}/items/${id}?actor=${actor}`, financeInventoryFetchOptions({ method: 'DELETE' }));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to delete inventory item');
+    showToast('Inventory item deleted.', 'success');
+    await loadFinanceInventoryData();
+  } catch (err) {
+    showToast(err.message || 'Delete failed.', 'error');
+  }
+}
+
+function financeInventoryStatusBadge(status = 'In Stock') {
+  const key = String(status || 'In Stock').toLowerCase().replace(/\s+/g, '-');
+  return `<span class="inventory-status-badge ${key}">${escapeHtml(status || 'In Stock')}</span>`;
+}
+
+function formatFinanceInventoryDate(value) {
+  if (!value) return '&mdash;';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return escapeHtml(String(value));
+  return escapeHtml(d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }));
+}
+
+function formatFinanceInventoryInputValue(value, type) {
+  if (!value) return '';
+  if (type === 'date') {
+    const d = new Date(value);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+  return value;
+}
 
 
 (function injectModals() {
@@ -4972,6 +5574,7 @@ function capitalize(str) {
 
 `;
   document.body.insertAdjacentHTML("beforeend", extraModals);
+
 })();
 /* exp-kpi-amber is now defined in the CSS file */
 
@@ -4987,6 +5590,28 @@ function capitalize(str) {
   window.loadFinanceCompanyExpenses = wrap(loadCompanyExpenses);
   window.loadFinanceEmployeeCenter = wrap(loadEmployee);
   window.loadFinanceReportV2 = wrap(loadFinancialReport);
+  window.loadFinanceInventory = wrap(loadFinanceInventory);
+  window.loadFinanceSettings = async function loadFinanceSharedSettings() {
+    if (typeof loadSettings !== "function") {
+      await new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-shared-settings="noc"]');
+        if (existing) {
+          existing.addEventListener("load", resolve, { once: true });
+          existing.addEventListener("error", reject, { once: true });
+          return;
+        }
+        const script = document.createElement("script");
+        script.src = "/modules/noc/noc-dashboard.js";
+        script.defer = true;
+        script.dataset.sharedSettings = "noc";
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("Unable to load shared Settings module."));
+        document.head.appendChild(script);
+      });
+    }
+    if (typeof loadSettings !== "function") throw new Error("Shared Settings module is unavailable.");
+    return loadSettings();
+  };
   window.loadFinanceLedger = wrap((sectionKey) => {
     if (sectionKey === "project_expenses") return loadProjectExpenses();
     if (sectionKey === "collections") return loadCollections();
@@ -4999,15 +5624,18 @@ function capitalize(str) {
     companyExpenses: { label: "Company Expenses", icon: "ri-shopping-cart-line", loader: () => window.loadFinanceCompanyExpenses() },
     projectExpenses: { label: "Project Expenses", icon: "ri-file-list-3-line", loader: () => window.loadFinanceLedger("project_expenses") },
     collections: { label: "Collections", icon: "ri-hand-coin-line", loader: () => window.loadFinanceLedger("collections") },
+    inventory: { label: "Inventory", icon: "ri-archive-2-line", loader: () => window.loadFinanceInventory() },
+    files: { label: "Files", icon: "ri-file-line", loader: () => window.loadFinanceFiles() },
     employee: { label: "Employee", icon: "ri-user-line", loader: () => window.loadFinanceEmployeeCenter() },
     financialReport: { label: "Financial Report", icon: "ri-bar-chart-2-line", loader: () => window.loadFinanceReportV2() },
+    settings: { label: "Settings", icon: "ri-settings-3-line", loader: () => window.loadFinanceSettings() },
     logout: { label: "Log Out", icon: "ri-logout-circle-r-line", loader: () => showLogoutModal() }
   };
   window.FINANCE_SIDEBAR_SECTIONS = [
     { label: "Main", pages: ["financeDashboard"] },
     { label: "Finance", pages: ["companyIncome", "companyExpenses", "projectExpenses", "collections"] },
-    { label: "Management", pages: ["employee", "financialReport"] },
-    { label: "System", pages: ["logout"] }
+    { label: "Management", pages: ["inventory", "files", "employee", "financialReport"] },
+    { label: "System", pages: ["settings", "logout"] }
   ];
-  window.FINANCE_START_PAGE = "financeDashboard";
+  window.FINANCE_START_PAGE = window.location.pathname === "/settings" ? "settings" : window.location.pathname === "/finance/files" ? "files" : window.location.pathname === "/finance/inventory" ? "inventory" : "financeDashboard";
 })();

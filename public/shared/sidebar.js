@@ -1,24 +1,43 @@
 /* ================= SHARED SIDEBAR ================= */
 
 function getSharedPageDefs() {
-  return roleKey === "finance" ? (window.FINANCE_PAGE_DEFS || {}) : (window.NOC_PAGE_DEFS || {});
+  if (activeShellKey === "admin") return window.ADMIN_PAGE_DEFS || {};
+  return activeShellKey === "finance" ? (window.FINANCE_PAGE_DEFS || {}) : (window.NOC_PAGE_DEFS || {});
 }
 
 function getSharedSidebarSections() {
-  return roleKey === "finance" ? (window.FINANCE_SIDEBAR_SECTIONS || []) : (window.NOC_SIDEBAR_SECTIONS || []);
+  if (activeShellKey === "admin") return window.ADMIN_SIDEBAR_SECTIONS || [];
+  return activeShellKey === "finance" ? (window.FINANCE_SIDEBAR_SECTIONS || []) : (window.NOC_SIDEBAR_SECTIONS || []);
 }
 
 function getVisiblePages() {
-  return getSharedSidebarSections().flatMap(section => section.pages);
+  return getSharedSidebarSections().flatMap(section => [
+    ...(section.pages || []),
+    ...(section.groups || []).flatMap(group => group.pages || [])
+  ]);
 }
 
 function getHomePageKey() {
-  return (roleKey === "finance" ? window.FINANCE_START_PAGE : window.NOC_START_PAGE) || getVisiblePages()[0];
+  const requestedPage = new URLSearchParams(window.location.search).get("page");
+  const pageDefs = getSharedPageDefs();
+  if (requestedPage && pageDefs[requestedPage]) return requestedPage;
+  if (window.location.pathname === "/settings" && pageDefs.settings) return "settings";
+  if (activeShellKey === "admin") return window.ADMIN_START_PAGE || getVisiblePages()[0];
+  return (activeShellKey === "finance" ? window.FINANCE_START_PAGE : window.NOC_START_PAGE) || getVisiblePages()[0];
 }
 
 function activateMenu(pageKey) {
   document.querySelectorAll(".menu li[data-page]").forEach(li => {
     li.classList.toggle("active", li.dataset.page === pageKey);
+  });
+  document.querySelectorAll(".menu-dropdown").forEach(dropdown => {
+    const hasActivePage = !!dropdown.querySelector(`li[data-page="${pageKey}"]`);
+    dropdown.classList.toggle("contains-active", hasActivePage);
+    dropdown.classList.toggle("expanded", hasActivePage || dropdown.classList.contains("expanded"));
+    dropdown.querySelector(".menu-dropdown-toggle")?.setAttribute(
+      "aria-expanded",
+      dropdown.classList.contains("expanded") ? "true" : "false"
+    );
   });
 }
 
@@ -45,8 +64,14 @@ function renderSidebarMenu() {
 
   let html = "";
   sections.forEach((section, sectionIndex) => {
-    const pages = section.pages.filter(page => visible.has(page) && pageDefs[page]);
-    if (!pages.length) return;
+    const pages = (section.pages || []).filter(page => visible.has(page) && pageDefs[page]);
+    const groups = (section.groups || [])
+      .map(group => ({
+        ...group,
+        pages: (group.pages || []).filter(page => visible.has(page) && pageDefs[page])
+      }))
+      .filter(group => group.pages.length);
+    if (!pages.length && !groups.length) return;
     if (sectionIndex > 0) html += `<li class="menu-section-divider" role="separator"></li>`;
     html += `<li class="menu-section-label">${section.label}</li>`;
     pages.forEach(pageKey => {
@@ -57,9 +82,36 @@ function renderSidebarMenu() {
         </li>
       `;
     });
+    groups.forEach(group => {
+      const isExpanded = group.pages.includes(firstPage);
+      html += `
+        <li class="menu-dropdown ${isExpanded ? "expanded" : ""}" data-dropdown="${group.key || group.label}" data-tooltip="${group.label}">
+          <button type="button" class="menu-dropdown-toggle" aria-expanded="${isExpanded ? "true" : "false"}">
+            <i class="${group.icon || "ri-folder-line"}"></i><span>${group.label}</span><i class="ri-arrow-down-s-line menu-dropdown-arrow"></i>
+          </button>
+          <ul class="menu-dropdown-list">
+            ${group.pages.map(pageKey => {
+              const page = pageDefs[pageKey];
+              return `
+                <li data-page="${pageKey}" data-tooltip="${page.label}" class="${pageKey === firstPage ? "active" : ""}">
+                  <i class="${page.icon}"></i><span>${page.label}</span>
+                </li>
+              `;
+            }).join("")}
+          </ul>
+        </li>
+      `;
+    });
   });
 
   sidebarMenu.innerHTML = html;
+  sidebarMenu.querySelectorAll(".menu-dropdown-toggle").forEach(toggle => {
+    toggle.addEventListener("click", () => {
+      const dropdown = toggle.closest(".menu-dropdown");
+      const isExpanded = dropdown.classList.toggle("expanded");
+      toggle.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+    });
+  });
   sidebarMenu.querySelectorAll("li[data-page]").forEach(item => {
     item.addEventListener("click", () => openPage(item.dataset.page));
   });

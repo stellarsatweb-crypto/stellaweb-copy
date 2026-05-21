@@ -67,6 +67,8 @@ body.dark { background: #0b1121; color: #e2e8f0; }
 .sidebar {
   width: var(--sidebar-w);
   min-width: var(--sidebar-w);
+  height: 100vh;
+  max-height: 100vh;
   position: fixed;
   top: 0; left: 0; bottom: 0;
   z-index: 200;
@@ -167,6 +169,7 @@ body.dark .logo-img {
 .menu {
   list-style: none;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -174,9 +177,16 @@ body.dark .logo-img {
   gap: 0;
   /* Spacious vertical padding — Design 1 */
   padding: 14px 0 8px;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148,163,184,0.35) transparent;
 }
-.menu::-webkit-scrollbar { display: none; }
+.menu::-webkit-scrollbar { width: 4px; }
+.menu::-webkit-scrollbar-track { background: transparent; }
+.menu::-webkit-scrollbar-thumb {
+  background: rgba(148,163,184,0.28);
+  border-radius: 999px;
+}
+.menu::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.42); }
 
 /* ── Section labels ─────────────────────────────────────────────────────── */
 .menu-section-label {
@@ -381,6 +391,130 @@ body.dark .menu li.active::before { background: #60a5fa; }
 }
 .menu li[data-page="logout"]:hover i { color: #f87171; }
 
+/* Collapsible sidebar groups */
+.menu li.menu-dropdown {
+  display: block;
+  height: auto;
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: default;
+  margin-bottom: 2px;
+  overflow: hidden;
+}
+
+.menu li.menu-dropdown:hover {
+  background: transparent;
+  color: var(--sb-text-nav);
+  transform: none;
+}
+
+.menu-dropdown-toggle {
+  width: 100%;
+  height: var(--sb-item-h);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  border: 0;
+  border-radius: var(--sb-item-radius);
+  background: transparent;
+  color: var(--sb-text-nav);
+  padding: 0 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.15s ease;
+}
+
+.menu-dropdown-toggle:hover {
+  background: var(--sb-hover-bg);
+  color: var(--sb-text-nav-hover);
+  transform: translateX(1px);
+}
+
+.menu-dropdown-toggle i {
+  font-size: 17px;
+  flex-shrink: 0;
+  width: 22px;
+  text-align: center;
+  color: var(--sb-icon);
+  transition: color 0.18s ease, transform 0.18s ease;
+}
+
+.menu-dropdown-toggle:hover i,
+.menu-dropdown.contains-active > .menu-dropdown-toggle i {
+  color: var(--sb-icon-hover);
+}
+
+.menu-dropdown-toggle span {
+  flex: 1;
+  overflow: hidden;
+  transition: opacity 0.18s ease, max-width 0.28s cubic-bezier(0.4,0,0.2,1);
+}
+
+.menu-dropdown-arrow {
+  margin-left: auto;
+  font-size: 15px !important;
+  width: 16px !important;
+  transform: rotate(-90deg);
+}
+
+.menu-dropdown.expanded > .menu-dropdown-toggle .menu-dropdown-arrow {
+  transform: rotate(0deg);
+}
+
+.menu-dropdown-list {
+  list-style: none;
+  max-height: 0;
+  margin: 0;
+  padding: 0 0 0 14px;
+  overflow: hidden;
+  transition: max-height 0.24s cubic-bezier(0.4,0,0.2,1), padding 0.24s ease;
+}
+
+.menu-dropdown.expanded > .menu-dropdown-list {
+  max-height: 520px;
+  padding-bottom: 4px;
+}
+
+.menu-dropdown-list::before {
+  content: "";
+  min-height: 0;
+}
+
+.menu-dropdown-list > li {
+  min-height: 0;
+}
+
+.menu-dropdown-list li[data-page] {
+  height: 36px;
+  margin-left: 10px;
+  padding-left: 10px;
+  font-size: 12.5px;
+}
+
+.menu-dropdown-list li[data-page] i {
+  font-size: 15px;
+}
+
+.sidebar.collapsed .menu li.menu-dropdown {
+  overflow: visible;
+}
+
+.sidebar.collapsed .menu-dropdown-toggle {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar.collapsed .menu-dropdown-toggle span,
+.sidebar.collapsed .menu-dropdown-arrow,
+.sidebar.collapsed .menu-dropdown-list {
+  display: none;
+}
+
 /* ── Profile card — bottom of sidebar (Design 2 inspired) ───────────────── */
 .sb-profile {
   flex-shrink: 0;
@@ -528,11 +662,15 @@ body.dark .menu li.active::before { background: #60a5fa; }
   /* Allow the button to protrude right */
   overflow: visible;
 }
-/* Re-clip sidebar content without clipping the button */
-.sidebar .menu,
+/* Re-clip fixed sidebar content without blocking menu scrolling */
 .sidebar .logo,
 .sidebar .sb-profile {
   overflow: hidden;
+}
+.sidebar .menu {
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
 }
 .collapse-btn:hover {
   background: #1e3a6e;
@@ -12989,6 +13127,244 @@ body.finance-role .toast-error {
   color: var(--chic-rose) !important;
 }
 
+/* ================= SHARED FINANCE / NOC DESIGN SYSTEM ================= */
+:root {
+  --primary: #1f3a5f;
+  --primary-dark: #0f1f35;
+  --primary-soft: #e8f0fe;
+  --bg-main: #f7f8fb;
+  --card-bg: #ffffff;
+  --text-main: #1e293b;
+  --text-muted: #64748b;
+  --border-soft: #e5e7eb;
+  --success: #16a34a;
+  --success-bg: #dcfce7;
+  --danger: #dc2626;
+  --danger-bg: #fee2e2;
+  --warning: #d97706;
+  --warning-bg: #fef3c7;
+  --info: #2563eb;
+  --info-bg: #dbeafe;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --shadow-soft: 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.inventory-page {
+  background: var(--bg-main) !important;
+  color: var(--text-main) !important;
+  padding: 24px 28px !important;
+}
+
+.inventory-header {
+  min-height: 88px;
+  align-items: center !important;
+  padding: 20px 28px;
+  margin-bottom: 20px !important;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--primary-dark) 0%, var(--primary) 58%, #2f5f9f 100%);
+  box-shadow: var(--shadow-soft);
+}
+
+.inventory-header h2 {
+  color: #fff !important;
+  font-size: 22px !important;
+  font-weight: 800 !important;
+  letter-spacing: 0 !important;
+}
+
+.inventory-header-identity {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.inventory-header-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255,255,255,0.14);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #fff;
+  font-size: 22px;
+}
+
+.inventory-search {
+  width: min(320px, 100%) !important;
+  height: 42px !important;
+  border-radius: var(--radius-md) !important;
+  border: 1px solid rgba(255,255,255,0.25) !important;
+  background: rgba(255,255,255,0.14) !important;
+  box-shadow: none !important;
+  color: rgba(255,255,255,0.78) !important;
+}
+
+.inventory-search input,
+.inventory-search i {
+  color: #fff !important;
+}
+
+.inventory-search input::placeholder {
+  color: rgba(255,255,255,0.62) !important;
+}
+
+.inventory-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) !important;
+  gap: 20px !important;
+  width: 100%;
+  margin-bottom: 20px !important;
+}
+
+.inventory-stat-card,
+.inventory-card,
+.rpt-card {
+  background: var(--card-bg) !important;
+  border: 1px solid var(--border-soft) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-soft) !important;
+}
+
+.inventory-stat-card {
+  min-height: 112px !important;
+  align-items: center !important;
+  gap: 16px !important;
+  padding: 20px !important;
+}
+
+.inventory-stat-card.blue,
+.inventory-stat-card.green,
+.inventory-stat-card.cyan,
+.inventory-stat-card.amber,
+.inventory-stat-card.red {
+  background: var(--card-bg) !important;
+}
+
+.inventory-stat-icon {
+  width: 48px !important;
+  height: 48px !important;
+  border-radius: var(--radius-md) !important;
+  background: var(--primary-soft) !important;
+  color: var(--primary) !important;
+  font-size: 22px !important;
+}
+
+.inventory-stat-card.green .inventory-stat-icon { background: var(--success-bg) !important; color: var(--success) !important; }
+.inventory-stat-card.cyan .inventory-stat-icon,
+.inventory-stat-card.blue .inventory-stat-icon { background: var(--info-bg) !important; color: var(--info) !important; }
+.inventory-stat-card.amber .inventory-stat-icon { background: var(--warning-bg) !important; color: var(--warning) !important; }
+.inventory-stat-card.red .inventory-stat-icon { background: var(--danger-bg) !important; color: var(--danger) !important; }
+
+.inventory-stat-card > div:last-child {
+  min-width: 0;
+}
+
+.inventory-stat-card strong {
+  color: var(--text-main) !important;
+  font-size: clamp(18px, 1.8vw, 24px) !important;
+  font-weight: 700 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inventory-stat-card span,
+.inventory-card-head span {
+  color: var(--text-muted) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.inventory-card-head {
+  align-items: center !important;
+  padding: 18px 20px 14px !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+}
+
+.inventory-card-head h3 {
+  color: var(--text-main) !important;
+  font-family: inherit !important;
+  font-size: 16px !important;
+  font-weight: 700 !important;
+}
+
+.inventory-table {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  font-size: 13px !important;
+}
+
+.inventory-table thead th,
+.rpt-table thead th,
+.rpt-thead-row th {
+  background: var(--primary-soft) !important;
+  color: var(--primary) !important;
+  padding: 13px 16px !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase !important;
+}
+
+.inventory-table tbody td,
+.rpt-table tbody td,
+.rpt-row td {
+  padding: 14px 16px !important;
+  border-bottom: 1px solid var(--border-soft) !important;
+  color: var(--text-main) !important;
+  font-size: 13px !important;
+}
+
+.inventory-table tbody tr:hover,
+.rpt-row:hover td {
+  background: #f9fbff !important;
+}
+
+.inventory-action-pill,
+.inventory-status-badge,
+.rpt-region-badge,
+.rpt-latest-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 4px 10px;
+  border-radius: 999px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.inventory-status-badge.in-stock,
+.inventory-status-badge.deployed {
+  background: var(--success-bg) !important;
+  color: var(--success) !important;
+}
+
+.inventory-status-badge.missing {
+  background: var(--danger-bg) !important;
+  color: var(--danger) !important;
+}
+
+.inventory-status-badge.for-repair {
+  background: var(--warning-bg) !important;
+  color: var(--warning) !important;
+}
+
+.inventory-status-badge.returned,
+.inventory-status-badge.condemned,
+.inventory-action-pill,
+.rpt-region-badge,
+.rpt-latest-badge {
+  background: var(--info-bg) !important;
+  color: var(--info) !important;
+}
+
 /* ══════════════════════════════════════════════════════════════════
    MODAL OVERLAY backdrop
    ══════════════════════════════════════════════════════════════════ */
@@ -13422,4 +13798,49 @@ body.finance-role ::-webkit-scrollbar-thumb:hover { background: var(--chic-plati
   .income-filter-bar .pe-filter-text,
   .income-filter-bar .pe-apply-btn,
   .income-filter-bar .pe-clear-btn { width: 100%; }
+}
+
+/* Admin sidebar scroll fix: keep header/profile fixed and scroll only nav */
+.sidebar {
+  height: 100vh !important;
+  max-height: 100vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: visible !important;
+}
+
+.sidebar > .logo {
+  flex: 0 0 auto !important;
+}
+
+.sidebar > .menu {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin !important;
+  scrollbar-color: rgba(148,163,184,0.35) transparent !important;
+}
+
+.sidebar > .menu::-webkit-scrollbar {
+  width: 4px !important;
+}
+
+.sidebar > .menu::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.sidebar > .menu::-webkit-scrollbar-thumb {
+  background: rgba(148,163,184,0.28) !important;
+  border-radius: 999px !important;
+}
+
+.sidebar > .menu::-webkit-scrollbar-thumb:hover {
+  background: rgba(148,163,184,0.42) !important;
+}
+
+.sidebar > .sb-profile {
+  flex: 0 0 auto !important;
 }

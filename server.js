@@ -17,11 +17,23 @@ const TYPING_TTL_MS = 3500;
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Id', 'X-User-Role']
 }));
 app.use(express.json({ limit: '5mb' }));
 app.options('*', cors());
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/settings', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'modules', 'finance', 'finance-dashboard.html'));
+});
+app.get('/finance/files', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'modules', 'finance', 'finance-dashboard.html'));
+});
+app.get('/finance/inventory', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'modules', 'finance', 'finance-dashboard.html'));
+});
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'modules', 'admin', 'admin-dashboard.html'));
+});
 
 /* ================= POSTGRES CONNECTION ================= */
 
@@ -55,6 +67,28 @@ CREATE TABLE IF NOT EXISTS users (
 pool.query(createTable)
   .then(() => console.log('Users table ready ✅'))
   .catch(err => console.error('Table creation error:', err));
+
+const createStaffIdsTable = `
+CREATE TABLE IF NOT EXISTS staff_ids (
+  id SERIAL PRIMARY KEY,
+  staff_id CITEXT UNIQUE NOT NULL,
+  department TEXT,
+  assigned_role CITEXT NOT NULL CHECK (LOWER(assigned_role) IN ('noc','finance','admin')),
+  status TEXT NOT NULL DEFAULT 'unused' CHECK (LOWER(status) IN ('unused','used','disabled')),
+  linked_user_id INT UNIQUE REFERENCES users(id) ON DELETE SET NULL,
+  created_by_admin_id INT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  used_at TIMESTAMP
+);
+`;
+
+pool.query(createStaffIdsTable)
+  .then(() => console.log('Staff IDs table ready'))
+  .catch(err => console.error('Staff IDs table error:', err));
+
+pool.query(`ALTER TABLE staff_ids DROP COLUMN IF EXISTS full_name`)
+  .then(() => console.log('Staff IDs migrations applied'))
+  .catch(err => console.error('Staff IDs migration error:', err));
 
 const createProbTable = `
 CREATE TABLE IF NOT EXISTS problematic_sites (
@@ -580,6 +614,20 @@ const financeTableStatements = [
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS finance_inventory (
+      id SERIAL PRIMARY KEY,
+      item_name TEXT NOT NULL,
+      category TEXT,
+      quantity NUMERIC(12,2) NOT NULL DEFAULT 0,
+      unit_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'in_stock',
+      notes TEXT,
+      created_by INT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
   `
 ];
 
@@ -810,6 +858,26 @@ function ensureFinanceAccess(req, res, next) {
   next();
 }
 
+function ensureAdminAccess(req, res, next) {
+  const role = financeRole(req);
+  if (role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
+async function adminScalar(sql, params = [], fallback = 0) {
+  try {
+    const result = await pool.query(sql, params);
+    const first = result.rows?.[0] || {};
+    const value = first.value ?? Object.values(first)[0];
+    return Number(value || 0);
+  } catch (err) {
+    if (err.code === '42P01' || err.code === '42703') return fallback;
+    throw err;
+  }
+}
+
 function getFinanceResource(key) {
   return FINANCE_RESOURCES[key] || null;
 }
@@ -927,6 +995,31 @@ function normalizeCollectionStatus(status) {
   return 'Pending';
 }
 
+function normalizeFinanceInventoryStatus(status) {
+  const s = String(status || 'in_stock').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (['in_stock', 'low_stock', 'out_of_stock'].includes(s)) return s;
+  if (s === 'low') return 'low_stock';
+  if (s === 'out') return 'out_of_stock';
+  return 'in_stock';
+}
+
+function financeInventorySelectSql() {
+  return `
+    SELECT
+      id,
+      item_name,
+      category,
+      quantity,
+      unit_price,
+      (quantity * unit_price) AS total_value,
+      status,
+      notes,
+      created_at,
+      updated_at
+    FROM finance_inventory
+  `;
+}
+
 function financeProjectExpenseSelectSql() {
   return `
     SELECT id, date, project_name, type, description, category, vendor, amount, status, notes, created_at, updated_at
@@ -958,6 +1051,27 @@ function financeCollectionsSelectSql() {
 
 /* ================= AUTH ROUTE ================= */
 
+app.post('/api/auth/validate-staff-id', async (req, res) => {
+  try {
+    const staffId = String(req.body?.staff_id || req.body?.id_no || '').trim();
+    if (!staffId) return res.status(400).json({ valid: false, error: 'Staff ID is required' });
+    const result = await pool.query(
+      `SELECT id, staff_id, department, assigned_role, status, linked_user_id
+       FROM staff_ids
+       WHERE staff_id = $1`,
+      [staffId]
+    );
+    if (!result.rowCount) return res.status(404).json({ valid: false, error: 'Staff ID is not registered by Admin' });
+    const row = result.rows[0];
+    if (String(row.status).toLowerCase() === 'disabled') return res.status(403).json({ valid: false, error: 'Staff ID is disabled' });
+    if (String(row.status).toLowerCase() === 'used' || row.linked_user_id) return res.status(409).json({ valid: false, error: 'Staff ID has already been used' });
+    res.json({ valid: true, staff: row });
+  } catch (err) {
+    console.error('POST /api/auth/validate-staff-id error:', err.message);
+    res.status(500).json({ valid: false, error: 'Server error' });
+  }
+});
+
 app.post('/api/auth', async (req, res) => {
   console.log("REQUEST BODY:", req.body);
   const { action, id_no, full_name, email, password, role } = req.body || {};
@@ -965,19 +1079,54 @@ app.post('/api/auth', async (req, res) => {
     if (!action) return res.status(400).json({ success: false, error: 'Action is required' });
 
     if (action === 'signup') {
-      if (!id_no || !full_name || !email || !password || !role)
+      if (!id_no || !full_name || !email || !password)
         return res.status(400).json({ success: false, error: 'All fields are required' });
       const trimmedId = id_no.trim();
-      const trimmedName = full_name.trim();
-      const trimmedEmail = email.trim().toLowerCase();
-      const existing = await pool.query('SELECT id FROM users WHERE id_no = $1 OR email = $2', [trimmedId, trimmedEmail]);
-      if (existing.rows.length > 0) return res.status(409).json({ success: false, error: 'User already exists' });
-      const hash = await bcrypt.hash(password, 10);
-      const result = await pool.query(
-        `INSERT INTO users (id_no, full_name, email, password_hash, role) VALUES ($1,$2,$3,$4,$5) RETURNING id, id_no, full_name, email, role, created_at`,
-        [trimmedId, trimmedName, trimmedEmail, hash, role]
-      );
-      return res.json({ success: true, user: result.rows[0] });
+        const trimmedName = full_name.trim();
+        const trimmedEmail = email.trim().toLowerCase();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const staffResult = await client.query(
+          `SELECT * FROM staff_ids WHERE staff_id = $1 FOR UPDATE`,
+          [trimmedId]
+        );
+        if (!staffResult.rowCount) {
+          await client.query('ROLLBACK');
+          return res.status(403).json({ success: false, error: 'Staff ID is not registered by Admin' });
+        }
+        const staff = staffResult.rows[0];
+        if (String(staff.status).toLowerCase() === 'disabled') {
+          await client.query('ROLLBACK');
+          return res.status(403).json({ success: false, error: 'Staff ID is disabled' });
+        }
+        if (String(staff.status).toLowerCase() !== 'unused' || staff.linked_user_id) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ success: false, error: 'Staff ID has already been used' });
+        }
+        const existing = await client.query('SELECT id FROM users WHERE id_no = $1 OR email = $2', [trimmedId, trimmedEmail]);
+        if (existing.rows.length > 0) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({ success: false, error: 'User already exists' });
+        }
+        const hash = await bcrypt.hash(password, 10);
+        const assignedRole = String(staff.assigned_role || '').trim().toLowerCase();
+        const result = await client.query(
+          `INSERT INTO users (id_no, full_name, email, password_hash, role) VALUES ($1,$2,$3,$4,$5) RETURNING id, id_no, full_name, email, role, created_at`,
+          [trimmedId, trimmedName, trimmedEmail, hash, assignedRole]
+        );
+        await client.query(
+          `UPDATE staff_ids SET status='used', linked_user_id=$1, used_at=CURRENT_TIMESTAMP WHERE id=$2`,
+          [result.rows[0].id, staff.id]
+        );
+        await client.query('COMMIT');
+        return res.json({ success: true, user: result.rows[0] });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
     }
 
     if (action === 'signin') {
@@ -996,6 +1145,157 @@ app.post('/api/auth', async (req, res) => {
   } catch (err) {
     console.error('API error:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+/* ================= ADMIN ROUTES ================= */
+
+app.get('/api/admin/staff-ids', ensureAdminAccess, async (req, res) => {
+  try {
+    const search = `%${String(req.query.search || '').trim()}%`;
+    const status = String(req.query.status || '').trim().toLowerCase();
+    const params = [search];
+    const conditions = [`(s.staff_id ILIKE $1 OR COALESCE(s.department,'') ILIKE $1 OR COALESCE(u.email,'') ILIKE $1 OR COALESCE(u.full_name,'') ILIKE $1)`];
+    if (status && status !== 'all') {
+      params.push(status);
+      conditions.push(`LOWER(s.status) = $${params.length}`);
+    }
+    const result = await pool.query(`
+      SELECT
+        s.id,
+        s.staff_id,
+        s.department,
+        s.assigned_role,
+        s.status,
+        s.linked_user_id,
+        s.created_by_admin_id,
+        s.created_at,
+        s.used_at,
+        u.email AS linked_user_email,
+        u.full_name AS linked_user_name
+      FROM staff_ids s
+      LEFT JOIN users u ON u.id = s.linked_user_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY s.created_at DESC, s.id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('GET /api/admin/staff-ids error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/staff-ids', ensureAdminAccess, async (req, res) => {
+  try {
+    const staffId = String(req.body?.staff_id || '').trim();
+    const department = String(req.body?.department || '').trim();
+    const assignedRole = String(req.body?.assigned_role || '').trim().toLowerCase();
+    if (!staffId || !assignedRole) {
+      return res.status(400).json({ error: 'Staff ID and assigned role are required' });
+    }
+    if (!['noc', 'finance', 'admin'].includes(assignedRole)) {
+      return res.status(400).json({ error: 'Assigned role must be NOC, Finance, or Admin' });
+    }
+    const createdBy = financeUserId(req);
+    const result = await pool.query(`
+      INSERT INTO staff_ids (staff_id, department, assigned_role, status, created_by_admin_id)
+      VALUES ($1,$2,$3,'unused',$4)
+      RETURNING *
+    `, [staffId, department || null, assignedRole, createdBy]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Staff ID already exists' });
+    console.error('POST /api/admin/staff-ids error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/admin/staff-ids/:id/disable', ensureAdminAccess, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `UPDATE staff_ids SET status='disabled' WHERE id=$1 AND LOWER(status) = 'unused' RETURNING *`,
+      [req.params.id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Unused Staff ID not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('PATCH /api/admin/staff-ids/:id/disable error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/overview', ensureAdminAccess, async (req, res) => {
+  try {
+    const [
+      nocTickets,
+      nocRegions,
+      nocProblematicSites,
+      nocAcceptanceSites,
+      nocInventoryItems,
+      financeInventoryItems,
+      financeIncome,
+      financeCompanyExpenses,
+      financeProjectExpenses,
+      financeCollections,
+      files,
+      employees,
+      pendingReimbursements,
+      pendingBudgetRequests,
+      pendingFilesRequests
+    ] = await Promise.all([
+      adminScalar(`SELECT COUNT(*)::int AS value FROM ticket_information`),
+      adminScalar(`SELECT COUNT(DISTINCT region_name)::int AS value FROM site_inventory WHERE region_name IS NOT NULL AND BTRIM(region_name) <> ''`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM problematic_sites`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM project_sites`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM inventory_items WHERE module = 'noc'`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM inventory_items WHERE module = 'finance'`),
+      adminScalar(`SELECT COALESCE(SUM(amount), 0)::numeric AS value FROM finance_company_income`),
+      adminScalar(`SELECT COALESCE(SUM(amount), 0)::numeric AS value FROM finance_company_expenses`),
+      adminScalar(`SELECT COALESCE(SUM(amount), 0)::numeric AS value FROM finance_project_expenses`),
+      adminScalar(`SELECT COALESCE(SUM(amount_collected), 0)::numeric AS value FROM finance_collections`),
+      adminScalar(`
+        SELECT
+          (SELECT COUNT(*) FROM files) +
+          (SELECT COUNT(*) FROM project_files) +
+          (SELECT COUNT(*) FROM project_images) +
+          (SELECT COUNT(*) FROM project_videos) AS value
+      `),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM finance_employees`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM employee_reimburse_requests WHERE LOWER(COALESCE(status, 'pending')) = 'pending'`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM employee_budget_requests WHERE LOWER(COALESCE(status, 'pending')) = 'pending'`),
+      adminScalar(`SELECT COUNT(*)::int AS value FROM files_requests WHERE LOWER(COALESCE(status, 'pending')) = 'pending'`)
+    ]);
+
+    res.json({
+      noc: {
+        tickets: nocTickets,
+        regions: nocRegions,
+        problematic_sites: nocProblematicSites,
+        acceptance_sites: nocAcceptanceSites
+      },
+      finance: {
+        total_income: financeIncome,
+        total_expenses: financeCompanyExpenses + financeProjectExpenses,
+        total_collections: financeCollections
+      },
+      inventory: {
+        noc_items: nocInventoryItems,
+        finance_items: financeInventoryItems,
+        total_items: nocInventoryItems + financeInventoryItems
+      },
+      files: {
+        total_files: files
+      },
+      employees: {
+        total: employees
+      },
+      requests: {
+        pending: pendingReimbursements + pendingBudgetRequests + pendingFilesRequests
+      }
+    });
+  } catch (err) {
+    console.error('GET /api/admin/overview error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1647,6 +1947,88 @@ app.delete('/api/collections/:id', ensureFinanceAccess, async (req, res) => {
   try {
     const result = await pool.query(`DELETE FROM finance_collections WHERE id=$1 RETURNING id`, [req.params.id]);
     if (!result.rowCount) return res.status(404).json({ error: 'Collection not found' });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/finance-inventory/kpis', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*)::int AS total_items,
+        COALESCE(SUM(quantity * unit_price), 0) AS total_value,
+        COUNT(*) FILTER (WHERE status = 'low_stock')::int AS low_stock_items,
+        COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days')::int AS recently_added
+      FROM finance_inventory
+    `);
+    const row = result.rows[0] || {};
+    res.json({
+      total_items: Number(row.total_items || 0),
+      total_value: Number(row.total_value || 0),
+      low_stock_items: Number(row.low_stock_items || 0),
+      recently_added: Number(row.recently_added || 0)
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/finance-inventory', ensureFinanceAccess, async (req, res) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const params = [];
+    const where = search ? `WHERE item_name ILIKE $1 OR COALESCE(category,'') ILIKE $1 OR COALESCE(notes,'') ILIKE $1` : '';
+    if (search) params.push(`%${search}%`);
+    const result = await pool.query(`${financeInventorySelectSql()} ${where} ORDER BY created_at DESC, id DESC`, params);
+    res.json(result.rows.map(r => ({
+      ...r,
+      quantity: Number(r.quantity || 0),
+      unit_price: Number(r.unit_price || 0),
+      total_value: Number(r.total_value || 0)
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/finance-inventory', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { item_name, itemName, category, quantity, unit_price, unitPrice, status, notes } = req.body || {};
+    const cleanName = item_name || itemName;
+    const qty = Number(quantity ?? 0);
+    const price = Number(unit_price ?? unitPrice ?? 0);
+    if (!cleanName?.trim() || qty < 0 || price < 0) {
+      return res.status(400).json({ error: 'item_name, quantity, and unit_price are required' });
+    }
+    const result = await pool.query(`
+      INSERT INTO finance_inventory (item_name, category, quantity, unit_price, status, notes, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      RETURNING *
+    `, [cleanName.trim(), category || null, qty, price, normalizeFinanceInventoryStatus(status), notes || null, financeUserId(req)]);
+    res.status(201).json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/finance-inventory/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const { item_name, itemName, category, quantity, unit_price, unitPrice, status, notes } = req.body || {};
+    const cleanName = item_name || itemName;
+    const qty = Number(quantity ?? 0);
+    const price = Number(unit_price ?? unitPrice ?? 0);
+    if (!cleanName?.trim() || qty < 0 || price < 0) {
+      return res.status(400).json({ error: 'item_name, quantity, and unit_price are required' });
+    }
+    const result = await pool.query(`
+      UPDATE finance_inventory
+      SET item_name=$1, category=$2, quantity=$3, unit_price=$4, status=$5, notes=$6, updated_at=NOW()
+      WHERE id=$7
+      RETURNING *
+    `, [cleanName.trim(), category || null, qty, price, normalizeFinanceInventoryStatus(status), notes || null, req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Inventory item not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/finance-inventory/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM finance_inventory WHERE id=$1 RETURNING id`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Inventory item not found' });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -3555,6 +3937,387 @@ app.post('/api/letters/folders/:id/copy', async (req, res) => {
 app.get('/api/letters/files/:id/preview', async (req, res) => {
   const id = parseInt(req.params.id);
   const moduleName = getLettersModule(req);
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f        = rows[0];
+    const filePath = require('path').join(__dirname, 'public', f.file_path);
+    const fs       = require('fs');
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
+    const ext = require('path').extname(f.file_name).toLowerCase();
+    const mimeTypes = {
+      '.pdf':  'application/pdf',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',
+      '.webp': 'image/webp',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc':  'application/msword',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls':  'application/vnd.ms-excel',
+      '.mp4':  'video/mp4',
+      '.webm': 'video/webm',
+      '.mov':  'video/quicktime',
+      '.avi':  'video/x-msvideo',
+      '.mkv':  'video/x-matroska',
+    };
+    const mime = mimeTypes[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${f.file_name}"`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    fs.createReadStream(filePath).pipe(res);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+/* ================= FINANCE FILES API =================
+   Finance-specific route surface for the Files module.
+   Data is restricted to module = 'finance'.
+*/
+/* ── GET /api/finance/files/download-history ── */
+app.get('/api/finance/files/download-history', async (req, res) => {
+  const moduleName = 'finance';
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, file_id, file_name, downloaded_by, downloaded_at
+         FROM download_history
+        WHERE module = $1
+        ORDER BY downloaded_at DESC
+        LIMIT 500`,
+      [moduleName]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET download-history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/finance/files/download-history ── */
+app.post('/api/finance/files/download-history', async (req, res) => {
+  const { file_id, file_name, downloaded_by } = req.body || {};
+  const moduleName = 'finance';
+  if (!file_name || !downloaded_by) return res.status(400).json({ error: 'file_name and downloaded_by are required' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO download_history (file_id, file_name, downloaded_by, module)
+       VALUES ($1, $2, $3, $4) RETURNING *`,
+      [file_id || null, file_name, downloaded_by, moduleName]
+    );
+    res.status(201).json({ success: true, row: rows[0] });
+  } catch (err) {
+    console.error('POST download-history error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/finance/files/folders ── */
+app.get('/api/finance/files/folders', async (req, res) => {
+  try {
+    const moduleName = 'finance';
+    const rawParent = req.query.parent_id;
+    const parentId  = (rawParent !== undefined && rawParent !== '') ? parseInt(rawParent) : null;
+    if (parentId !== null && isNaN(parentId)) return res.status(400).json({ error: 'Invalid parent_id' });
+
+    let result;
+    if (parentId !== null) {
+      result = await pool.query(`
+        SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id AND fi.module = f.module) +
+               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id AND sf.module = f.module) AS file_count
+          FROM folders f
+         WHERE f.parent_id = $1
+           AND f.id != $1
+           AND f.module = $2
+         ORDER BY f.folder_name
+      `, [parentId, moduleName]);
+    } else {
+      result = await pool.query(`
+        SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+               (SELECT COUNT(*)::int FROM files fi WHERE fi.folder_id = f.id AND fi.module = f.module) +
+               (SELECT COUNT(*)::int FROM folders sf WHERE sf.parent_id = f.id AND sf.module = f.module) AS file_count
+          FROM folders f
+         WHERE f.parent_id IS NULL
+           AND f.module = $1
+         ORDER BY f.folder_name
+      `, [moduleName]);
+    }
+    res.json(result.rows);
+  } catch (err) {
+    console.error('GET folders error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/finance/files/folders ── */
+app.post('/api/finance/files/folders', async (req, res) => {
+  const { folder_name, parent_id = null } = req.body || {};
+  const moduleName = 'finance';
+  if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO folders (folder_name, parent_id, module) VALUES ($1, $2, $3) RETURNING *`,
+      [folder_name.trim(), parent_id, moduleName]
+    );
+    res.status(201).json({ success: true, folder: result.rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    console.error('POST folders error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── PUT /api/finance/files/folders/:id ── */
+app.put('/api/finance/files/folders/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { folder_name } = req.body || {};
+  const moduleName = 'finance';
+  if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE folders SET folder_name = $1 WHERE id = $2 AND module = $3 RETURNING *`,
+      [folder_name.trim(), id, moduleName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true, folder: result.rows[0] });
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── DELETE /api/finance/files/folders/:id ── */
+app.delete('/api/finance/files/folders/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const moduleName = 'finance';
+  try {
+    const result = await pool.query(`DELETE FROM folders WHERE id = $1 AND module = $2`, [id, moduleName]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true, deleted: result.rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/finance/files/folders/:id/files ── */
+app.get('/api/finance/files/folders/:id/files', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const moduleName = 'finance';
+  const q  = req.query.q ? `%${req.query.q}%` : null;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM files
+        WHERE folder_id = $1 AND module = $2 ${q ? 'AND file_name ILIKE $3' : ''}
+        ORDER BY created_at DESC`,
+      q ? [id, moduleName, q] : [id, moduleName]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/finance/files/uploaders ── */
+app.get('/api/finance/files/uploaders', async (req, res) => {
+  const moduleName = 'finance';
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT uploader_name FROM files WHERE module = $1 AND uploader_name IS NOT NULL ORDER BY uploader_name`,
+      [moduleName]
+    );
+    res.json(result.rows.map(r => r.uploader_name));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/finance/files/files/recent ── */
+app.get('/api/finance/files/files/recent', async (req, res) => {
+  const moduleName = 'finance';
+  try {
+    const result = await pool.query(`SELECT * FROM files WHERE module = $1 ORDER BY created_at DESC LIMIT 8`, [moduleName]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/finance/files/files  (multipart upload) ── */
+app.post('/api/finance/files/files', (req, res, next) => {
+  if (!lettersUpload) return res.status(500).json({ error: 'multer not installed — run: npm install multer' });
+  lettersUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const { folder_id, uploader_name } = req.body || {};
+    const moduleName = 'finance';
+    if (!folder_id) return res.status(400).json({ error: 'folder_id is required' });
+    if (!req.file)  return res.status(400).json({ error: 'No file received' });
+    const file_path = getLettersRelativePath(moduleName, req.file.filename);
+    const file_size = req.file.size;
+    const file_name = req.file.originalname;
+    const ext = require('path').extname(file_name).toLowerCase().replace('.', '');
+    const mimeMap = { pdf: 'pdf', doc: 'word', docx: 'word', xls: 'excel', xlsx: 'excel', txt: 'text', png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', zip: 'archive', rar: 'archive', mp4: 'video', webm: 'video', mov: 'video', avi: 'video', mkv: 'video' };
+    const file_type = mimeMap[ext] || ext || req.file.mimetype.split('/')[1]?.slice(0, 50) || 'file';
+    try {
+      const folderCheck = await pool.query(`SELECT id FROM folders WHERE id = $1 AND module = $2`, [parseInt(folder_id), moduleName]);
+      if (!folderCheck.rowCount) return res.status(404).json({ error: 'Folder not found' });
+      const result = await pool.query(
+        `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, module, last_access)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) RETURNING *`,
+        [parseInt(folder_id), uploader_name || null, file_name, file_path, file_size, file_type, moduleName]
+      );
+      res.status(201).json({ success: true, file: result.rows[0] });
+    } catch (dbErr) {
+      res.status(500).json({ error: dbErr.message });
+    }
+  });
+});
+
+/* ── PUT /api/finance/files/files/:id ── */
+app.put('/api/finance/files/files/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { file_name } = req.body || {};
+  const moduleName = 'finance';
+  if (!file_name?.trim()) return res.status(400).json({ error: 'file_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE files SET file_name = $1 WHERE id = $2 AND module = $3 RETURNING *`,
+      [file_name.trim(), id, moduleName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
+    res.json({ success: true, file: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── DELETE /api/finance/files/files/:id ── */
+app.delete('/api/finance/files/files/:id', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const moduleName = 'finance';
+  try {
+    const { rows } = await pool.query(`SELECT file_path FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    await pool.query(`DELETE FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
+    try {
+      const fs       = require('fs');
+      const filePath = require('path').join(__dirname, 'public', rows[0].file_path);
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch { /* file already gone */ }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/finance/files/files/:id/download ── */
+app.get('/api/finance/files/files/:id/download', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const moduleName = 'finance';
+  const downloadedBy = req.query.user || 'Unknown';
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f        = rows[0];
+    const filePath = require('path').join(__dirname, 'public', f.file_path);
+    await pool.query(`UPDATE files SET last_access = NOW() WHERE id = $1 AND module = $2`, [id, moduleName]);
+    // Log download history (fire-and-forget)
+    pool.query(
+      `INSERT INTO download_history (file_id, file_name, downloaded_by, module) VALUES ($1, $2, $3, $4)`,
+      [id, f.file_name, downloadedBy, moduleName]
+    ).catch(() => {});
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk' });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/finance/files/files/:id/copy ── */
+app.post('/api/finance/files/files/:id/copy', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { target_folder_id } = req.body || {};
+  const moduleName = 'finance';
+  if (!target_folder_id) return res.status(400).json({ error: 'target_folder_id is required' });
+  try {
+    const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const folderCheck = await pool.query(`SELECT id FROM folders WHERE id = $1 AND module = $2`, [parseInt(target_folder_id), moduleName]);
+    if (!folderCheck.rowCount) return res.status(404).json({ error: 'Target folder not found' });
+    const f = rows[0];
+    const fs   = require('fs');
+    const path = require('path');
+    const ext  = path.extname(f.file_name);
+    const base = path.basename(f.file_name, ext).replace(/\s*\(copy.*\)$/, '').trimEnd();
+    const newFileName = `${base} (copy)${ext}`;
+    const oldPath = path.join(__dirname, 'public', f.file_path);
+    const newFile = `${Date.now()}_${path.basename(f.file_path)}`;
+    const newRelPath = getLettersRelativePath(moduleName, newFile);
+    const newAbsPath = path.join(__dirname, 'public', newRelPath);
+    fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+    fs.copyFileSync(oldPath, newAbsPath);
+    const result = await pool.query(
+      `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, module)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [parseInt(target_folder_id), f.uploader_name, newFileName, newRelPath, f.file_size, f.file_type, moduleName]
+    );
+    res.status(201).json({ success: true, file: result.rows[0] });
+  } catch (err) {
+    console.error('Copy file error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── POST /api/finance/files/folders/:id/copy ── */
+app.post('/api/finance/files/folders/:id/copy', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const { target_parent_id } = req.body || {};
+  const moduleName = 'finance';
+  if (!target_parent_id) return res.status(400).json({ error: 'target_parent_id is required' });
+  try {
+    const { rows: folderRows } = await pool.query(`SELECT * FROM folders WHERE id = $1 AND module = $2`, [id, moduleName]);
+    if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
+    const targetCheck = await pool.query(`SELECT id FROM folders WHERE id = $1 AND module = $2`, [parseInt(target_parent_id), moduleName]);
+    if (!targetCheck.rowCount) return res.status(404).json({ error: 'Target folder not found' });
+    const srcFolder = folderRows[0];
+    const newName = srcFolder.folder_name + ' (copy)';
+    const { rows: newFolderRows } = await pool.query(
+      `INSERT INTO folders (folder_name, parent_id, module) VALUES ($1, $2, $3) RETURNING *`,
+      [newName, parseInt(target_parent_id), moduleName]
+    );
+    const newFolderId = newFolderRows[0].id;
+    const { rows: files } = await pool.query(`SELECT * FROM files WHERE folder_id = $1 AND module = $2`, [id, moduleName]);
+    const fs   = require('fs');
+    const path = require('path');
+    for (const f of files) {
+      try {
+        const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
+        const newRelPath = getLettersRelativePath(moduleName, newFile);
+        const newAbsPath = path.join(__dirname, 'public', newRelPath);
+        const oldAbsPath = path.join(__dirname, 'public', f.file_path);
+        fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+        fs.copyFileSync(oldAbsPath, newAbsPath);
+        await pool.query(
+          `INSERT INTO files (folder_id, uploader_name, file_name, file_path, file_size, file_type, module)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [newFolderId, f.uploader_name, f.file_name, newRelPath, f.file_size, f.file_type, moduleName]
+        );
+      } catch { /* skip files that can't be copied */ }
+    }
+    res.status(201).json({ success: true, folder_id: newFolderId, folder_name: newName });
+  } catch (err) {
+    console.error('Copy folder error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ── GET /api/finance/files/files/:id/preview ── */
+app.get('/api/finance/files/files/:id/preview', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const moduleName = 'finance';
   try {
     const { rows } = await pool.query(`SELECT * FROM files WHERE id = $1 AND module = $2`, [id, moduleName]);
     if (!rows.length) return res.status(404).json({ error: 'File not found' });
