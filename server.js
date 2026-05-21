@@ -4186,35 +4186,6 @@ const multerAcc = multer({
 })();
 
 // POST upload file
-app.post('/api/acceptance/files', multerAcc.array('file'), async (req, res) => {
-  const files = req.files || [];
-  if (!files.length) return res.status(400).json({ error: 'No file' });
-
-  const { site_id, uploaded_by } = req.body;
-
-  try {
-    const inserted = [];
-    for (const file of files) {
-      const result = await pool.query(
-        `INSERT INTO project_files (site_id, file_name, file_path, file_size, uploaded_by)
-         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-        [
-          site_id,
-          file.originalname,
-          '/uploads/acceptance/' + file.filename,
-          (file.size / 1024).toFixed(2),
-          uploaded_by || null
-        ]
-      );
-      inserted.push(result.rows[0]);
-    }
-
-    res.status(201).json({ uploaded: inserted.length, items: inserted });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // POST upload image
 app.post('/api/acceptance/images', multerAcc.array('image'), async (req, res) => {
   const files = req.files || [];
@@ -4286,6 +4257,766 @@ app.get('/api/acceptance/sites/:id/files', async (req, res) => {
     res.json({ files: files.rows, images: images.rows, videos: videos.rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+/* ================= BIDDING DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bidding_documents (
+        id          SERIAL PRIMARY KEY,
+        bidder_id   INTEGER       NOT NULL,
+        file_name   TEXT          NOT NULL,
+        file_url    TEXT,
+        doc_type    TEXT,
+        file_size   BIGINT        DEFAULT 0,
+        status      TEXT          NOT NULL CHECK (status IN ('awarded','rejected')),
+        description TEXT,
+        date        DATE          DEFAULT CURRENT_DATE,
+        created_at  TIMESTAMPTZ   DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ   DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bidding_bidder_id ON bidding_documents(bidder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bidding_status    ON bidding_documents(status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bidding_date      ON bidding_documents(date DESC)`);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION set_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS bidding_documents_updated_at ON bidding_documents`);
+    await pool.query(`
+      CREATE TRIGGER bidding_documents_updated_at
+        BEFORE UPDATE ON bidding_documents
+        FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+    `);
+    console.log('Bidding documents table ready ✅');
+  } catch (e) {
+    console.error('Bidding documents setup error:', e.message);
+  }
+})();
+
+const multerBidding = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'bidding');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('Invalid file type. Allowed: PDF, DOC, DOCX, XLS, XLSX, ZIP'));
+  }
+});
+
+function getBidderId(req) {
+  const id = Number(req.headers['x-user-id']);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/* GET /api/bidder/bidding/:id/preview */
+app.get('/api/bidder/bidding/:id/preview', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM bidding_documents WHERE id = $1', [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    const fs       = require('fs');
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk.' });
+    const ext = path.extname(f.file_name).toLowerCase();
+    const mimeTypes = {
+      '.pdf':  'application/pdf',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',
+      '.webp': 'image/webp',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc':  'application/msword',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls':  'application/vnd.ms-excel',
+      '.mp4':  'video/mp4',
+      '.webm': 'video/webm',
+      '.mov':  'video/quicktime',
+      '.avi':  'video/x-msvideo',
+      '.mkv':  'video/x-matroska',
+    };
+    res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${f.file_name}"`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    console.error('GET /api/bidder/bidding/:id/preview:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/bidding/:id/download */
+app.get('/api/bidder/bidding/:id/download', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM bidding_documents WHERE id = $1', [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk.' });
+    });
+  } catch (e) {
+    console.error('GET /api/bidder/bidding/:id/download:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/bidding?status=awarded|rejected */
+app.get('/api/bidder/bidding', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required (x-user-id header)' });
+  const { status } = req.query;
+  if (!status || !['awarded', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be awarded or rejected' });
+  try {
+    const result = await pool.query(
+      `SELECT * FROM bidding_documents WHERE bidder_id=$1 AND status=$2 ORDER BY date DESC, created_at DESC`,
+      [bidderId, status]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    console.error('GET /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* POST /api/bidder/bidding — Add Files modal */
+app.post('/api/bidder/bidding', multerBidding.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required (x-user-id header)' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const { doc_type, date, status, description } = req.body || {};
+  if (!status || !['awarded', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be awarded or rejected' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO bidding_documents (bidder_id, file_name, file_url, doc_type, file_size, status, description, date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [
+        bidderId,
+        file.originalname,
+        '/uploads/bidding/' + file.filename,
+        doc_type    || null,
+        file.size   || 0,
+        status,
+        description || null,
+        date        || new Date().toISOString().slice(0, 10)
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* POST /api/bidder/bidding/upload — drag-and-drop quick upload */
+app.post('/api/bidder/bidding/upload', multerBidding.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required (x-user-id header)' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const status = ['awarded', 'rejected'].includes(req.body.status) ? req.body.status : 'awarded';
+  try {
+    const result = await pool.query(
+      `INSERT INTO bidding_documents (bidder_id, file_name, file_url, file_size, status, date)
+       VALUES ($1,$2,$3,$4,$5,CURRENT_DATE) RETURNING *`,
+      [bidderId, file.originalname, '/uploads/bidding/' + file.filename, file.size || 0, status]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/bidding/upload error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* PUT /api/bidder/bidding/:id — Edit document metadata */
+app.put('/api/bidder/bidding/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const { doc_type, date, status, description } = req.body || {};
+  if (status && !['awarded', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be awarded or rejected' });
+  try {
+    const result = await pool.query(
+      `UPDATE bidding_documents
+       SET doc_type    = COALESCE($1, doc_type),
+           date        = COALESCE($2::date, date),
+           status      = COALESCE($3, status),
+           description = COALESCE($4, description),
+           updated_at  = NOW()
+       WHERE id = $5 AND bidder_id = $6
+       RETURNING *`,
+      [
+        doc_type    || null,
+        date        || null,
+        status      || null,
+        description !== undefined ? description : null,
+        req.params.id,
+        bidderId
+      ]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Document not found' });
+    res.json(result.rows[0]);
+  } catch (e) {
+    console.error('PUT /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* DELETE /api/bidder/bidding/:id */
+app.delete('/api/bidder/bidding/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const existing = await pool.query(
+      `SELECT file_url FROM bidding_documents WHERE id=$1 AND bidder_id=$2`,
+      [req.params.id, bidderId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
+    const filePath = existing.rows[0].file_url;
+    if (filePath) require('fs').unlink(path.join(__dirname, 'public', filePath), () => {});
+    await pool.query(`DELETE FROM bidding_documents WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('DELETE /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* Multer error handler for bidding routes */
+app.use((err, req, res, next) => {
+  if (err && req.path.startsWith('/api/bidder/bidding'))
+    return res.status(400).json({ error: err.message });
+  next(err);
+});
+
+/* ================= END BIDDING DOCUMENTS ================= */
+
+/* ================= ELIGIBILITY DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS eligibility_documents (
+        id           SERIAL PRIMARY KEY,
+        bidder_id    INTEGER      NOT NULL,
+        file_name    TEXT         NOT NULL,
+        file_url     TEXT,
+        doc_name     TEXT,
+        category     TEXT,
+        file_size    BIGINT       DEFAULT 0,
+        issued_date  DATE,
+        expiry_date  DATE         NOT NULL,
+        result       TEXT         CHECK (result IN ('win','loss')),
+        notes        TEXT,
+        created_at   TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ  DEFAULT NOW()
+      )
+    `);
+    /* migrate existing tables that may not have result column yet */
+    await pool.query(`ALTER TABLE eligibility_documents ADD COLUMN IF NOT EXISTS result TEXT CHECK (result IN ('win','loss'))`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_elig_bidder_id  ON eligibility_documents(bidder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_elig_expiry     ON eligibility_documents(expiry_date)`);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION set_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS eligibility_documents_updated_at ON eligibility_documents`);
+    await pool.query(`
+      CREATE TRIGGER eligibility_documents_updated_at
+        BEFORE UPDATE ON eligibility_documents
+        FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+    `);
+    console.log('Eligibility documents table ready ✅');
+  } catch (e) {
+    console.error('Eligibility documents setup error:', e.message);
+  }
+})();
+
+const multerElig = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'eligibility');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.pdf','.doc','.docx','.xls','.xlsx','.jpg','.jpeg','.png'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    allowed.includes(ext) ? cb(null, true) : cb(new Error('Invalid file type'));
+  }
+});
+
+/* GET /api/bidder/eligibility — returns all docs for this bidder */
+app.get('/api/bidder/eligibility', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const result = await pool.query(
+      `SELECT * FROM eligibility_documents WHERE bidder_id=$1 ORDER BY expiry_date ASC`,
+      [bidderId]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    console.error('GET /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* POST /api/bidder/eligibility — upload new document */
+app.post('/api/bidder/eligibility', multerElig.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const { doc_name, category, issued_date, expiry_date, result, notes } = req.body || {};
+  if (!expiry_date) return res.status(400).json({ error: 'expiry_date is required' });
+  const safeResult = ['win','loss'].includes(result) ? result : null;
+  try {
+    const dbResult = await pool.query(
+      `INSERT INTO eligibility_documents
+         (bidder_id, file_name, file_url, doc_name, category, file_size, issued_date, expiry_date, result, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [
+        bidderId,
+        file.originalname,
+        '/uploads/eligibility/' + file.filename,
+        doc_name    || file.originalname,
+        category    || null,
+        file.size   || 0,
+        issued_date || null,
+        expiry_date,
+        safeResult,
+        notes       || null
+      ]
+    );
+    res.status(201).json(dbResult.rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* DELETE /api/bidder/eligibility/:id */
+app.delete('/api/bidder/eligibility/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const existing = await pool.query(
+      `SELECT file_url FROM eligibility_documents WHERE id=$1 AND bidder_id=$2`,
+      [req.params.id, bidderId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
+    const { file_url } = existing.rows[0];
+    if (file_url) require('fs').unlink(path.join(__dirname, 'public', file_url), () => {});
+    await pool.query(`DELETE FROM eligibility_documents WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('DELETE /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* PUT /api/bidder/eligibility/:id — edit metadata (no file re-upload) */
+app.put('/api/bidder/eligibility/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const { doc_name, category, issued_date, expiry_date, result, notes } = req.body || {};
+  if (!expiry_date) return res.status(400).json({ error: 'expiry_date is required' });
+  const safeResult = ['win','loss'].includes(result) ? result : null;
+  try {
+    const existing = await pool.query(
+      `SELECT id FROM eligibility_documents WHERE id=$1 AND bidder_id=$2`,
+      [req.params.id, bidderId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
+    const updated = await pool.query(
+      `UPDATE eligibility_documents
+       SET doc_name=$1, category=$2, issued_date=$3, expiry_date=$4, result=$5, notes=$6
+       WHERE id=$7 AND bidder_id=$8 RETURNING *`,
+      [doc_name||null, category||null, issued_date||null, expiry_date, safeResult, notes||null, req.params.id, bidderId]
+    );
+    res.json(updated.rows[0]);
+  } catch (e) {
+    console.error('PUT /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/eligibility/:id/preview */
+app.get('/api/bidder/eligibility/:id/preview', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM eligibility_documents WHERE id = $1', [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    if (!require('fs').existsSync(filePath))
+      return res.status(404).json({ error: 'File not found on disk.' });
+    const mimeTypes = {
+      '.pdf':  'application/pdf',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',  '.webp': 'image/webp',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc':  'application/msword',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls':  'application/vnd.ms-excel',
+      '.mp4':  'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+    };
+    const ext = path.extname(f.file_name).toLowerCase();
+    res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${f.file_name}"`);
+    require('fs').createReadStream(filePath).pipe(res);
+  } catch (e) {
+    console.error('GET /api/bidder/eligibility/:id/preview:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/eligibility/:id/download */
+app.get('/api/bidder/eligibility/:id/download', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM eligibility_documents WHERE id = $1', [req.params.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent)
+        res.status(404).json({ error: 'File not found on disk.' });
+    });
+  } catch (e) {
+    console.error('GET /api/bidder/eligibility/:id/download:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ================= END ELIGIBILITY DOCUMENTS ================= */
+
+/* ================= ACCEPTANCE DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS acceptance_folders (
+        id          SERIAL PRIMARY KEY,
+        folder_name TEXT         NOT NULL,
+        parent_id   INTEGER      REFERENCES acceptance_folders(id) ON DELETE CASCADE,
+        created_at  TIMESTAMPTZ  DEFAULT NOW(),
+        UNIQUE(folder_name, parent_id)
+      )`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS acceptance_files (
+        id            SERIAL PRIMARY KEY,
+        folder_id     INTEGER      NOT NULL REFERENCES acceptance_folders(id) ON DELETE CASCADE,
+        uploader_name TEXT,
+        file_name     TEXT         NOT NULL,
+        file_path     TEXT         NOT NULL,
+        file_size     BIGINT       DEFAULT 0,
+        file_type     TEXT,
+        last_access   TIMESTAMPTZ,
+        created_at    TIMESTAMPTZ  DEFAULT NOW()
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_files_folder  ON acceptance_files(folder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_folders_parent ON acceptance_folders(parent_id)`);
+    console.log('Acceptance documents tables ready ✅');
+  } catch(e) { console.error('Acceptance setup error:', e.message); }
+})();
+
+const accUpload = multer ? multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = require('path').join(__dirname, 'public', 'uploads', 'acceptance');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext  = require('path').extname(file.originalname);
+      const base = require('path').basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${Date.now()}_${base}${ext}`);
+    }
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 }
+}) : null;
+
+/* GET /api/acceptance/folders */
+app.get('/api/acceptance/folders', async (req, res) => {
+  try {
+    const rawParent = req.query.parent_id;
+    const parentId  = (rawParent !== undefined && rawParent !== '') ? parseInt(rawParent) : null;
+    const result = parentId !== null
+      ? await pool.query(`
+          SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+                 (SELECT COUNT(*)::int FROM acceptance_files fi WHERE fi.folder_id = f.id) +
+                 (SELECT COUNT(*)::int FROM acceptance_folders sf WHERE sf.parent_id = f.id) AS file_count
+            FROM acceptance_folders f WHERE f.parent_id = $1 AND f.id != $1 ORDER BY f.folder_name`, [parentId])
+      : await pool.query(`
+          SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+                 (SELECT COUNT(*)::int FROM acceptance_files fi WHERE fi.folder_id = f.id) +
+                 (SELECT COUNT(*)::int FROM acceptance_folders sf WHERE sf.parent_id = f.id) AS file_count
+            FROM acceptance_folders f WHERE f.parent_id IS NULL ORDER BY f.folder_name`);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /api/acceptance/folders */
+app.post('/api/acceptance/folders', async (req, res) => {
+  const { folder_name, parent_id = null } = req.body || {};
+  if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO acceptance_folders (folder_name, parent_id) VALUES ($1, $2) RETURNING *`,
+      [folder_name.trim(), parent_id]
+    );
+    res.status(201).json({ success: true, folder: result.rows[0] });
+  } catch(e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* PUT /api/acceptance/folders/:id */
+app.put('/api/acceptance/folders/:id', async (req, res) => {
+  const { folder_name } = req.body || {};
+  if (!folder_name?.trim()) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE acceptance_folders SET folder_name=$1 WHERE id=$2 RETURNING *`,
+      [folder_name.trim(), parseInt(req.params.id)]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true, folder: result.rows[0] });
+  } catch(e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* DELETE /api/acceptance/folders/:id */
+app.delete('/api/acceptance/folders/:id', async (req, res) => {
+  try {
+    const result = await pool.query(`DELETE FROM acceptance_folders WHERE id=$1`, [parseInt(req.params.id)]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /api/acceptance/folders/:id/files */
+app.get('/api/acceptance/folders/:id/files', async (req, res) => {
+  const id = parseInt(req.params.id);
+  const q  = req.query.q ? `%${req.query.q}%` : null;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM acceptance_files WHERE folder_id=$1 ${q ? 'AND file_name ILIKE $2' : ''} ORDER BY created_at DESC`,
+      q ? [id, q] : [id]
+    );
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /api/acceptance/files/recent */
+app.get('/api/acceptance/files/recent', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM acceptance_files ORDER BY created_at DESC LIMIT 8`);
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /api/acceptance/files/search */
+app.get('/api/acceptance/files/search', async (req, res) => {
+  const q = req.query.q ? `%${req.query.q}%` : '%';
+  try {
+    const result = await pool.query(
+      `SELECT * FROM acceptance_files WHERE file_name ILIKE $1 ORDER BY created_at DESC LIMIT 50`, [q]
+    );
+    res.json(result.rows);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /api/acceptance/uploaders */
+app.get('/api/acceptance/uploaders', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT uploader_name FROM acceptance_files WHERE uploader_name IS NOT NULL ORDER BY uploader_name`
+    );
+    res.json(result.rows.map(r => r.uploader_name));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /api/acceptance/files (upload) */
+app.post('/api/acceptance/files', (req, res, next) => {
+  if (!accUpload) return res.status(500).json({ error: 'multer not installed' });
+  accUpload.single('file')(req, res, async (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    const { folder_id, uploader_name } = req.body || {};
+    if (!folder_id) return res.status(400).json({ error: 'folder_id is required' });
+    if (!req.file)  return res.status(400).json({ error: 'No file received' });
+    const file_path = '/uploads/acceptance/' + req.file.filename;
+    const ext = require('path').extname(req.file.originalname).toLowerCase().replace('.', '');
+    const mimeMap = { pdf:'pdf', doc:'word', docx:'word', xls:'excel', xlsx:'excel', txt:'text', png:'image', jpg:'image', jpeg:'image', gif:'image', webp:'image', mp4:'video', webm:'video', mov:'video', avi:'video', mkv:'video' };
+    const file_type = mimeMap[ext] || ext || 'file';
+    try {
+      const result = await pool.query(
+        `INSERT INTO acceptance_files (folder_id, uploader_name, file_name, file_path, file_size, file_type, last_access)
+         VALUES ($1,$2,$3,$4,$5,$6,NOW()) RETURNING *`,
+        [parseInt(folder_id), uploader_name||null, req.file.originalname, file_path, req.file.size, file_type]
+      );
+      res.status(201).json({ success: true, file: result.rows[0] });
+    } catch(e) { res.status(500).json({ error: e.message }); }
+  });
+});
+
+/* PUT /api/acceptance/files/:id (rename) */
+app.put('/api/acceptance/files/:id', async (req, res) => {
+  const { file_name } = req.body || {};
+  if (!file_name?.trim()) return res.status(400).json({ error: 'file_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE acceptance_files SET file_name=$1 WHERE id=$2 RETURNING *`,
+      [file_name.trim(), parseInt(req.params.id)]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
+    res.json({ success: true, file: result.rows[0] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* DELETE /api/acceptance/files/:id */
+app.delete('/api/acceptance/files/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT file_path FROM acceptance_files WHERE id=$1`, [parseInt(req.params.id)]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    await pool.query(`DELETE FROM acceptance_files WHERE id=$1`, [parseInt(req.params.id)]);
+    try {
+      const fs = require('fs'), path = require('path');
+      const fp = path.join(__dirname, 'public', rows[0].file_path);
+      if (fs.existsSync(fp)) fs.unlinkSync(fp);
+    } catch { /* file already gone */ }
+    res.json({ success: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /api/acceptance/files/:id/download */
+app.get('/api/acceptance/files/:id/download', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT * FROM acceptance_files WHERE id=$1`, [parseInt(req.params.id)]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f = rows[0];
+    const filePath = require('path').join(__dirname, 'public', f.file_path);
+    await pool.query(`UPDATE acceptance_files SET last_access=NOW() WHERE id=$1`, [f.id]);
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk' });
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* GET /api/acceptance/files/:id/preview */
+app.get('/api/acceptance/files/:id/preview', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT * FROM acceptance_files WHERE id=$1`, [parseInt(req.params.id)]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f = rows[0];
+    const path = require('path'), fs = require('fs');
+    const filePath = path.join(__dirname, 'public', f.file_path);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
+    const mimeTypes = { '.pdf':'application/pdf', '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.gif':'image/gif', '.webp':'image/webp', '.docx':'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.doc':'application/msword', '.xlsx':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xls':'application/vnd.ms-excel', '.mp4':'video/mp4', '.webm':'video/webm', '.mov':'video/quicktime', '.avi':'video/x-msvideo', '.mkv':'video/x-matroska' };
+    const ext  = path.extname(f.file_name).toLowerCase();
+    const mime = mimeTypes[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', 'inline');
+    fs.createReadStream(filePath).pipe(res);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /api/acceptance/files/:id/copy */
+app.post('/api/acceptance/files/:id/copy', async (req, res) => {
+  const { target_folder_id } = req.body || {};
+  if (!target_folder_id) return res.status(400).json({ error: 'target_folder_id is required' });
+  try {
+    const { rows } = await pool.query(`SELECT * FROM acceptance_files WHERE id=$1`, [parseInt(req.params.id)]);
+    if (!rows.length) return res.status(404).json({ error: 'File not found' });
+    const f = rows[0];
+    const path = require('path'), fs = require('fs');
+    const ext  = path.extname(f.file_name);
+    const base = path.basename(f.file_name, ext).replace(/\s*\(copy.*\)$/, '').trimEnd();
+    const newFileName = `${base} (copy)${ext}`;
+    const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
+    const newRelPath = '/uploads/acceptance/' + newFile;
+    const newAbsPath = path.join(__dirname, 'public', newRelPath);
+    fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, 'public', f.file_path), newAbsPath);
+    const result = await pool.query(
+      `INSERT INTO acceptance_files (folder_id, uploader_name, file_name, file_path, file_size, file_type)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [parseInt(target_folder_id), f.uploader_name, newFileName, newRelPath, f.file_size, f.file_type]
+    );
+    res.status(201).json({ success: true, file: result.rows[0] });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* POST /api/acceptance/folders/:id/copy */
+app.post('/api/acceptance/folders/:id/copy', async (req, res) => {
+  const { target_parent_id } = req.body || {};
+  if (!target_parent_id) return res.status(400).json({ error: 'target_parent_id is required' });
+  try {
+    const { rows: folderRows } = await pool.query(`SELECT * FROM acceptance_folders WHERE id=$1`, [parseInt(req.params.id)]);
+    if (!folderRows.length) return res.status(404).json({ error: 'Folder not found' });
+    const src = folderRows[0];
+    const { rows: newFolder } = await pool.query(
+      `INSERT INTO acceptance_folders (folder_name, parent_id) VALUES ($1,$2) RETURNING *`,
+      [src.folder_name + ' (copy)', parseInt(target_parent_id)]
+    );
+    const newFolderId = newFolder[0].id;
+    const { rows: files } = await pool.query(`SELECT * FROM acceptance_files WHERE folder_id=$1`, [src.id]);
+    const path = require('path'), fs = require('fs');
+    for (const f of files) {
+      try {
+        const newFile    = `${Date.now()}_${path.basename(f.file_path)}`;
+        const newRelPath = '/uploads/acceptance/' + newFile;
+        const newAbsPath = path.join(__dirname, 'public', newRelPath);
+        fs.mkdirSync(path.dirname(newAbsPath), { recursive: true });
+        fs.copyFileSync(path.join(__dirname, 'public', f.file_path), newAbsPath);
+        await pool.query(
+          `INSERT INTO acceptance_files (folder_id, uploader_name, file_name, file_path, file_size, file_type) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [newFolderId, f.uploader_name, f.file_name, newRelPath, f.file_size, f.file_type]
+        );
+      } catch { /* skip files that can't be copied */ }
+    }
+    res.status(201).json({ success: true, folder_id: newFolderId });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+/* ================= END ACCEPTANCE DOCUMENTS ================= */
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

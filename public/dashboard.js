@@ -9,13 +9,15 @@ if (!user) {
 const dashboardShell = String(window.__dashboardShell || "").trim().toLowerCase();
 
 function getDashboardPathForRole(role) {
-  return String(role || "").trim().toLowerCase() === "finance"
-    ? "finance-dashboard.html"
-    : "noc-dashboard.html";
+  const r = String(role || "").trim().toLowerCase();
+  if (r === "finance") return "finance-dashboard.html";
+  if (r === "bidder")  return "bidder-dashboard.html";
+  return "noc-dashboard.html";
 }
 
 if (user && dashboardShell) {
-  const expectedShell = String(user.role || "").trim().toLowerCase() === "finance" ? "finance" : "noc";
+  const r = String(user.role || "").trim().toLowerCase();
+  const expectedShell = r === "finance" ? "finance" : r === "bidder" ? "bidder" : "noc";
   if (dashboardShell !== expectedShell) {
     window.location.replace(getDashboardPathForRole(user.role));
   }
@@ -41,6 +43,7 @@ const sidebarMenu = document.getElementById("sidebarMenu");
 const roleKey = String(user?.role || "").trim().toLowerCase();
 
 document.body.classList.toggle("finance-role", roleKey === "finance");
+document.body.classList.toggle("bidder-role", roleKey === "bidder");
 
 let currentPage = 1;
 const rowsPerPage = 7;
@@ -84,22 +87,32 @@ const PAGE_DEFS = {
   employee:           { label: "Employee",          icon: "ri-user-line",             loader: () => loadFinanceEmployeeCenter() },
   financialReport:    { label: "Financial Report",  icon: "ri-bar-chart-2-line",      loader: () => loadFinanceReport() },
   collections:        { label: "Collections",       icon: "ri-hand-coin-line",        loader: () => loadFinanceLedger("collections") },
+  bidderDashboard:    { label: "Dashboard",         icon: "ri-dashboard-line",        loader: () => loadBidderDashboard() },
+  bidderBidding:      { label: "Bidding Docs",      icon: "ri-auction-line",          loader: () => loadBidderBidding() },
+  bidderJointVenture: { label: "Joint Venture",     icon: "ri-group-line",            loader: () => loadBidderJointVenture() },
+  bidderEligibility:  { label: "Eligibility",       icon: "ri-file-check-line",       loader: () => loadBidderEligibility() },
+  bidderAcceptance:   { label: "Acceptance",        icon: "ri-file-paper-2-line",     loader: () => loadBidderAcceptance() },
+  bidderFinished:     { label: "Finished Projects", icon: "ri-folder-check-line",     loader: () => loadBidderFinished() },
   settings:           { label: "Settings",          icon: "ri-settings-3-line",       loader: () => loadSettings() },
   logout:             { label: "Log Out",           icon: "ri-logout-circle-r-line",  loader: () => showLogoutModal() },
 };
 
 const ROLE_MENUS = {
   finance: ["financeDashboard", "companyIncome", "companyExpenses", "projectExpenses", "employee", "financialReport", "collections", "letters", "settings", "logout"],
+  bidder:  ["bidderDashboard", "bidderBidding", "bidderJointVenture", "bidderEligibility", "bidderAcceptance", "bidderFinished", "settings", "logout"],
   default: ["dashboard", "terminals", "problematicSites", "ticket", "reports", "letters", "map", "acceptance", "settings", "logout"],
 };
 
 function getVisiblePages() {
   if (roleKey === "finance") return ROLE_MENUS.finance;
+  if (roleKey === "bidder")  return ROLE_MENUS.bidder;
   return ROLE_MENUS.default;
 }
 
 function getHomePageKey() {
-  return roleKey === "finance" ? "financeDashboard" : "dashboard";
+  if (roleKey === "finance") return "financeDashboard";
+  if (roleKey === "bidder")  return "bidderDashboard";
+  return "dashboard";
 }
 
 function activateMenu(pageKey) {
@@ -163,7 +176,13 @@ function renderSidebarMenu() {
     },
   ];
 
-  const sections = roleKey === 'finance' ? FINANCE_SECTIONS : NOC_SECTIONS;
+  const BIDDER_SECTIONS = [
+    { label: 'Overview',   pages: ['bidderDashboard'] },
+    { label: 'Documents',  pages: ['bidderBidding', 'bidderJointVenture', 'bidderEligibility', 'bidderAcceptance', 'bidderFinished'] },
+    { label: 'System',     pages: ['settings', 'logout'] },
+  ];
+
+  const sections = roleKey === 'finance' ? FINANCE_SECTIONS : roleKey === 'bidder' ? BIDDER_SECTIONS : NOC_SECTIONS;
   const visible  = new Set(getVisiblePages());
   const firstPage = getVisiblePages()[0];
 
@@ -12267,4 +12286,2764 @@ function accMediaItemHTML(item, tab, selectMode = false, selected = new Set()) {
       </div>
     </div>
   `;
+}
+/* =====================================================================
+   BIDDER — BIDDING DOCUMENTS PAGE
+   Design: file cards with type icon, meta, status badge, View btn
+   Drag-and-drop upload zone, Filter panel, + Add Files modal
+   ===================================================================== */
+
+let bddTab      = 'awarded';
+let bddAwarded  = [];
+let bddRejected = [];
+let bddSearch   = '';
+let bddFilter   = { type: 'all', sort: 'newest' };
+let bddFilterOpen = false;
+
+/* ── Entry point ─────────────────────────────────────────────────── */
+async function loadBidderBidding() {
+  bddTab    = 'awarded';
+  bddSearch = '';
+  bddFilter = { type: 'all', sort: 'newest' };
+  bddFilterOpen = false;
+
+  mainContent.innerHTML = `
+    <div class="bdd-page" id="bddPage">
+
+      <!-- Hero Banner -->
+      <div class="bdd-hero">
+        <div class="bdd-hero-top">
+          <div class="bdd-hero-left">
+            <div class="bdd-hero-icon"><i class="ri-auction-line"></i></div>
+            <div class="bdd-hero-text">
+              <h2 class="bdd-title">Bidding Documents</h2>
+              <p class="bdd-subtitle">Manage your awarded and rejected project documents</p>
+            </div>
+          </div>
+          <div class="bdd-hero-right">
+            <div class="bdd-search-box">
+              <i class="ri-search-line"></i>
+              <input type="text" id="bddSearch" placeholder="Search documents…">
+            </div>
+            <div class="bdd-filter-wrap" id="bddFilterWrap">
+              <button class="bdd-filter-btn" id="bddFilterBtn">
+                <i class="ri-equalizer-line"></i> Filter
+              </button>
+              <div class="bdd-filter-panel hidden" id="bddFilterPanel">
+                <div class="bdd-fp-title">Filter & Sort</div>
+                <div class="bdd-fp-section">
+                  <div class="bdd-fp-label">File Type</div>
+                  <div class="bdd-fp-chips" id="bddFpType">
+                    ${['all','pdf','docx','xlsx','zip'].map(t =>
+                      `<button class="bdd-fp-chip${t==='all'?' active':''}" data-type="${t}">${t==='all'?'All':t.toUpperCase()}</button>`
+                    ).join('')}
+                  </div>
+                </div>
+                <div class="bdd-fp-section">
+                  <div class="bdd-fp-label">Sort By</div>
+                  <div class="bdd-fp-chips" id="bddFpSort">
+                    <button class="bdd-fp-chip active" data-sort="newest">Newest</button>
+                    <button class="bdd-fp-chip" data-sort="oldest">Oldest</button>
+                    <button class="bdd-fp-chip" data-sort="name">Name A–Z</button>
+                    <button class="bdd-fp-chip" data-sort="size">Largest</button>
+                  </div>
+                </div>
+                <button class="bdd-fp-apply acc-btn acc-btn-primary" id="bddFpApply">Apply</button>
+              </div>
+            </div>
+            <button class="bdd-add-btn" id="bddAddBtn">
+              <i class="ri-add-line"></i> Add Files
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div class="bdd-tabs">
+        <button class="bdd-tab active" data-tab="awarded">
+          <i class="ri-trophy-line"></i>
+          Project Awarded
+          <span class="bdd-tab-pill" id="bddCountAwarded">0</span>
+        </button>
+        <button class="bdd-tab" data-tab="rejected">
+          <i class="ri-close-circle-line"></i>
+          Project Rejected
+          <span class="bdd-tab-pill" id="bddCountRejected">0</span>
+        </button>
+      </div>
+
+      <!-- Content card -->
+      <div class="bdd-card" id="bddCard">
+        <div class="bdd-card-header">
+          <span class="bdd-card-title" id="bddCardTitle">Awarded Projects</span>
+        </div>
+
+        <div class="bdd-file-list" id="bddFileList">
+          <div class="bdd-loading"><i class="ri-loader-4-line spin"></i> Loading…</div>
+        </div>
+
+        <!-- Drop zone -->
+        <div class="bdd-dropzone" id="bddDropzone">
+          <i class="ri-upload-cloud-2-line"></i>
+          <span>Drop files here or <strong>click to upload</strong></span>
+          <input type="file" id="bddDropInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.zip" style="display:none">
+        </div>
+      </div>
+
+    </div>
+
+    <!-- View / Preview Modal -->
+    <div class="modal-overlay hidden" id="bddViewModal">
+      <div class="bdd-modal">
+        <div class="bdd-modal-header">
+          <div class="bdd-modal-title-wrap">
+            <div class="bdd-modal-icon" id="bddModalIcon"></div>
+            <div>
+              <div class="bdd-modal-name" id="bddModalName"></div>
+              <div class="bdd-modal-meta" id="bddModalMeta"></div>
+            </div>
+          </div>
+          <button class="bdd-modal-close" id="bddModalClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="bdd-modal-body" id="bddModalBody"></div>
+        <div class="bdd-modal-footer">
+          <a class="acc-btn" id="bddModalDownload" target="_blank"><i class="ri-download-2-line"></i> Download</a>
+          <button class="acc-btn acc-btn-primary" id="bddModalCloseFt">Close</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  _bddBindEvents();
+  await _bddFetch();
+}
+
+function _bddBindEvents() {
+  /* tabs */
+  document.querySelectorAll('.bdd-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.bdd-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      bddTab = btn.dataset.tab;
+      document.getElementById('bddCardTitle').textContent =
+        bddTab === 'awarded' ? 'Awarded Projects' : 'Rejected Projects';
+      _bddRender();
+    });
+  });
+
+  /* search */
+  document.getElementById('bddSearch').addEventListener('input', function () {
+    bddSearch = this.value.toLowerCase().trim();
+    _bddRender();
+  });
+
+  /* filter toggle */
+  document.getElementById('bddFilterBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    document.getElementById('bddFilterPanel').classList.toggle('hidden');
+  });
+  document.addEventListener('click', e => {
+    const wrap = document.getElementById('bddFilterWrap');
+    if (wrap && !wrap.contains(e.target))
+      document.getElementById('bddFilterPanel')?.classList.add('hidden');
+  });
+
+  /* filter chips */
+  document.getElementById('bddFpType').addEventListener('click', e => {
+    const chip = e.target.closest('.bdd-fp-chip');
+    if (!chip) return;
+    document.querySelectorAll('#bddFpType .bdd-fp-chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    bddFilter.type = chip.dataset.type;
+  });
+  document.getElementById('bddFpSort').addEventListener('click', e => {
+    const chip = e.target.closest('.bdd-fp-chip');
+    if (!chip) return;
+    document.querySelectorAll('#bddFpSort .bdd-fp-chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    bddFilter.sort = chip.dataset.sort;
+  });
+  document.getElementById('bddFpApply').addEventListener('click', () => {
+    document.getElementById('bddFilterPanel').classList.add('hidden');
+    _bddRender();
+  });
+
+  /* add files btn */
+  document.getElementById('bddAddBtn').addEventListener('click', () => _bddOpenAddModal());
+
+  /* drop zone */
+  const dz    = document.getElementById('bddDropzone');
+  const dzInp = document.getElementById('bddDropInput');
+  dz.addEventListener('click', () => dzInp.click());
+  dzInp.addEventListener('change', () => _bddHandleFiles(Array.from(dzInp.files)));
+  dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault();
+    dz.classList.remove('drag-over');
+    _bddHandleFiles(Array.from(e.dataTransfer.files));
+  });
+
+  /* modal close */
+  document.getElementById('bddModalClose').addEventListener('click', () =>
+    document.getElementById('bddViewModal').classList.add('hidden'));
+  document.getElementById('bddModalCloseFt').addEventListener('click', () =>
+    document.getElementById('bddViewModal').classList.add('hidden'));
+  document.getElementById('bddViewModal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
+  });
+}
+
+async function _bddFetch() {
+  const headers = { 'x-user-id': String(user?.id || '') };
+  try {
+    const [aRes, rRes] = await Promise.all([
+      fetch('/api/bidder/bidding?status=awarded',  { headers }),
+      fetch('/api/bidder/bidding?status=rejected', { headers }),
+    ]);
+    bddAwarded  = aRes.ok ? await aRes.json() : _bddDemoData('awarded');
+    bddRejected = rRes.ok ? await rRes.json() : _bddDemoData('rejected');
+  } catch {
+    bddAwarded  = _bddDemoData('awarded');
+    bddRejected = _bddDemoData('rejected');
+  }
+  _bddUpdateCounts();
+  _bddRender();
+}
+
+/* demo data so the page looks alive before API is wired */
+function _bddDemoData(status) {
+  if (status === 'awarded') return [
+    { id:1, file_name:'DPWH Road Rehabilitation - LOA.pdf',      doc_type:'Letter of Award',       file_size: 2400000, date:'2026-04-22', status:'awarded', file_url:'' },
+    { id:2, file_name:'Bridge Construction Contract.docx',        doc_type:'Contract',              file_size: 1100000, date:'2026-04-15', status:'awarded', file_url:'' },
+    { id:3, file_name:'Medical Supplies - Bill of Quantities.xlsx',doc_type:'BOQ',                  file_size:  890000, date:'2026-03-30', status:'awarded', file_url:'' },
+  ];
+  return [
+    { id:4, file_name:'School Building Phase 2 - Rejection Notice.pdf', doc_type:'Notice of Rejection', file_size:1800000, date:'2026-04-20', status:'rejected', file_url:'' },
+    { id:5, file_name:'Flood Control - Disqualification Letter.docx',    doc_type:'Disqualification',    file_size: 765000, date:'2026-03-12', status:'rejected', file_url:'' },
+  ];
+}
+
+function _bddUpdateCounts() {
+  const ca = document.getElementById('bddCountAwarded');
+  const cr = document.getElementById('bddCountRejected');
+  if (ca) ca.textContent = bddAwarded.length;
+  if (cr) cr.textContent = bddRejected.length;
+}
+
+function _bddRender() {
+  const list = document.getElementById('bddFileList');
+  if (!list) return;
+
+  let data = bddTab === 'awarded' ? [...bddAwarded] : [...bddRejected];
+
+  /* search */
+  if (bddSearch) data = data.filter(f =>
+    (f.file_name||'').toLowerCase().includes(bddSearch) ||
+    (f.doc_type||'').toLowerCase().includes(bddSearch));
+
+  /* type filter */
+  if (bddFilter.type !== 'all') data = data.filter(f =>
+    _bddExt(f.file_name) === bddFilter.type);
+
+  /* sort */
+  if      (bddFilter.sort === 'newest') data.sort((a,b) => new Date(b.date) - new Date(a.date));
+  else if (bddFilter.sort === 'oldest') data.sort((a,b) => new Date(a.date) - new Date(b.date));
+  else if (bddFilter.sort === 'name')   data.sort((a,b) => (a.file_name||'').localeCompare(b.file_name||''));
+  else if (bddFilter.sort === 'size')   data.sort((a,b) => (b.file_size||0) - (a.file_size||0));
+
+  if (!data.length) {
+    list.innerHTML = `<div class="bdd-empty"><i class="ri-inbox-line"></i><span>${bddSearch ? 'No files match your search.' : 'No files here yet.'}</span></div>`;
+    return;
+  }
+
+  list.innerHTML = data.map(f => _bddFileCardHTML(f)).join('');
+
+  list.querySelectorAll('.bdd-file-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = data.find(f => f.id === parseInt(btn.dataset.id));
+      if (row) _bddOpenView(row);
+    });
+  });
+
+  list.querySelectorAll('.bdd-file-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = data.find(f => f.id === parseInt(btn.dataset.id));
+      if (row) _bddOpenEditModal(row);
+    });
+  });
+
+  list.querySelectorAll('.bdd-file-dl-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = data.find(f => f.id === parseInt(btn.dataset.id));
+      if (row) _bddDownload(row);
+    });
+  });
+
+  list.querySelectorAll('.bdd-file-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = data.find(f => f.id === parseInt(btn.dataset.id));
+      if (row) _bddConfirmDelete(row);
+    });
+  });
+}
+
+function _bddFileCardHTML(f) {
+  const ext       = _bddExt(f.file_name);
+  const iconHTML  = _bddFileIcon(ext);
+  const size      = _bddFmtSize(f.file_size);
+  const date      = f.date ? new Date(f.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+  const isAwarded = f.status === 'awarded';
+  const docType   = f.doc_type || ext.toUpperCase();
+  const displayName = f.file_name || '—';
+
+  const badge = isAwarded
+    ? `<span class="bdd-status-badge bdd-status-awarded"><i class="ri-trophy-line"></i> Awarded</span>`
+    : `<span class="bdd-status-badge bdd-status-rejected"><i class="ri-close-circle-line"></i> Rejected</span>`;
+
+  return `
+    <div class="bdd-fc bdd-fc-${f.status}">
+
+      <!-- File icon -->
+      <div class="bdd-fc-icon">${iconHTML}</div>
+
+      <!-- Info -->
+      <div class="bdd-fc-body">
+        <div class="bdd-fc-name" title="${displayName}">
+          <span class="bdd-fc-name-text">${displayName}</span>
+          <span class="bdd-fc-type-tag">${docType}</span>
+        </div>
+        <div class="bdd-fc-meta">
+          <i class="ri-hard-drive-2-line"></i><span>${size}</span>
+          <span class="bdd-fc-sep">·</span>
+          <i class="ri-calendar-line"></i><span>${date}</span>
+          ${f.description ? `<span class="bdd-fc-sep">·</span><span class="bdd-fc-desc">${f.description}</span>` : ''}
+        </div>
+      </div>
+
+      <!-- Right: badge + actions -->
+      <div class="bdd-fc-right">
+        <div class="bdd-fc-badges">${badge}</div>
+        <div class="bdd-fc-actions">
+          <button class="bdd-fc-btn-view bdd-file-view-btn" data-id="${f.id}"><i class="ri-eye-line"></i> View</button>
+          <button class="bdd-fc-btn-icon bdd-fc-btn-edit bdd-file-edit-btn" data-id="${f.id}" title="Edit"><i class="ri-edit-line"></i></button>
+          <button class="bdd-fc-btn-icon bdd-file-dl-btn" data-id="${f.id}" title="Download"><i class="ri-download-2-line"></i></button>
+          <button class="bdd-fc-btn-icon bdd-fc-btn-del bdd-file-del-btn" data-id="${f.id}" title="Delete"><i class="ri-delete-bin-line"></i></button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function _bddExt(name) {
+  return (name || '').split('.').pop().toLowerCase();
+}
+
+function _bddFmtSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes >= 1048576) return (bytes/1048576).toFixed(1) + ' MB';
+  if (bytes >= 1024)    return Math.round(bytes/1024) + ' KB';
+  return bytes + ' B';
+}
+
+function _bddFileIcon(ext) {
+  const map = {
+    pdf:  { bg:'#fee2e2', color:'#dc2626', label:'PDF' },
+    doc:  { bg:'#dbeafe', color:'#1d4ed8', label:'DOC' },
+    docx: { bg:'#dbeafe', color:'#1d4ed8', label:'DOC' },
+    xls:  { bg:'#dcfce7', color:'#16a34a', label:'XLS' },
+    xlsx: { bg:'#dcfce7', color:'#16a34a', label:'XLS' },
+    zip:  { bg:'#fef9c3', color:'#ca8a04', label:'ZIP' },
+  };
+  const m = map[ext] || { bg:'#f1f5f9', color:'#64748b', label: ext.toUpperCase().slice(0,4) || 'FILE' };
+  return `<div class="bdd-ficon" style="background:${m.bg};color:${m.color}">${m.label}</div>`;
+}
+
+async function _bddOpenView(f) {
+  const modal  = document.getElementById('bddViewModal');
+  const iconEl = document.getElementById('bddModalIcon');
+  const nameEl = document.getElementById('bddModalName');
+  const metaEl = document.getElementById('bddModalMeta');
+  const bodyEl = document.getElementById('bddModalBody');
+  const dlBtn  = document.getElementById('bddModalDownload');
+  if (!modal) return;
+
+  const ext  = _bddExt(f.file_name);
+  const size = _bddFmtSize(f.file_size);
+  const date = f.date ? new Date(f.date).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}) : '—';
+  const isAwarded = f.status === 'awarded';
+
+  // Header
+  iconEl.innerHTML   = _bddFileIcon(ext);
+  nameEl.textContent = f.file_name || '—';
+  metaEl.textContent = `${f.doc_type || ext.toUpperCase()} · ${size} · ${date}`;
+  dlBtn.href         = `/api/bidder/bidding/${f.id}/download`;
+  modal.classList.remove('hidden');
+
+  // Info panel + loading spinner
+  bodyEl.innerHTML = `
+    <div style="padding:20px 24px;background:white;border-bottom:1px solid #e8edf5;">
+      <div class="bdd-detail-grid">
+        <div class="bdd-detail-item">
+          <span class="bdd-detail-label">Document Type</span>
+          <span class="bdd-detail-value">${f.doc_type || '—'}</span>
+        </div>
+        <div class="bdd-detail-item">
+          <span class="bdd-detail-label">File Size</span>
+          <span class="bdd-detail-value">${size}</span>
+        </div>
+        <div class="bdd-detail-item">
+          <span class="bdd-detail-label">Date</span>
+          <span class="bdd-detail-value">${date}</span>
+        </div>
+        <div class="bdd-detail-item">
+          <span class="bdd-detail-label">Status</span>
+          <span class="bdd-detail-value">
+            ${isAwarded
+              ? '<span class="bdd-badge bdd-badge-awarded"><i class="ri-trophy-line"></i> Awarded</span>'
+              : '<span class="bdd-badge bdd-badge-rejected"><i class="ri-close-circle-line"></i> Rejected</span>'}
+          </span>
+        </div>
+        ${f.description ? `
+        <div class="bdd-detail-item bdd-detail-full">
+          <span class="bdd-detail-label">Description</span>
+          <span class="bdd-detail-value">${f.description}</span>
+        </div>` : ''}
+      </div>
+    </div>
+    <div id="bddPreviewArea" style="flex:1;min-height:0;">
+      <div class="letters-empty"><i class="ri-loader-4-line spin"></i><p>Loading preview…</p></div>
+    </div>`;
+
+  // Make body flex so info + preview stack properly
+  bodyEl.style.cssText = 'display:flex;flex-direction:column;';
+
+  const previewArea = document.getElementById('bddPreviewArea');
+  const previewUrl  = `/api/bidder/bidding/${f.id}/preview`;
+  const t = ext.toLowerCase();
+
+  try {
+    if (t === 'pdf') {
+      const blob = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(r.status); return r.blob(); });
+      previewArea.innerHTML = `<iframe src="${URL.createObjectURL(blob)}" class="letters-preview-frame" title="${f.file_name}"></iframe>`;
+
+    } else if (['doc','docx'].includes(t)) {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+      const ab     = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+      const result = await mammoth.convertToHtml({ arrayBuffer: ab });
+      previewArea.innerHTML = `<div class="letters-preview-docx">${result.value || '<p><em>Document appears to be empty.</em></p>'}</div>`;
+
+    } else if (['xls','xlsx'].includes(t)) {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+      const ab = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+      const wb = XLSX.read(ab, { type: 'array' });
+      const tabs = wb.SheetNames.length > 1
+        ? `<div class="letters-excel-tabs">${wb.SheetNames.map((s,i) =>
+            `<button class="letters-excel-tab${i===0?' active':''}" data-sheet="${s}">${s}</button>`
+          ).join('')}</div>` : '';
+      const firstHtml = XLSX.utils.sheet_to_html(wb.Sheets[wb.SheetNames[0]], { editable: false });
+      previewArea.innerHTML = `${tabs}<div class="letters-preview-excel" id="bddExcelContent">${firstHtml}</div>`;
+      styleExcelTable(previewArea);
+      previewArea.querySelectorAll('.letters-excel-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          previewArea.querySelectorAll('.letters-excel-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          document.getElementById('bddExcelContent').innerHTML =
+            XLSX.utils.sheet_to_html(wb.Sheets[btn.dataset.sheet], { editable: false });
+          styleExcelTable(previewArea);
+        });
+      });
+
+    } else if (['jpg','jpeg','png','gif','webp'].includes(t)) {
+      previewArea.innerHTML = `<div class="letters-preview-img-wrap"><img src="${previewUrl}" class="letters-preview-img" alt="${f.file_name}"></div>`;
+
+    } else if (['mp4','webm','mov','avi','mkv'].includes(t)) {
+      const mimes = { mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', avi:'video/x-msvideo', mkv:'video/x-matroska' };
+      previewArea.innerHTML = `
+        <div class="letters-preview-video-wrap">
+          <video class="letters-preview-video" controls autoplay muted>
+            <source src="${previewUrl}" type="${mimes[t]||'video/mp4'}">
+          </video>
+        </div>`;
+
+    } else {
+      previewArea.innerHTML = `
+        <div class="letters-preview-fallback">
+          <i class="ri-file-line"></i>
+          <p>Preview not available for this file type.</p>
+          <a class="tool-btn apply-btn" href="/api/bidder/bidding/${f.id}/download" target="_blank">
+            <i class="ri-download-line"></i> Download to view
+          </a>
+        </div>`;
+    }
+  } catch (err) {
+    console.error('Bidding preview error:', err);
+    previewArea.innerHTML = `
+      <div class="letters-preview-fallback">
+        <i class="ri-file-warning-line"></i>
+        <p>Could not load preview.</p>
+        <a class="tool-btn apply-btn" href="/api/bidder/bidding/${f.id}/download" target="_blank">
+          <i class="ri-download-line"></i> Download to view
+        </a>
+      </div>`;
+  }
+}
+
+function _bddDownload(f) {
+  window.open(`/api/bidder/bidding/${f.id}/download`, '_blank');
+}
+
+function _bddConfirmDelete(f) {
+  const existing = document.getElementById('bddDeleteModal');
+  if (existing) existing.remove();
+
+  const loggedUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'bddDeleteModal';
+  overlay.innerHTML = `
+    <div class="bdd-modal bdd-modal-sm" style="max-width:420px;">
+      <div class="bdd-modal-header" style="background:linear-gradient(135deg,#7f1d1d,#dc2626);">
+        <div class="bdd-modal-title-wrap">
+          <div style="font-size:22px"><i class="ri-delete-bin-line"></i></div>
+          <div>
+            <div class="bdd-modal-name">Delete Document</div>
+            <div class="bdd-modal-meta">This action cannot be undone</div>
+          </div>
+        </div>
+        <button class="bdd-modal-close" id="bddDelClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="bdd-modal-body" style="padding:24px;background:white;">
+        <p style="font-size:14px;color:#475569;margin:0;">Are you sure you want to delete <strong style="color:#1e293b;">${f.file_name}</strong>?</p>
+      </div>
+      <div class="bdd-modal-footer">
+        <button class="acc-btn" id="bddDelCancel">Cancel</button>
+        <button class="acc-btn" id="bddDelConfirm" style="background:linear-gradient(135deg,#dc2626,#ef4444);color:white;border:none;box-shadow:0 4px 14px rgba(220,38,38,0.3);">
+          <i class="ri-delete-bin-line"></i> Delete
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById('bddDelClose').onclick  = close;
+  document.getElementById('bddDelCancel').onclick = close;
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  document.getElementById('bddDelConfirm').onclick = async () => {
+    const btn = document.getElementById('bddDelConfirm');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Deleting…';
+    try {
+      const res = await fetch(`/api/bidder/bidding/${f.id}`, {
+        method: 'DELETE',
+        headers: { 'x-user-id': String(loggedUser.id || '') }
+      });
+      if (res.ok) {
+        close();
+        await _bddFetch();
+        showToast?.('Document deleted successfully.', 'success');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast?.(err.error || 'Failed to delete document.', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete';
+      }
+    } catch {
+      showToast?.('Delete failed. Check your connection.', 'error');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-delete-bin-line"></i> Delete';
+    }
+  };
+}
+
+function _bddOpenEditModal(f) {
+  const existing = document.getElementById('bddEditModal');
+  if (existing) existing.remove();
+
+  const loggedUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+  const fmtDate = f.date ? new Date(f.date).toISOString().slice(0,10) : '';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id        = 'bddEditModal';
+  overlay.innerHTML = `
+    <div class="bdd-modal bdd-modal-sm">
+      <div class="bdd-modal-header">
+        <div class="bdd-modal-title-wrap">
+          <div style="font-size:22px"><i class="ri-edit-line"></i></div>
+          <div>
+            <div class="bdd-modal-name">Edit Document</div>
+            <div class="bdd-modal-meta">${f.file_name}</div>
+          </div>
+        </div>
+        <button class="bdd-modal-close" id="bddEditClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="bdd-modal-body" style="background:white;">
+        <div class="bdd-form" style="padding:24px;">
+          <div class="bdd-form-row">
+            <label>Document Type</label>
+            <input type="text" id="bddEditDocType" value="${f.doc_type || ''}" placeholder="e.g. Letter of Award, Contract…" />
+          </div>
+          <div class="bdd-form-row">
+            <label>Date</label>
+            <input type="date" id="bddEditDate" value="${fmtDate}" />
+          </div>
+          <div class="bdd-form-row">
+            <label>Status</label>
+            <select id="bddEditStatus">
+              <option value="awarded"  ${f.status==='awarded' ?'selected':''}>Awarded</option>
+              <option value="rejected" ${f.status==='rejected'?'selected':''}>Rejected</option>
+            </select>
+          </div>
+          <div class="bdd-form-row">
+            <label>Description</label>
+            <textarea id="bddEditDesc" rows="3" placeholder="Optional notes…">${f.description || ''}</textarea>
+          </div>
+        </div>
+      </div>
+      <div class="bdd-modal-footer">
+        <button class="acc-btn" id="bddEditCancel">Cancel</button>
+        <button class="acc-btn acc-btn-primary" id="bddEditSave"><i class="ri-save-line"></i> Save Changes</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  document.getElementById('bddEditClose').onclick  = close;
+  document.getElementById('bddEditCancel').onclick = close;
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  document.getElementById('bddEditSave').onclick = async () => {
+    const btn = document.getElementById('bddEditSave');
+    const docType = document.getElementById('bddEditDocType').value.trim();
+    const date    = document.getElementById('bddEditDate').value;
+    const status  = document.getElementById('bddEditStatus').value;
+    const desc    = document.getElementById('bddEditDesc').value.trim();
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+    try {
+      const res = await fetch(`/api/bidder/bidding/${f.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-id': String(loggedUser.id || '')
+        },
+        body: JSON.stringify({ doc_type: docType, date, status, description: desc })
+      });
+      if (res.ok) {
+        close();
+        await _bddFetch();
+        showToast?.('Document updated successfully.', 'success');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showToast?.(err.error || 'Failed to update document.', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ri-save-line"></i> Save Changes';
+      }
+    } catch {
+      showToast?.('Update failed. Check your connection.', 'error');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-save-line"></i> Save Changes';
+    }
+  };
+}
+
+async function _bddHandleFiles(files) {
+  if (!files.length) return;
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('status', bddTab);
+    try {
+      const res = await fetch('/api/bidder/bidding/upload', { method: 'POST', body: fd, headers: { 'x-user-id': String(user?.id || '') } });
+      if (!res.ok) alert(`Failed to upload ${file.name}`);
+    } catch { alert(`Upload error: ${file.name}`); }
+  }
+  await _bddFetch();
+}
+
+function _bddOpenAddModal() {
+  const existing = document.getElementById('bddAddModal');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id        = 'bddAddModal';
+  overlay.innerHTML = `
+    <div class="bdd-modal bdd-modal-sm">
+      <div class="bdd-modal-header">
+        <div class="bdd-modal-title-wrap">
+          <div style="font-size:22px"><i class="ri-file-add-line"></i></div>
+          <div>
+            <div class="bdd-modal-name">Add Bidding Document</div>
+            <div class="bdd-modal-meta">Fill in the details below</div>
+          </div>
+        </div>
+        <button class="bdd-modal-close" id="bddAddClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="bdd-modal-body" style="padding:24px; background:white;">
+        <div class="bdd-form">
+          <div class="bdd-form-row">
+            <label>File <span style="color:#ef4444">*</span></label>
+            <div class="bdd-file-pick-wrap" id="bddPickWrap">
+              <i class="ri-upload-2-line"></i>
+              <span id="bddPickLabel">Click to choose a file…</span>
+              <input type="file" id="bddPickFile" accept=".pdf,.doc,.docx,.xls,.xlsx,.zip" style="display:none">
+            </div>
+          </div>
+          <div class="bdd-form-row">
+            <label>Document Type</label>
+            <input type="text" id="bddAddDocType" placeholder="e.g. Letter of Award, Contract…" />
+          </div>
+          <div class="bdd-form-row">
+            <label>Date</label>
+            <input type="date" id="bddAddDate" />
+          </div>
+          <div class="bdd-form-row">
+            <label>Status</label>
+            <select id="bddAddStatus">
+              <option value="awarded">Awarded</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div class="bdd-form-row">
+            <label>Description</label>
+            <textarea id="bddAddDesc" rows="3" placeholder="Optional notes…"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="bdd-modal-footer">
+        <button class="acc-btn" id="bddAddCancel">Cancel</button>
+        <button class="acc-btn acc-btn-primary" id="bddAddSave"><i class="ri-save-line"></i> Save</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  document.getElementById('bddAddStatus').value = bddTab;
+
+  const pickWrap = document.getElementById('bddPickWrap');
+  const pickFile = document.getElementById('bddPickFile');
+  const pickLabel = document.getElementById('bddPickLabel');
+
+  pickWrap.addEventListener('click', () => pickFile.click());
+  pickFile.addEventListener('change', () => {
+    pickLabel.textContent = pickFile.files[0]?.name || 'Click to choose a file…';
+  });
+
+  document.getElementById('bddAddClose').onclick  = () => overlay.remove();
+  document.getElementById('bddAddCancel').onclick = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+  document.getElementById('bddAddSave').onclick = async () => {
+    const file    = pickFile.files[0];
+    const docType = document.getElementById('bddAddDocType').value.trim();
+    const date    = document.getElementById('bddAddDate').value;
+    const status  = document.getElementById('bddAddStatus').value;
+    const desc    = document.getElementById('bddAddDesc').value.trim();
+
+    if (!file) { alert('Please choose a file.'); return; }
+
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('doc_type', docType);
+    fd.append('date', date);
+    fd.append('status', status);
+    fd.append('description', desc);
+
+    try {
+      const res = await fetch('/api/bidder/bidding', { method: 'POST', body: fd, headers: { 'x-user-id': String(user?.id || '') } });
+      if (res.ok) { overlay.remove(); await _bddFetch(); }
+      else        { alert('Failed to save. Please try again.'); }
+    } catch { alert('Save failed. Check your connection.'); }
+  };
+}
+
+/* stub loaders */
+function loadBidderDashboard()    { mainContent.innerHTML = `<div class="acc-page"><div class="acc-topbar"><h2 class="acc-title"><i class="ri-dashboard-line"></i> Bidder Dashboard</h2></div><div style="padding:60px;text-align:center;color:#94a3b8;font-size:15px;">Coming soon.</div></div>`; }
+function loadBidderJointVenture() { mainContent.innerHTML = `<div class="acc-page"><div class="acc-topbar"><h2 class="acc-title"><i class="ri-group-line"></i> Joint Venture</h2></div><div style="padding:60px;text-align:center;color:#94a3b8;font-size:15px;">Coming soon.</div></div>`; }
+function loadBidderEligibility()  { _eligLoad(); }
+function loadBidderAcceptance()   { _accLoad(); }
+function loadBidderFinished()     { mainContent.innerHTML = `<div class="acc-page"><div class="acc-topbar"><h2 class="acc-title"><i class="ri-folder-check-line"></i> Finished Projects</h2></div><div style="padding:60px;text-align:center;color:#94a3b8;font-size:15px;">Coming soon.</div></div>`; }
+/* =====================================================================
+   BIDDER — ELIGIBILITY DOCUMENTS
+   Tracks documents by expiry: Valid / Expiring Soon (≤30 days) / Expired
+   ===================================================================== */
+
+let _eligDocs   = [];
+let _eligTab    = 'valid';     // 'valid' | 'expiring' | 'expired'
+let _eligSearch = '';
+let _eligChartPeriod   = 'monthly';   // 'weekly'|'monthly'|'yearly'|'custom'
+let _eligChartFrom     = null;         // Date for custom range start
+let _eligChartTo       = null;         // Date for custom range end
+let _eligDocFilter     = 'all';        // 'all'|'valid'|'expiring'|'expired'|'win'|'loss'|'custom'
+let _eligDocFrom       = null;
+let _eligDocTo         = null;
+
+async function _eligFetch() {
+  try {
+    const res = await fetch('/api/bidder/eligibility', {
+      headers: { 'x-user-id': String(user?.id || '') }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    _eligDocs = await res.json();
+  } catch (e) {
+    console.error('_eligFetch error:', e.message);
+    _eligDocs = [];
+  }
+  _eligUpdateCounts();
+  _eligRender();
+}
+
+/* ── status helpers ─────────────────────────────────────────────── */
+function _eligStatus(expiry_date) {
+  if (!expiry_date) return 'valid';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const exp   = new Date(expiry_date); exp.setHours(0,0,0,0);
+  const days  = Math.round((exp - today) / 86400000);
+  if (days < 0)  return 'expired';
+  if (days <= 30) return 'expiring';
+  return 'valid';
+}
+function _eligDaysLeft(expiry_date) {
+  if (!expiry_date) return null;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const exp   = new Date(expiry_date); exp.setHours(0,0,0,0);
+  return Math.round((exp - today) / 86400000);
+}
+function _eligFmtExpiry(expiry_date) {
+  if (!expiry_date) return '—';
+  return new Date(expiry_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+}
+
+/* ── entry point ─────────────────────────────────────────────────── */
+async function _eligLoad() {
+  _eligTab    = 'valid';
+  _eligSearch = '';
+  _eligChartPeriod = 'monthly';
+  _eligChartFrom   = null;
+  _eligChartTo     = null;
+  _eligDocFilter   = 'all';
+  _eligDocFrom     = null;
+  _eligDocTo       = null;
+
+  mainContent.innerHTML = `
+    <div class="elig-page">
+
+      <!-- ══ HERO ══ -->
+      <div class="bdd-hero elig-hero">
+        <div class="bdd-hero-top">
+          <div class="bdd-hero-left">
+            <div class="bdd-hero-icon"><i class="ri-file-shield-2-line"></i></div>
+            <div class="bdd-hero-text">
+              <h2 class="bdd-title">Eligibility Documents</h2>
+              <p class="bdd-subtitle">Track validity, expiry, and compliance of all files</p>
+            </div>
+          </div>
+          <div class="bdd-hero-right">
+            <div class="bdd-search-box">
+              <i class="ri-search-line"></i>
+              <input type="text" id="eligSearch" placeholder="Search documents\u2026">
+            </div>
+            <button class="bdd-add-btn" id="eligAddBtn">
+              <i class="ri-upload-2-line"></i> Upload Document
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ MAIN TABS ══ -->
+      <div class="eg-tabs">
+        <button class="eg-tab active" data-main="overview">
+          <i class="ri-pie-chart-2-line"></i> Overview
+        </button>
+        <button class="eg-tab" data-main="documents">
+          <i class="ri-folder-open-line"></i> Documents
+        </button>
+      </div>
+
+      <!-- ══════════════════════════════
+           OVERVIEW PANEL
+           ══════════════════════════════ -->
+      <div class="eg-panel" id="eligPanelOverview">
+
+        <!-- Period filter bar — enhanced, right-aligned -->
+        <div class="eg-period-bar">
+          <div class="eg-period-bar-left">
+            <span class="eg-period-label"><i class="ri-bar-chart-grouped-line"></i> Document Activity</span>
+          </div>
+          <div class="eg-period-bar-right">
+            <div class="eg-period-tabs">
+              <button class="eg-period-btn active" data-period="weekly"><i class="ri-calendar-line"></i> Weekly</button>
+              <button class="eg-period-btn" data-period="monthly"><i class="ri-calendar-2-line"></i> Monthly</button>
+              <button class="eg-period-btn" data-period="yearly"><i class="ri-calendar-todo-line"></i> Yearly</button>
+              <button class="eg-period-btn" data-period="custom"><i class="ri-date-range-line"></i> Custom</button>
+            </div>
+            <div class="eg-custom-range hidden" id="eligChartCustomRange">
+              <input type="date" id="eligChartFrom" class="eg-date-input">
+              <span class="eg-date-sep">→</span>
+              <input type="date" id="eligChartTo" class="eg-date-input">
+              <button class="eg-apply-btn" id="eligChartApply"><i class="ri-check-line"></i> Apply</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Stats row -->
+        <div class="eg-stats-row">
+          <!-- Chart card -->
+          <div class="eg-chart-card">
+            <div class="eg-chart-header">
+              <div class="eg-chart-dot"></div>
+              <span class="eg-chart-title" id="eligChartTitle">Files uploaded per week</span>
+            </div>
+            <div class="eg-bar-chart" id="eligBidsChart"></div>
+          </div>
+
+          <!-- Win/Loss card -->
+          <div class="eg-winloss-card">
+            <div class="eg-wl-header"><i class="ri-bar-chart-2-line"></i> Win / Loss Rate</div>
+
+            <div class="eg-wl-rates">
+              <div class="eg-wl-rate eg-wl-win">
+                <div class="eg-wl-pct" id="eligWinPct">\u2014</div>
+                <div class="eg-wl-lbl"><i class="ri-trophy-line"></i> Win Rate</div>
+              </div>
+              <div class="eg-wl-divider"></div>
+              <div class="eg-wl-rate eg-wl-loss">
+                <div class="eg-wl-pct" id="eligLossPct">\u2014</div>
+                <div class="eg-wl-lbl"><i class="ri-close-circle-line"></i> Loss Rate</div>
+              </div>
+            </div>
+
+            <div class="eg-wl-total">
+              Total: <strong id="eligTotalBids">0</strong> documents
+              &nbsp;&middot;&nbsp;
+              <span class="eg-wl-won"><i class="ri-trophy-line"></i> <strong id="eligWinCount">0</strong></span>
+              <span class="eg-wl-lost"><i class="ri-close-circle-line"></i> <strong id="eligLossCount">0</strong></span>
+            </div>
+
+            <div class="eg-wl-bars">
+              <div class="eg-wl-bar-row">
+                <span class="eg-wl-bar-lbl">Won</span>
+                <div class="eg-wl-track"><div class="eg-wl-fill eg-wl-fill-win" style="width:0%" id="eligBarWon"></div></div>
+              </div>
+              <div class="eg-wl-bar-row">
+                <span class="eg-wl-bar-lbl">Lost</span>
+                <div class="eg-wl-track"><div class="eg-wl-fill eg-wl-fill-loss" style="width:0%" id="eligBarLost"></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Expiry tracker -->
+        <div class="eg-expiry-card">
+          <div class="eg-expiry-card-header">
+            <div class="eg-expiry-card-title"><i class="ri-timer-flash-line"></i> Document Expiry Tracker</div>
+          </div>
+          <div class="eg-expiry-body">
+            <div class="eg-expiry-col">
+              <div class="eg-expiry-col-label eg-expiry-col-critical">
+                <i class="ri-error-warning-line"></i> Critical
+              </div>
+              <div class="eg-expiry-list" id="eligExpiryListCritical"></div>
+            </div>
+            <div class="eg-expiry-col">
+              <div class="eg-expiry-col-label eg-expiry-col-soon">
+                <i class="ri-time-line"></i> Expiring Soon
+              </div>
+              <div class="eg-expiry-list" id="eligExpiryListSoon"></div>
+            </div>
+          </div>
+          <div id="eligExpiryEmpty" class="eg-expiry-empty hidden">
+            <i class="ri-shield-check-line"></i>
+            <p>All documents are valid \u2014 nothing expiring soon.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════
+           DOCUMENTS PANEL
+           ══════════════════════════════ -->
+      <div class="eg-panel hidden" id="eligPanelDocuments">
+
+        <!-- Summary stat cards -->
+        <div class="eg-sumcards">
+          <div class="eg-sumcard eg-sumcard-critical">
+            <div class="eg-sumcard-icon"><i class="ri-error-warning-line"></i></div>
+            <div class="eg-sumcard-body">
+              <div class="eg-sumcard-num" id="eligDsExpired">0</div>
+              <div class="eg-sumcard-lbl">Critical</div>
+              <div class="eg-sumcard-range">\u2264 30 days</div>
+            </div>
+          </div>
+          <div class="eg-sumcard eg-sumcard-expiring">
+            <div class="eg-sumcard-icon"><i class="ri-time-line"></i></div>
+            <div class="eg-sumcard-body">
+              <div class="eg-sumcard-num" id="eligDsExpiring">0</div>
+              <div class="eg-sumcard-lbl">Expiring</div>
+              <div class="eg-sumcard-range">31 \u2013 90 days</div>
+            </div>
+          </div>
+          <div class="eg-sumcard eg-sumcard-valid">
+            <div class="eg-sumcard-icon"><i class="ri-shield-check-line"></i></div>
+            <div class="eg-sumcard-body">
+              <div class="eg-sumcard-num" id="eligDsValid">0</div>
+              <div class="eg-sumcard-lbl">Valid</div>
+              <div class="eg-sumcard-range">90+ days</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Files card -->
+        <div class="eg-files-card">
+          <!-- Files header -->
+          <div class="eg-files-header">
+            <div class="eg-files-title"><i class="ri-folder-open-line"></i> Eligibility Files</div>
+            <div class="eg-filter-wrap">
+              <div class="eg-filter-tabs">
+                <button class="eg-filter-btn active" data-filter="all">All</button>
+                <button class="eg-filter-btn" data-filter="valid"><i class="ri-shield-check-line"></i> Valid</button>
+                <button class="eg-filter-btn" data-filter="expiring"><i class="ri-time-line"></i> Expiring</button>
+                <button class="eg-filter-btn" data-filter="expired"><i class="ri-error-warning-line"></i> Critical</button>
+                <button class="eg-filter-btn eg-filter-btn-win" data-filter="win"><i class="ri-trophy-line"></i> Win</button>
+                <button class="eg-filter-btn eg-filter-btn-loss" data-filter="loss"><i class="ri-close-circle-line"></i> Loss</button>
+                <button class="eg-filter-btn" data-filter="custom"><i class="ri-date-range-line"></i> Date</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Doc date range -->
+          <div class="eg-doc-range hidden" id="eligDocCustomRange">
+            <input type="date" id="eligDocFrom" class="eg-date-input">
+            <span class="eg-date-sep">\u2192</span>
+            <input type="date" id="eligDocTo" class="eg-date-input">
+            <button class="eg-apply-btn" id="eligDocApply"><i class="ri-check-line"></i> Apply</button>
+          </div>
+
+          <!-- File rows -->
+          <div class="eg-file-list" id="eligFileList">
+            <div class="eg-loading"><i class="ri-loader-4-line spin"></i> Loading\u2026</div>
+          </div>
+
+          <!-- Drop zone -->
+          <div class="eg-dropzone" id="eligDropzone">
+            <i class="ri-upload-cloud-2-line"></i>
+            <span>Drop files here or <strong>click to upload</strong></span>
+            <span class="eg-dz-hint">PDF, DOCX, XLSX, images \u2014 max 50 MB</span>
+            <input type="file" id="eligDropInput" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" style="display:none">
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ══ VIEW MODAL ══ -->
+    <div class="modal-overlay hidden" id="eligViewModal">
+      <div class="eg-view-modal">
+        <div class="eg-view-header" id="eligModalHeader">
+          <div class="eg-view-header-left">
+            <div class="eg-view-icon" id="eligModalIcon"></div>
+            <div>
+              <div class="eg-view-name" id="eligModalName"></div>
+              <div class="eg-view-meta" id="eligModalMeta"></div>
+            </div>
+          </div>
+          <button class="eg-view-close" id="eligModalClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="bdd-modal-body" id="eligModalBody"></div>
+        <div class="eg-view-footer">
+          <button class="eg-view-dl-btn" id="eligModalDl"><i class="ri-download-2-line"></i> Download</button>
+          <button class="eg-view-close-btn" id="eligModalCloseFt"><i class="ri-close-line"></i> Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ UPLOAD MODAL ══ -->
+    <div class="modal-overlay hidden" id="eligAddModal">
+      <div class="bdd-modal bdd-modal-sm">
+        <div class="bdd-modal-header">
+          <div class="bdd-modal-title-wrap">
+            <div style="font-size:24px;color:#2563eb"><i class="ri-file-add-line"></i></div>
+            <div>
+              <div class="bdd-modal-name">Upload Eligibility Document</div>
+              <div class="bdd-modal-meta">Attach a file and set its expiration date</div>
+            </div>
+          </div>
+          <button class="bdd-modal-close" id="eligAddClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="bdd-modal-body" style="padding:24px">
+          <div class="bdd-form">
+            <div class="bdd-form-row">
+              <label>File <span style="color:#ef4444">*</span></label>
+              <div class="bdd-file-pick-wrap" id="eligPickWrap">
+                <i class="ri-upload-2-line"></i>
+                <span id="eligPickLbl">Click to choose a file\u2026</span>
+                <input type="file" id="eligPickFile" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" style="display:none">
+              </div>
+            </div>
+            <div class="bdd-form-row">
+              <label>Document Name</label>
+              <input type="text" id="eligAddName" placeholder="e.g. PhilGEPS Certificate, PCAB License\u2026">
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div class="bdd-form-row">
+                <label>Issue Date</label>
+                <input type="date" id="eligAddIssued">
+              </div>
+              <div class="bdd-form-row">
+                <label>Expiration Date <span style="color:#ef4444">*</span></label>
+                <input type="date" id="eligAddExpiry">
+              </div>
+            </div>
+            <div class="bdd-form-row">
+              <label>Document Type / Category</label>
+              <input type="text" id="eligAddCategory" placeholder="e.g. License, Certificate, Permit\u2026">
+            </div>
+            <div class="bdd-form-row">
+              <label>Result <span style="color:#ef4444">*</span></label>
+              <div class="eg-result-toggle">
+                <label class="eg-result-opt eg-result-win">
+                  <input type="radio" name="eligResult" value="win" id="eligResultWin" checked>
+                  <span><i class="ri-trophy-line"></i> Win</span>
+                </label>
+                <label class="eg-result-opt eg-result-loss">
+                  <input type="radio" name="eligResult" value="loss" id="eligResultLoss">
+                  <span><i class="ri-close-circle-line"></i> Loss</span>
+                </label>
+              </div>
+            </div>
+            <div class="bdd-form-row">
+              <label>Notes</label>
+              <textarea id="eligAddNotes" rows="2" placeholder="Optional notes\u2026"></textarea>
+            </div>
+          </div>
+        </div>
+        <div class="bdd-modal-footer">
+          <button class="acc-btn" id="eligAddCancel">Cancel</button>
+          <button class="acc-btn acc-btn-primary" id="eligAddSave"><i class="ri-save-line"></i> Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+  _eligBindEvents();
+  await _eligFetch();
+}
+
+function _eligBindEvents() {
+  /* main tabs */
+  document.querySelectorAll('.eg-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.eg-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const panel = btn.dataset.main;
+      document.getElementById('eligPanelOverview').classList.toggle('hidden', panel !== 'overview');
+      document.getElementById('eligPanelDocuments').classList.toggle('hidden', panel !== 'documents');
+    });
+  });
+
+  /* Overview: chart period tabs (weekly/monthly/yearly/custom) */
+  document.querySelectorAll('.eg-period-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.eg-period-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _eligChartPeriod = btn.dataset.period;
+      const customRange = document.getElementById('eligChartCustomRange');
+      if (_eligChartPeriod === 'custom') {
+        customRange.classList.remove('hidden');
+      } else {
+        customRange.classList.add('hidden');
+        _eligChartFrom = null;
+        _eligChartTo   = null;
+        _eligRenderBidsChart();
+      }
+    });
+  });
+  document.getElementById('eligChartApply')?.addEventListener('click', () => {
+    const fromEl = document.getElementById('eligChartFrom');
+    const toEl   = document.getElementById('eligChartTo');
+    _eligChartFrom = fromEl?.value ? new Date(fromEl.value) : null;
+    _eligChartTo   = toEl?.value   ? new Date(toEl.value)   : null;
+    if (_eligChartTo) _eligChartTo.setHours(23,59,59,999);
+    _eligRenderBidsChart();
+  });
+
+  /* Documents: filter tabs (all/valid/expiring/expired/win/loss/custom date) */
+  document.querySelectorAll('.eg-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.eg-filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _eligDocFilter = btn.dataset.filter;
+      const docCustom = document.getElementById('eligDocCustomRange');
+      if (_eligDocFilter === 'custom') {
+        docCustom.classList.remove('hidden');
+      } else {
+        docCustom.classList.add('hidden');
+        _eligDocFrom = null;
+        _eligDocTo   = null;
+        _eligRender();
+      }
+    });
+  });
+  document.getElementById('eligDocApply')?.addEventListener('click', () => {
+    const fromEl = document.getElementById('eligDocFrom');
+    const toEl   = document.getElementById('eligDocTo');
+    _eligDocFrom = fromEl?.value ? new Date(fromEl.value) : null;
+    _eligDocTo   = toEl?.value   ? new Date(toEl.value)   : null;
+    if (_eligDocTo) _eligDocTo.setHours(23,59,59,999);
+    _eligRender();
+  });
+
+  /* Search */
+  document.getElementById('eligSearch').addEventListener('input', function() {
+    _eligSearch = this.value.toLowerCase().trim();
+    _eligRender();
+  });
+
+  document.getElementById('eligAddBtn').addEventListener('click', () =>
+    document.getElementById('eligAddModal').classList.remove('hidden'));
+
+  const dz  = document.getElementById('eligDropzone');
+  const inp = document.getElementById('eligDropInput');
+  dz.addEventListener('click',     () => inp.click());
+  inp.addEventListener('change',   () => _eligQuickUpload(Array.from(inp.files)));
+  dz.addEventListener('dragover',  e  => { e.preventDefault(); dz.classList.add('dz-over'); });
+  dz.addEventListener('dragleave', ()  => dz.classList.remove('dz-over'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('dz-over');
+    _eligQuickUpload(Array.from(e.dataTransfer.files));
+  });
+
+  ['eligModalClose','eligModalCloseFt'].forEach(id =>
+    document.getElementById(id)?.addEventListener('click', () =>
+      document.getElementById('eligViewModal').classList.add('hidden')));
+  document.getElementById('eligViewModal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
+  });
+
+  const addModal = document.getElementById('eligAddModal');
+  const pickWrap = document.getElementById('eligPickWrap');
+  const pickFile = document.getElementById('eligPickFile');
+  const pickLbl  = document.getElementById('eligPickLbl');
+  document.getElementById('eligAddClose').addEventListener('click',  () => addModal.classList.add('hidden'));
+  document.getElementById('eligAddCancel').addEventListener('click', () => addModal.classList.add('hidden'));
+  addModal.addEventListener('click', e => { if (e.target === addModal) addModal.classList.add('hidden'); });
+  pickWrap.addEventListener('click', () => pickFile.click());
+  pickFile.addEventListener('change', () => { pickLbl.textContent = pickFile.files[0]?.name || 'Click to choose…'; });
+  document.getElementById('eligAddSave').addEventListener('click', _eligSave);
+}
+
+
+function _eligStatusNew(expiry_date) {
+  if (!expiry_date) return 'valid';
+  const today = new Date(); today.setHours(0,0,0,0);
+  const exp   = new Date(expiry_date); exp.setHours(0,0,0,0);
+  const days  = Math.round((exp - today) / 86400000);
+  if (days < 0)   return 'expired';   // already past expiry date
+  if (days <= 30) return 'critical';  // expiring within 30 days
+  if (days <= 90) return 'expiring';  // expiring within 90 days
+  return 'valid';
+}
+
+function _eligUpdateCounts() {
+  const counts = { valid:0, expiring:0, expired:0 };
+  _eligDocs.forEach(d => { counts[_eligStatusNew(d.expiry_date)]++; });
+  const dsV = document.getElementById('eligDsValid');
+  const dsE = document.getElementById('eligDsExpiring');
+  const dsX = document.getElementById('eligDsExpired');
+  if (dsV) dsV.textContent = counts.valid;
+  if (dsE) dsE.textContent = counts.expiring;
+  if (dsX) dsX.textContent = counts.expired;
+
+  /* Win / Loss from result field */
+  const withResult = _eligDocs.filter(d => d.result === 'win' || d.result === 'loss');
+  const total   = withResult.length;
+  const won     = withResult.filter(d => d.result === 'win').length;
+  const lost    = withResult.filter(d => d.result === 'loss').length;
+  const winPct  = total ? Math.round((won  / total) * 100) : 0;
+  const lossPct = total ? Math.round((lost / total) * 100) : 0;
+
+  const winEl   = document.getElementById('eligWinPct');
+  const lossEl  = document.getElementById('eligLossPct');
+  const totEl   = document.getElementById('eligTotalBids');
+  const winCnt  = document.getElementById('eligWinCount');
+  const lossCnt = document.getElementById('eligLossCount');
+  const barWon  = document.getElementById('eligBarWon');
+  const barLst  = document.getElementById('eligBarLost');
+
+  if (winEl)   winEl.textContent   = total ? winPct  + '%' : '—';
+  if (lossEl)  lossEl.textContent  = total ? lossPct + '%' : '—';
+  if (totEl)   totEl.textContent   = total;
+  if (winCnt)  winCnt.textContent  = won;
+  if (lossCnt) lossCnt.textContent = lost;
+  if (barWon)  barWon.style.width  = winPct  + '%';
+  if (barLst)  barLst.style.width  = lossPct + '%';
+
+  _eligRenderOverview();
+  _eligRenderBidsChart();
+}
+
+function _eligRenderOverview() {
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  let docs = _eligDocs;
+
+  const critical = docs
+    .filter(d => { if (!d.expiry_date) return false; return Math.round((new Date(d.expiry_date) - today)/86400000) <= 30; })
+    .sort((a,b) => new Date(a.expiry_date) - new Date(b.expiry_date));
+  const soon = docs
+    .filter(d => { if (!d.expiry_date) return false; const days = Math.round((new Date(d.expiry_date) - today)/86400000); return days > 30 && days <= 90; })
+    .sort((a,b) => new Date(a.expiry_date) - new Date(b.expiry_date));
+
+  const critEl  = document.getElementById('eligExpiryListCritical');
+  const soonEl  = document.getElementById('eligExpiryListSoon');
+  const emptyEl = document.getElementById('eligExpiryEmpty');
+  if (!critEl) return;
+
+  function renderRows(list, container) {
+    if (!list.length) { container.innerHTML = ''; return; }
+    container.innerHTML = list.map(d => {
+      const days      = Math.round((new Date(d.expiry_date) - today) / 86400000);
+      const expFmt    = new Date(d.expiry_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+      const issuedFmt = d.issued_date ? new Date(d.issued_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '\u2014';
+      const isCrit    = days <= 30;
+      const daysLbl   = days < 0 ? ('Expired ' + Math.abs(days) + ' days ago') : days === 0 ? 'Expires today' : (days + ' days left');
+      const rowCls    = isCrit ? 'eg-expiry-critical' : 'eg-expiry-soon';
+      const txtCls    = isCrit ? 'text-critical' : 'text-soon';
+      return '<div class="eg-expiry-row ' + rowCls + '">'
+        + '<div class="eg-expiry-row-left">'
+        + '<div class="eg-expiry-row-name">' + escHtml(d.doc_name || d.file_name || '\u2014') + '</div>'
+        + '<div class="eg-expiry-row-sub">' + escHtml(d.category || '\u2014') + ' \u00b7 Issued ' + issuedFmt + '</div>'
+        + '</div>'
+        + '<div class="eg-expiry-row-right">'
+        + '<div class="eg-expiry-row-date ' + txtCls + '">' + expFmt + '</div>'
+        + '<div class="eg-expiry-row-days ' + txtCls + '">' + daysLbl + '</div>'
+        + '</div></div>';
+    }).join('');
+  }
+
+  renderRows(critical, critEl);
+  renderRows(soon, soonEl);
+  if (!critical.length && !soon.length) {
+    emptyEl && emptyEl.classList.remove('hidden');
+  } else {
+    emptyEl && emptyEl.classList.add('hidden');
+  }
+}
+
+function _eligRenderBidsChart() {
+  const container = document.getElementById('eligBidsChart');
+  if (!container) return;
+
+  const now   = new Date();
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let labels = [], counts = [];
+
+  if (_eligChartPeriod === 'weekly') {
+    /* Last 8 weeks */
+    const titleEl = document.getElementById('eligChartTitle');
+    if (titleEl) titleEl.textContent = 'Files uploaded per week (last 8 weeks)';
+    for (let w = 7; w >= 0; w--) {
+      const weekStart = new Date(now); weekStart.setHours(0,0,0,0);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay() - w * 7);
+      const weekEnd = new Date(weekStart); weekEnd.setDate(weekStart.getDate() + 6); weekEnd.setHours(23,59,59,999);
+      labels.push('W' + _eligWeekNum(weekStart));
+      counts.push(_eligDocs.filter(d => {
+        const dt = new Date(d.created_at || d.issued_date || '');
+        return !isNaN(dt) && dt >= weekStart && dt <= weekEnd;
+      }).length);
+    }
+
+  } else if (_eligChartPeriod === 'monthly') {
+    /* Last 12 months */
+    const titleEl = document.getElementById('eligChartTitle');
+    if (titleEl) titleEl.textContent = 'Files uploaded per month (last 12 months)';
+    for (let m = 11; m >= 0; m--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
+      labels.push(MONTHS[d.getMonth()] + ' \'' + String(d.getFullYear()).slice(2));
+      counts.push(_eligDocs.filter(doc => {
+        const dt = new Date(doc.created_at || doc.issued_date || '');
+        return !isNaN(dt) && dt.getFullYear() === d.getFullYear() && dt.getMonth() === d.getMonth();
+      }).length);
+    }
+
+  } else if (_eligChartPeriod === 'yearly') {
+    /* All years present in data */
+    const titleEl = document.getElementById('eligChartTitle');
+    if (titleEl) titleEl.textContent = 'Files uploaded per year';
+    const years = [...new Set(_eligDocs.map(d => {
+      const dt = new Date(d.created_at || d.issued_date || '');
+      return isNaN(dt) ? null : dt.getFullYear();
+    }).filter(Boolean))].sort((a,b) => a - b);
+    if (!years.length) years.push(now.getFullYear());
+    labels = years.map(String);
+    counts = years.map(yr => _eligDocs.filter(d => {
+      const dt = new Date(d.created_at || d.issued_date || '');
+      return !isNaN(dt) && dt.getFullYear() === yr;
+    }).length);
+
+  } else if (_eligChartPeriod === 'custom' && _eligChartFrom && _eligChartTo) {
+    /* Custom range: group by day */
+    const titleEl = document.getElementById('eligChartTitle');
+    if (titleEl) titleEl.textContent = 'Files uploaded (custom range)';
+    const from = new Date(_eligChartFrom); from.setHours(0,0,0,0);
+    const to   = new Date(_eligChartTo);   to.setHours(23,59,59,999);
+    const diffDays = Math.round((to - from) / 86400000) + 1;
+    for (let i = 0; i < Math.min(diffDays, 31); i++) {
+      const day = new Date(from); day.setDate(from.getDate() + i);
+      const dayEnd = new Date(day); dayEnd.setHours(23,59,59,999);
+      labels.push((day.getMonth()+1) + '/' + day.getDate());
+      counts.push(_eligDocs.filter(d => {
+        const dt = new Date(d.created_at || d.issued_date || '');
+        return !isNaN(dt) && dt >= day && dt <= dayEnd;
+      }).length);
+    }
+  } else {
+    /* Default: monthly */
+    const titleEl = document.getElementById('eligChartTitle');
+    if (titleEl) titleEl.textContent = 'Files uploaded per month (last 12 months)';
+    for (let m = 11; m >= 0; m--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - m, 1);
+      labels.push(MONTHS[d.getMonth()]);
+      counts.push(0);
+    }
+  }
+
+  const max = Math.max(...counts, 1);
+  container.innerHTML = labels.map((lbl, i) => {
+    const pct = Math.round((counts[i] / max) * 100);
+    const val = counts[i];
+    return '<div class="eg-bar-col">'
+      + '<div class="eg-bar-wrap">'
+      + (val > 0 ? '<span class="elig-css-bar-val">' + val + '</span>' : '')
+      + '<div class="eg-bar-fill" style="height:' + pct + '%"></div>'
+      + '</div>'
+      + '<span class="eg-bar-lbl">' + lbl + '</span>'
+      + '</div>';
+  }).join('');
+}
+
+function _eligWeekNum(d) {
+  const start = new Date(d.getFullYear(), 0, 1);
+  return Math.ceil(((d - start) / 86400000 + start.getDay() + 1) / 7);
+}
+
+function _eligRender() {
+  const list = document.getElementById('eligFileList');
+  if (!list) return;
+  let data = [..._eligDocs];
+
+  /* Apply document filter */
+  if (_eligDocFilter === 'valid' || _eligDocFilter === 'expiring' || _eligDocFilter === 'expired') {
+    data = data.filter(d => _eligStatusNew(d.expiry_date) === _eligDocFilter);
+  } else if (_eligDocFilter === 'win') {
+    data = data.filter(d => d.result === 'win');
+  } else if (_eligDocFilter === 'loss') {
+    data = data.filter(d => d.result === 'loss');
+  } else if (_eligDocFilter === 'custom' && (_eligDocFrom || _eligDocTo)) {
+    data = data.filter(d => {
+      const raw = d.created_at || d.issued_date;
+      if (!raw) return false;
+      const dt = new Date(raw);
+      if (isNaN(dt)) return false;
+      if (_eligDocFrom && dt < _eligDocFrom) return false;
+      if (_eligDocTo   && dt > _eligDocTo)   return false;
+      return true;
+    });
+  }
+
+  if (_eligSearch) {
+    data = data.filter(d =>
+      (d.doc_name||d.file_name||'').toLowerCase().includes(_eligSearch) ||
+      (d.category||'').toLowerCase().includes(_eligSearch));
+  }
+  const order = { expired:0, expiring:1, valid:2 };
+  data.sort((a,b) => {
+    const sa = order[_eligStatusNew(a.expiry_date)];
+    const sb = order[_eligStatusNew(b.expiry_date)];
+    return sa !== sb ? sa - sb : new Date(a.expiry_date) - new Date(b.expiry_date);
+  });
+  if (!data.length) {
+    list.innerHTML = '<div class="eg-empty"><i class="ri-inbox-line"></i><p>' + (_eligSearch ? 'No documents match your search.' : 'No documents found.') + '</p></div>';
+    return;
+  }
+  list.innerHTML = data.map((d,i) => _eligCardHTML(d,i)).join('');
+  list.querySelectorAll('.elig-view-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const doc = data.find(d => d.id === parseInt(btn.dataset.id));
+      if (doc) _eligOpenView(doc);
+    });
+  });
+  list.querySelectorAll('.elig-dl-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const doc = data.find(d => d.id === parseInt(btn.dataset.id));
+      if (doc) _eligDownload(doc);
+    });
+  });
+  list.querySelectorAll('.elig-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const doc = data.find(d => d.id === parseInt(btn.dataset.id));
+      if (doc) _eligOpenEdit(doc);
+    });
+  });
+  list.querySelectorAll('.elig-del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const doc = data.find(d => d.id === parseInt(btn.dataset.id));
+      if (doc) _eligConfirmDelete(doc);
+    });
+  });
+}
+
+function _eligCardHTML(d, i) {
+  const ext       = (d.file_name||'').split('.').pop().toLowerCase();
+  const status    = _eligStatusNew(d.expiry_date);
+  const today     = new Date(); today.setHours(0,0,0,0);
+  const days      = d.expiry_date ? Math.round((new Date(d.expiry_date) - today) / 86400000) : null;
+  const expiryFmt = d.expiry_date ? new Date(d.expiry_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '\u2014';
+  const issuedFmt = d.issued_date ? new Date(d.issued_date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : null;
+  const size      = _bddFmtSize(d.file_size);
+
+  /* Status badge */
+  let badge = '';
+  if (status === 'valid')    badge = '<span class="elig-card-badge elig-card-badge-valid"><i class="ri-shield-check-line"></i> Valid</span>';
+  else if (status === 'expiring') badge = '<span class="elig-card-badge elig-card-badge-expiring"><i class="ri-time-line"></i> Expiring Soon</span>';
+  else if (status === 'critical') badge = '<span class="elig-card-badge elig-card-badge-critical"><i class="ri-alarm-warning-line"></i> Critical</span>';
+  else { const absDays = days !== null ? Math.abs(days) : 0; badge = '<span class="elig-card-badge elig-card-badge-expired"><i class="ri-error-warning-line"></i> Expired</span>'; }
+
+  /* Result badge */
+  const resultBadge = d.result === 'win'
+    ? '<span class="elig-card-badge elig-card-badge-win"><i class="ri-trophy-line"></i> Win</span>'
+    : d.result === 'loss'
+      ? '<span class="elig-card-badge elig-card-badge-loss"><i class="ri-close-circle-line"></i> Loss</span>'
+      : '';
+
+  /* Days pill */
+  const daysPill = days !== null && days >= 0
+    ? '<span class="elig-card-days-pill elig-card-days-' + status + '">'
+      + (days === 0 ? 'Expires today' : days + ' day' + (days !== 1 ? 's' : '') + ' left')
+      + '</span>'
+    : (days !== null && days < 0
+      ? '<span class="elig-card-days-pill elig-card-days-expired">' + Math.abs(days) + 'd ago</span>'
+      : '');
+
+  /* Progress bar for critical/expiring */
+  const showBar = (status === 'critical' || status === 'expiring') && days !== null;
+  const barMax  = status === 'critical' ? 30 : 90;
+  const barPct  = showBar ? Math.max(2, Math.round((days / barMax) * 100)) : 0;
+  const barColor = status === 'critical' ? '#f97316' : '#3b82f6';
+  const progressBar = showBar
+    ? '<div class="elig-card-progress-track"><div class="elig-card-progress-bar" style="width:' + barPct + '%;background:' + barColor + '"></div></div>'
+    : '';
+
+  return '<div class="elig-card-item elig-card-item-' + status + '" style="animation-delay:' + (i * 40) + 'ms">'
+
+    /* Left: file icon */
+    + '<div class="elig-card-icon">' + _bddFileIcon(ext) + '</div>'
+
+    /* Center: info */
+    + '<div class="elig-card-body">'
+    + '<div class="elig-card-name">' + escHtml(d.doc_name || d.file_name || '\u2014') + '</div>'
+    + '<div class="elig-card-meta">'
+    + '<span class="elig-card-cat">' + escHtml(d.category || ext.toUpperCase()) + '</span>'
+    + (issuedFmt ? '<span class="elig-card-sep">\u00b7</span><span>Issued ' + issuedFmt + '</span>' : '')
+    + '<span class="elig-card-sep">\u00b7</span>'
+    + '<span>' + (status === 'expired' ? 'Expired ' : 'Expires ') + expiryFmt + '</span>'
+    + '<span class="elig-card-sep">\u00b7</span>'
+    + '<span class="elig-card-size">' + size + '</span>'
+    + '</div>'
+    + (showBar ? progressBar : '')
+    + '</div>'
+
+    /* Right: badges + actions */
+    + '<div class="elig-card-right">'
+    + '<div class="elig-card-badges">'
+    + resultBadge
+    + badge
+    + daysPill
+    + '</div>'
+    + '<div class="elig-card-actions">'
+    + '<button class="elig-card-btn-view elig-view-btn" data-id="' + d.id + '"><i class="ri-eye-line"></i> View</button>'
+    + '<button class="elig-card-btn-icon elig-edit-btn" data-id="' + d.id + '" title="Edit"><i class="ri-edit-line"></i></button>'
+    + '<button class="elig-card-btn-icon elig-dl-btn"   data-id="' + d.id + '" title="Download"><i class="ri-download-2-line"></i></button>'
+    + '<button class="elig-card-btn-icon elig-card-btn-del elig-del-btn" data-id="' + d.id + '" title="Delete"><i class="ri-delete-bin-line"></i></button>'
+    + '</div>'
+    + '</div>'
+
+    + '</div>';
+}
+
+async function _eligOpenView(d) {
+  const modal    = document.getElementById('eligViewModal');
+  const iconEl   = document.getElementById('eligModalIcon');
+  const nameEl   = document.getElementById('eligModalName');
+  const metaEl   = document.getElementById('eligModalMeta');
+  const bodyEl   = document.getElementById('eligModalBody');
+  const headerEl = document.getElementById('eligModalHeader');
+  const dlBtn    = document.getElementById('eligModalDl');
+  if (!modal) return;
+
+  const ext       = _bddExt(d.file_name);
+  const t         = ext.toLowerCase();
+  const size      = _bddFmtSize(d.file_size);
+  const status    = _eligStatusNew(d.expiry_date);
+  const today     = new Date(); today.setHours(0,0,0,0);
+  const days      = d.expiry_date ? Math.round((new Date(d.expiry_date) - today) / 86400000) : null;
+  const expiryFmt = d.expiry_date ? new Date(d.expiry_date).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}) : '—';
+  const issuedFmt = d.issued_date ? new Date(d.issued_date).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'}) : '—';
+
+  const gradients = {
+    valid:    'linear-gradient(135deg,#166534,#16a34a)',
+    expiring: 'linear-gradient(135deg,#92400e,#d97706)',
+    expired:  'linear-gradient(135deg,#991b1b,#dc2626)',
+  };
+  headerEl.className        = 'bdd-modal-header';
+  headerEl.style.background = gradients[status] || gradients.valid;
+  iconEl.innerHTML   = _bddFileIcon(ext);
+  nameEl.textContent = d.doc_name || d.file_name || '—';
+  metaEl.textContent = (d.category || ext.toUpperCase()) + ' · ' + size;
+
+  let statusBadge = '';
+  if (status === 'valid')    statusBadge = '<span class="elig-new-badge elig-new-badge-valid"><i class="ri-shield-check-line"></i> Valid</span>';
+  if (status === 'expiring') statusBadge = '<span class="elig-new-badge elig-new-badge-expiring"><i class="ri-time-line"></i> Expiring in ' + days + ' day' + (days !== 1 ? 's' : '') + '</span>';
+  if (status === 'expired')  statusBadge = '<span class="elig-new-badge elig-new-badge-expired"><i class="ri-error-warning-line"></i> ' + (days !== null && days < 0 ? 'Expired ' + Math.abs(days) + ' days ago' : 'Expires today') + '</span>';
+
+  const resultBadge = d.result === 'win'
+    ? '<span class="elig-new-badge elig-result-badge-win"><i class="ri-trophy-line"></i> Win</span>'
+    : d.result === 'loss'
+      ? '<span class="elig-new-badge elig-result-badge-loss"><i class="ri-close-circle-line"></i> Loss</span>'
+      : '<span style="color:#94a3b8;">—</span>';
+
+  bodyEl.style.cssText = 'display:flex;flex-direction:column;';
+  bodyEl.innerHTML =
+    '<div style="padding:20px 24px 18px;background:white;border-bottom:1.5px solid #f1f5f9;flex-shrink:0;">'
+  + '<div class="bdd-detail-grid">'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">Document Name</span><span class="bdd-detail-value">' + escHtml(d.doc_name || d.file_name || '—') + '</span></div>'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">Category</span><span class="bdd-detail-value">' + escHtml(d.category || '—') + '</span></div>'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">Issue Date</span><span class="bdd-detail-value">' + issuedFmt + '</span></div>'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">Expiry Date</span><span class="bdd-detail-value">' + expiryFmt + '</span></div>'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">Status</span><span class="bdd-detail-value">' + statusBadge + '</span></div>'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">Result</span><span class="bdd-detail-value">' + resultBadge + '</span></div>'
+  + '<div class="bdd-detail-item"><span class="bdd-detail-label">File Size</span><span class="bdd-detail-value">' + size + '</span></div>'
+  + (d.notes ? '<div class="bdd-detail-item bdd-detail-full"><span class="bdd-detail-label">Notes</span><span class="bdd-detail-value">' + escHtml(d.notes) + '</span></div>' : '')
+  + '</div></div>'
+  + '<div id="eligPreviewArea" style="flex:1;min-height:0;">'
+  + '<div class="letters-empty"><i class="ri-loader-4-line spin"></i><p>Loading preview…</p></div>'
+  + '</div>';
+
+  dlBtn.onclick = () => window.open('/api/bidder/eligibility/' + d.id + '/download', '_blank');
+  modal.classList.remove('hidden');
+
+  const previewArea = document.getElementById('eligPreviewArea');
+  const previewUrl  = '/api/bidder/eligibility/' + d.id + '/preview';
+
+  if (!d.file_url) {
+    previewArea.innerHTML = '<div class="letters-preview-fallback"><i class="ri-file-line"></i><p>No file attached.</p></div>';
+    return;
+  }
+
+  try {
+    if (t === 'pdf') {
+      const blob = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(r.status); return r.blob(); });
+      previewArea.innerHTML = '<iframe src="' + URL.createObjectURL(blob) + '" class="letters-preview-frame" title="' + escHtml(d.file_name) + '"></iframe>';
+
+    } else if (['doc','docx'].includes(t)) {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+      const ab  = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+      const res = await mammoth.convertToHtml({ arrayBuffer: ab });
+      previewArea.innerHTML = '<div class="letters-preview-docx">' + (res.value || '<p><em>Document appears to be empty.</em></p>') + '</div>';
+
+    } else if (['xls','xlsx'].includes(t)) {
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+      const ab = await fetch(previewUrl).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); });
+      const wb = XLSX.read(ab, { type: 'array' });
+      const tabs = wb.SheetNames.length > 1
+        ? '<div class="letters-excel-tabs">' + wb.SheetNames.map((s,i) =>
+            '<button class="letters-excel-tab' + (i===0?' active':'') + '" data-sheet="' + s + '">' + s + '</button>'
+          ).join('') + '</div>' : '';
+      const firstHtml = XLSX.utils.sheet_to_html(wb.Sheets[wb.SheetNames[0]], { editable: false });
+      previewArea.innerHTML = tabs + '<div class="letters-preview-excel" id="eligExcelContent">' + firstHtml + '</div>';
+      styleExcelTable(previewArea);
+      previewArea.querySelectorAll('.letters-excel-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          previewArea.querySelectorAll('.letters-excel-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          document.getElementById('eligExcelContent').innerHTML =
+            XLSX.utils.sheet_to_html(wb.Sheets[btn.dataset.sheet], { editable: false });
+          styleExcelTable(previewArea);
+        });
+      });
+
+    } else if (['jpg','jpeg','png','gif','webp'].includes(t)) {
+      previewArea.innerHTML = '<div class="letters-preview-img-wrap"><img src="' + previewUrl + '" class="letters-preview-img" alt="' + escHtml(d.file_name) + '"></div>';
+
+    } else if (['mp4','webm','mov','avi','mkv'].includes(t)) {
+      const mimes = { mp4:'video/mp4', webm:'video/webm', mov:'video/quicktime', avi:'video/x-msvideo', mkv:'video/x-matroska' };
+      previewArea.innerHTML =
+        '<div class="letters-preview-video-wrap">'
+      + '<video class="letters-preview-video" controls autoplay muted>'
+      + '<source src="' + previewUrl + '" type="' + (mimes[t]||'video/mp4') + '">'
+      + '</video></div>';
+
+    } else {
+      previewArea.innerHTML =
+        '<div class="letters-preview-fallback">'
+      + '<i class="ri-file-line"></i>'
+      + '<p>Preview not available for this file type.</p>'
+      + '<a class="tool-btn apply-btn" href="/api/bidder/eligibility/' + d.id + '/download" target="_blank">'
+      + '<i class="ri-download-line"></i> Download to view</a></div>';
+    }
+
+  } catch (err) {
+    console.error('Eligibility preview error:', err);
+    previewArea.innerHTML =
+      '<div class="letters-preview-fallback">'
+    + '<i class="ri-file-warning-line"></i>'
+    + '<p>Could not load preview.</p>'
+    + '<a class="tool-btn apply-btn" href="/api/bidder/eligibility/' + d.id + '/download" target="_blank">'
+    + '<i class="ri-download-line"></i> Download to view</a></div>';
+  }
+}
+
+function _eligDownload(d) {
+  if (!d.file_url) { alert('No file attached.'); return; }
+  const a = document.createElement('a');
+  a.href = d.file_url; a.download = d.file_name||'file'; a.click();
+}
+
+async function _eligSave() {
+  const _eligPickEl = document.getElementById('eligPickFile');
+  const file     = _eligPickEl.files[0] || _eligPickEl._quickFile || null;
+  const docName  = document.getElementById('eligAddName').value.trim();
+  const issued   = document.getElementById('eligAddIssued').value;
+  const expiry   = document.getElementById('eligAddExpiry').value;
+  const category = document.getElementById('eligAddCategory').value.trim();
+  const notes    = document.getElementById('eligAddNotes').value.trim();
+
+  if (!file)   { alert('Please choose a file.'); return; }
+  if (!expiry) { alert('Expiration date is required.'); return; }
+
+  const fd = new FormData();
+  const result = document.querySelector('input[name="eligResult"]:checked')?.value || 'win';
+  fd.append('file',        file);
+  fd.append('doc_name',    docName || file.name);
+  fd.append('issued_date', issued);
+  fd.append('expiry_date', expiry);
+  fd.append('category',    category);
+  fd.append('result',      result);
+  fd.append('notes',       notes);
+
+  const saveBtn = document.getElementById('eligAddSave');
+  saveBtn.disabled = true;
+  saveBtn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+
+  try {
+    const res = await fetch('/api/bidder/eligibility', {
+      method: 'POST', body: fd,
+      headers: { 'x-user-id': String(user?.id || '') }
+    });
+    if (res.ok) {
+      document.getElementById('eligAddModal').classList.add('hidden');
+      /* reset form */
+      ['eligPickLbl','eligAddName','eligAddIssued','eligAddExpiry','eligAddCategory','eligAddNotes'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value !== undefined ? el.value = '' : el.textContent = 'Click to choose a file…';
+      });
+      const _pf = document.getElementById('eligPickFile');
+      _pf.value = ''; _pf._quickFile = null;
+      await _eligFetch();
+    } else {
+      const err = await res.json().catch(()=>({}));
+      alert(err.error || 'Failed to save. Please try again.');
+    }
+  } catch { alert('Save failed. Check your connection.'); }
+  finally {
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = '<i class="ri-save-line"></i> Save';
+  }
+}
+
+async function _eligQuickUpload(files) {
+  /* drag-and-drop: open the modal pre-filled with the first file so user can add expiry */
+  if (!files.length) return;
+  const file = files[0];
+  document.getElementById('eligPickFile')._quickFile = file;
+  document.getElementById('eligPickLbl').textContent = file.name;
+  document.getElementById('eligAddName').value       = file.name.replace(/\.[^.]+$/, '');
+  document.getElementById('eligAddModal').classList.remove('hidden');
+}
+/* ── Edit eligibility document ───────────────────────────────────── */
+function _eligOpenEdit(d) {
+  const old = document.getElementById('eligEditModal');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay'; ov.id = 'eligEditModal';
+  ov.innerHTML = `
+    <div class="bdd-modal bdd-modal-sm">
+      <div class="bdd-modal-header">
+        <div class="bdd-modal-title-wrap">
+          <div style="font-size:24px"><i class="ri-edit-line"></i></div>
+          <div>
+            <div class="bdd-modal-name">Edit Document</div>
+            <div class="bdd-modal-meta">${escHtml(d.doc_name||d.file_name||'')}</div>
+          </div>
+        </div>
+        <button class="bdd-modal-close" id="eligEditClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="bdd-modal-body" style="padding:24px">
+        <div class="bdd-form">
+          <div class="bdd-form-row">
+            <label>Document Name</label>
+            <input type="text" id="eligEditName" value="${escHtml(d.doc_name||'')}">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="bdd-form-row">
+              <label>Issue Date</label>
+              <input type="date" id="eligEditIssued" value="${d.issued_date||''}">
+            </div>
+            <div class="bdd-form-row">
+              <label>Expiry Date <span style="color:#ef4444">*</span></label>
+              <input type="date" id="eligEditExpiry" value="${d.expiry_date||''}">
+            </div>
+          </div>
+          <div class="bdd-form-row">
+            <label>Category</label>
+            <input type="text" id="eligEditCategory" value="${escHtml(d.category||'')}">
+          </div>
+          <div class="bdd-form-row">
+            <label>Result</label>
+            <div class="elig-result-toggle">
+              <label class="elig-result-opt elig-result-win">
+                <input type="radio" name="eligEditResult" value="win" ${d.result==='win'?'checked':''}>
+                <span><i class="ri-trophy-line"></i> Win</span>
+              </label>
+              <label class="elig-result-opt elig-result-loss">
+                <input type="radio" name="eligEditResult" value="loss" ${d.result==='loss'?'checked':''}>
+                <span><i class="ri-close-circle-line"></i> Loss</span>
+              </label>
+            </div>
+          </div>
+          <div class="bdd-form-row">
+            <label>Notes</label>
+            <textarea id="eligEditNotes" rows="2">${escHtml(d.notes||'')}</textarea>
+          </div>
+        </div>
+      </div>
+      <div class="bdd-modal-footer">
+        <button class="acc-btn" id="eligEditCancel">Cancel</button>
+        <button class="acc-btn acc-btn-primary" id="eligEditSave"><i class="ri-save-line"></i> Save Changes</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+
+  document.getElementById('eligEditClose').onclick  = () => ov.remove();
+  document.getElementById('eligEditCancel').onclick = () => ov.remove();
+  ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+
+  document.getElementById('eligEditSave').onclick = async () => {
+    const expiry = document.getElementById('eligEditExpiry').value;
+    if (!expiry) { alert('Expiry date is required.'); return; }
+    const body = {
+      doc_name:    document.getElementById('eligEditName').value.trim(),
+      issued_date: document.getElementById('eligEditIssued').value,
+      expiry_date: expiry,
+      category:    document.getElementById('eligEditCategory').value.trim(),
+      result:      ov.querySelector('input[name="eligEditResult"]:checked')?.value || null,
+      notes:       document.getElementById('eligEditNotes').value.trim(),
+    };
+    const btn = document.getElementById('eligEditSave');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Saving…';
+    try {
+      const res = await fetch(`/api/bidder/eligibility/${d.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'x-user-id': String(user?.id||'') },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) { ov.remove(); await _eligFetch(); }
+      else { const e = await res.json().catch(()=>({})); alert(e.error||'Failed to save.'); }
+    } catch { alert('Save failed. Check your connection.'); }
+    finally { btn.disabled=false; btn.innerHTML='<i class="ri-save-line"></i> Save Changes'; }
+  };
+}
+
+/* ── Delete eligibility document ─────────────────────────────────── */
+function _eligConfirmDelete(d) {
+  const old = document.getElementById('eligDeleteModal');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.className = 'modal-overlay'; ov.id = 'eligDeleteModal';
+  ov.innerHTML = `
+    <div class="bdd-modal" style="max-width:420px">
+      <div class="bdd-modal-header" style="background:linear-gradient(135deg,#7f1d1d,#dc2626)">
+        <div class="bdd-modal-title-wrap">
+          <div style="font-size:24px"><i class="ri-delete-bin-line"></i></div>
+          <div>
+            <div class="bdd-modal-name">Delete Document</div>
+            <div class="bdd-modal-meta">This action cannot be undone</div>
+          </div>
+        </div>
+        <button class="bdd-modal-close" id="eligDelClose"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="bdd-modal-body" style="padding:24px">
+        <p style="color:#475569;font-size:14px;line-height:1.7;margin:0">
+          Are you sure you want to delete
+          <strong>${escHtml(d.doc_name||d.file_name||'this document')}</strong>?
+          The file will be permanently removed.
+        </p>
+      </div>
+      <div class="bdd-modal-footer">
+        <button class="acc-btn" id="eligDelCancel">Cancel</button>
+        <button class="acc-btn" id="eligDelConfirm" style="background:#dc2626;color:white;border-color:#dc2626">
+          <i class="ri-delete-bin-line"></i> Delete
+        </button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+
+  document.getElementById('eligDelClose').onclick  = () => ov.remove();
+  document.getElementById('eligDelCancel').onclick = () => ov.remove();
+  ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+
+  document.getElementById('eligDelConfirm').onclick = async () => {
+    const btn = document.getElementById('eligDelConfirm');
+    btn.disabled = true; btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Deleting…';
+    try {
+      const res = await fetch(`/api/bidder/eligibility/${d.id}`, {
+        method: 'DELETE',
+        headers: { 'x-user-id': String(user?.id||'') }
+      });
+      if (res.ok) { ov.remove(); await _eligFetch(); }
+      else { const e = await res.json().catch(()=>({})); alert(e.error||'Delete failed.'); }
+    } catch { alert('Delete failed. Check your connection.'); }
+    finally { btn.disabled=false; btn.innerHTML='<i class="ri-delete-bin-line"></i> Delete'; }
+  };
+}
+/* =====================================================================
+   BIDDER — ACCEPTANCE DOCUMENTS
+   Mirrors the NOC Letters page exactly, using /api/acceptance/* routes
+   ===================================================================== */
+
+let accFolderStack    = [];
+let accSearchQuery    = '';
+let accFilterType     = 'all';
+let accFilterUploader = '';
+let accFilterModified = 'all';
+let accClipboard      = null;   // { type:'file'|'folder', id, name, sourceFolderId }
+
+function accCurrentFolder()   { return accFolderStack.length ? accFolderStack[accFolderStack.length - 1] : null; }
+function accCurrentFolderId() { const f = accCurrentFolder(); return f ? f.id : null; }
+
+/* ── Entry point ─────────────────────────────────────────────────── */
+function _accLoad() {
+  accFolderStack    = [];
+  accSearchQuery    = '';
+  accFilterType     = 'all';
+  accFilterUploader = '';
+  accFilterModified = 'all';
+
+  mainContent.innerHTML = `
+    <div class="acc-page-wrap">
+
+      <!-- ── Hero Header ── -->
+      <div class="acc-hero">
+        <div class="acc-hero-left">
+          <div class="acc-hero-icon"><i class="ri-file-paper-2-line"></i></div>
+          <div>
+            <h2 class="acc-hero-title">Acceptance Documents</h2>
+            <p class="acc-hero-sub">Organise and manage your project acceptance files</p>
+          </div>
+        </div>
+        <div class="acc-hero-right">
+          <div class="acc-search-box">
+            <i class="ri-search-line"></i>
+            <input type="text" id="accSearch" placeholder="Search files and folders…">
+          </div>
+          <button class="acc-new-btn" id="accNewBtn"><i class="ri-add-line"></i> New</button>
+          <button class="letters-paste-btn hidden acc-paste-btn" id="accPasteBtn"><i class="ri-clipboard-line"></i> Paste</button>
+        </div>
+      </div>
+
+      <div class="letters-layout">
+        <!-- Sidebar: recent -->
+        <div class="letters-sidebar-card acc-sidebar-card">
+          <div class="letters-sidebar-header">
+            <i class="ri-history-line"></i> Recent Files
+          </div>
+          <div class="letters-recent-list" id="accRecentList">
+            <div class="letters-empty-recent"><i class="ri-loader-4-line spin"></i></div>
+          </div>
+        </div>
+
+        <!-- Main area -->
+        <div class="letters-main-card acc-main-card">
+          <div class="acc-main-toolbar">
+            <div class="letters-breadcrumb" id="accBreadcrumb"></div>
+            <div class="letters-filter-bar" id="accFilterBar">
+              <div class="letters-filter-chip" id="accChipType">
+                <span class="chip-label">Type</span>
+                <i class="ri-arrow-down-s-line chip-arrow"></i>
+                <div class="letters-chip-dropdown" id="accDropType">
+                  <div class="chip-option acc-opt-type active" data-val="all">All types</div>
+                  <div class="chip-option acc-opt-type" data-val="pdf"><i class="ri-file-pdf-2-fill" style="color:#e74c3c"></i> PDF</div>
+                  <div class="chip-option acc-opt-type" data-val="word"><i class="ri-file-word-2-fill" style="color:#2f4b85"></i> Word</div>
+                  <div class="chip-option acc-opt-type" data-val="excel"><i class="ri-file-excel-2-fill" style="color:#27ae60"></i> Excel</div>
+                  <div class="chip-option acc-opt-type" data-val="image"><i class="ri-image-fill" style="color:#f59e0b"></i> Image</div>
+                  <div class="chip-option acc-opt-type" data-val="video"><i class="ri-video-fill" style="color:#8b5cf6"></i> Video</div>
+                </div>
+              </div>
+              <div class="letters-filter-chip" id="accChipUploader">
+                <span class="chip-label">Uploader</span>
+                <i class="ri-arrow-down-s-line chip-arrow"></i>
+                <div class="letters-chip-dropdown" id="accDropUploader">
+                  <div class="chip-option acc-opt-uploader active" data-val="">Anyone</div>
+                </div>
+              </div>
+              <div class="letters-filter-chip" id="accChipModified">
+                <span class="chip-label">Modified</span>
+                <i class="ri-arrow-down-s-line chip-arrow"></i>
+                <div class="letters-chip-dropdown" id="accDropModified">
+                  <div class="chip-option acc-opt-modified active" data-val="all">Any time</div>
+                  <div class="chip-option acc-opt-modified" data-val="today">Today</div>
+                  <div class="chip-option acc-opt-modified" data-val="week">This week</div>
+                  <div class="chip-option acc-opt-modified" data-val="month">This month</div>
+                  <div class="chip-option acc-opt-modified" data-val="year">This year</div>
+                </div>
+              </div>
+              <button class="letters-filter-clear hidden" id="accClearFilters"><i class="ri-close-line"></i> Clear</button>
+            </div>
+          </div>
+
+          <div class="letters-content" id="accContent">
+            <div class="letters-empty"><i class="ri-loader-4-line spin"></i></div>
+          </div>
+        </div>
+      </div>
+
+    <!-- New Folder Modal -->
+    <div id="accFolderModal" class="modal-overlay hidden">
+      <div class="modal-box add-modal-box">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-folder-add-line"></i></div>
+          <div class="add-modal-title"><h3>New Folder</h3><p>Create a new folder to organise acceptance documents.</p></div>
+          <button class="modal-close-btn" id="accFolderModalClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid" style="grid-template-columns:1fr;">
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-folder-line"></i> Folder Name</label>
+              <input id="accNewFolderName" type="text" class="add-field-input" placeholder="e.g. DPWH 2026" autocomplete="off">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"><i class="ri-information-line"></i> Folder name must be unique</span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="accFolderModalCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="accFolderModalConfirm"><i class="ri-save-line"></i> Create</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload File Modal -->
+    <div id="accFileModal" class="modal-overlay hidden">
+      <div class="modal-box add-modal-box">
+        <div class="add-modal-header">
+          <div class="add-modal-icon"><i class="ri-file-upload-line"></i></div>
+          <div class="add-modal-title"><h3>Upload File</h3><p>Add a new acceptance document to this folder.</p></div>
+          <button class="modal-close-btn" id="accFileModalClose"><i class="ri-close-line"></i></button>
+        </div>
+        <div class="add-modal-body">
+          <div class="add-fields-grid" style="grid-template-columns:1fr;">
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-upload-line"></i> Choose File</label>
+              <input id="accNewFileInput" type="file" class="add-field-input" accept=".pdf,.docx,.xlsx,.doc,.xls,.png,.jpg,.jpeg,.gif,.webp,.mp4,.webm,.mov,.avi,.mkv">
+            </div>
+            <div class="add-field-item">
+              <label class="add-field-label"><i class="ri-user-line"></i> Uploader Name</label>
+              <input id="accNewFileUploader" type="text" class="add-field-input" placeholder="Your name" autocomplete="off">
+            </div>
+          </div>
+        </div>
+        <div class="add-modal-footer">
+          <span class="add-modal-hint"><i class="ri-information-line"></i> PDF, Word, Excel, Images, Videos supported</span>
+          <div class="modal-actions">
+            <button class="tool-btn" id="accFileModalCancel">Cancel</button>
+            <button class="tool-btn apply-btn" id="accFileModalConfirm"><i class="ri-upload-line"></i> Upload</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div id="accRenameModal" class="modal-overlay hidden">
+      <div class="modal-box" style="width:400px;padding:28px;">
+        <h3 style="margin-bottom:16px;display:flex;align-items:center;gap:8px;color:#1e3a6e;font-size:17px;"><i class="ri-edit-line"></i> Rename</h3>
+        <div class="form-group">
+          <label>New Name</label>
+          <input id="accRenameInput" type="text" class="add-field-input" style="width:100%;" autocomplete="off">
+        </div>
+        <div class="modal-actions">
+          <button class="tool-btn" id="accRenameCancel">Cancel</button>
+          <button class="tool-btn apply-btn" id="accRenameConfirm"><i class="ri-save-line"></i> Rename</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div id="accPreviewModal" class="modal-overlay hidden">
+      <div class="letters-preview-box">
+        <div class="letters-preview-header">
+          <div class="letters-preview-title">
+            <i class="ri-file-line" id="accPreviewIcon"></i>
+            <span id="accPreviewName">Document</span>
+          </div>
+          <div class="letters-preview-header-actions">
+            <a class="tool-btn" id="accPreviewDownload" target="_blank" title="Download">
+              <i class="ri-download-line"></i> Download
+            </a>
+            <button class="modal-close-btn" id="accPreviewClose" style="position:static;"><i class="ri-close-line"></i></button>
+          </div>
+        </div>
+        <div class="letters-preview-body" id="accPreviewBody">
+          <div class="letters-empty"><i class="ri-loader-4-line spin"></i><p>Loading preview…</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete Modal -->
+    <div id="accDeleteModal" class="modal-overlay hidden">
+      <div class="modal-box confirm-modal-box">
+        <div class="confirm-modal-icon danger-icon"><i class="ri-delete-bin-2-line"></i></div>
+        <h3 class="confirm-modal-title">Delete</h3>
+        <p class="confirm-modal-msg" id="accDeleteMsg">Are you sure?</p>
+        <div class="confirm-modal-actions">
+          <button class="tool-btn" id="accDeleteCancel">Cancel</button>
+          <button class="tool-btn danger-btn" id="accDeleteConfirm"><i class="ri-delete-bin-line"></i> Delete</button>
+        </div>
+      </div>
+    </div>
+
+    </div>
+  `;
+
+  document.getElementById('accSearch').addEventListener('input', function() {
+    accSearchQuery = this.value.trim();
+    _accFetchContent();
+  });
+
+  document.getElementById('accNewBtn').addEventListener('click', () => {
+    _accOpenNewChoiceMenu(document.getElementById('accNewBtn'));
+  });
+
+  _accFetchRecent();
+  _accFetchContent();
+  _accBindFilterChips();
+  _accUpdateClearBtn();
+  _accBindPasteBtn();
+}
+
+/* ── Filter chips ────────────────────────────────────────────────── */
+function _accBindFilterChips() {
+  const closeAllDrops = () =>
+    document.querySelectorAll('#accFilterBar .letters-chip-dropdown').forEach(d => d.classList.remove('open'));
+
+  ['accChipType','accChipUploader','accChipModified'].forEach(chipId => {
+    document.getElementById(chipId)?.addEventListener('click', e => {
+      e.stopPropagation();
+      const drop = chipId === 'accChipType' ? 'accDropType'
+                 : chipId === 'accChipUploader' ? 'accDropUploader' : 'accDropModified';
+      const dropEl = document.getElementById(drop);
+      const isOpen = dropEl.classList.contains('open');
+      closeAllDrops();
+      if (!isOpen) dropEl.classList.add('open');
+    });
+  });
+  document.addEventListener('click', closeAllDrops);
+
+  document.querySelectorAll('.acc-opt-type').forEach(opt => {
+    opt.addEventListener('click', () => {
+      document.querySelectorAll('.acc-opt-type').forEach(o => o.classList.remove('active'));
+      opt.classList.add('active');
+      accFilterType = opt.dataset.val;
+      document.querySelector('#accChipType .chip-label').textContent =
+        opt.dataset.val === 'all' ? 'Type' : opt.textContent.trim();
+      _accUpdateClearBtn();
+      _accFetchContent();
+    });
+  });
+
+  document.querySelectorAll('.acc-opt-modified').forEach(opt => {
+    opt.addEventListener('click', () => {
+      document.querySelectorAll('.acc-opt-modified').forEach(o => o.classList.remove('active'));
+      opt.classList.add('active');
+      accFilterModified = opt.dataset.val;
+      document.querySelector('#accChipModified .chip-label').textContent =
+        opt.dataset.val === 'all' ? 'Modified' : opt.textContent.trim();
+      _accUpdateClearBtn();
+      _accFetchContent();
+    });
+  });
+
+  document.getElementById('accClearFilters')?.addEventListener('click', () => {
+    accFilterType = 'all'; accFilterUploader = ''; accFilterModified = 'all';
+    document.querySelector('#accChipType .chip-label').textContent    = 'Type';
+    document.querySelector('#accChipUploader .chip-label').textContent = 'Uploader';
+    document.querySelector('#accChipModified .chip-label').textContent = 'Modified';
+    document.querySelectorAll('.acc-opt-type, .acc-opt-uploader, .acc-opt-modified')
+      .forEach(o => o.classList.remove('active'));
+    document.querySelector('.acc-opt-type[data-val="all"]')?.classList.add('active');
+    document.querySelector('.acc-opt-uploader[data-val=""]')?.classList.add('active');
+    document.querySelector('.acc-opt-modified[data-val="all"]')?.classList.add('active');
+    _accUpdateClearBtn();
+    _accFetchContent();
+  });
+}
+
+function _accUpdateClearBtn() {
+  const clear = document.getElementById('accClearFilters');
+  if (!clear) return;
+  const active = accFilterType !== 'all' || accFilterUploader !== '' || accFilterModified !== 'all';
+  clear.classList.toggle('hidden', !active);
+}
+
+function _accApplyFileFilters(files) {
+  return files.filter(f => {
+    if (accFilterType !== 'all' && f.file_type !== accFilterType) return false;
+    if (accFilterUploader && f.uploader_name !== accFilterUploader) return false;
+    if (accFilterModified !== 'all') {
+      const now  = new Date();
+      const date = new Date(f.created_at);
+      if (accFilterModified === 'today' && date.toDateString() !== now.toDateString()) return false;
+      if (accFilterModified === 'week') {
+        const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
+        if (date < weekAgo) return false;
+      }
+      if (accFilterModified === 'month') {
+        const monthAgo = new Date(now); monthAgo.setMonth(now.getMonth() - 1);
+        if (date < monthAgo) return false;
+      }
+      if (accFilterModified === 'year') {
+        if (date.getFullYear() !== now.getFullYear()) return false;
+      }
+    }
+    return true;
+  });
+}
+
+/* ── Breadcrumb ──────────────────────────────────────────────────── */
+function _accRenderBreadcrumb() {
+  const el = document.getElementById('accBreadcrumb');
+  if (!el) return;
+  let html = `<span class="bc-root" id="accBcRoot"><i class="ri-home-3-line"></i> Acceptance</span>`;
+  accFolderStack.forEach((f, i) => {
+    html += `<i class="ri-arrow-right-s-line bc-sep"></i>
+             <span class="bc-item ${i === accFolderStack.length - 1 ? 'bc-active' : ''}"
+                   data-idx="${i}">${f.name}</span>`;
+  });
+  el.innerHTML = html;
+  el.querySelectorAll('.bc-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const idx = parseInt(item.dataset.idx);
+      accFolderStack = accFolderStack.slice(0, idx + 1);
+      _accRenderBreadcrumb();
+      _accFetchContent();
+    });
+  });
+  document.getElementById('accBcRoot')?.addEventListener('click', () => {
+    accFolderStack = [];
+    _accRenderBreadcrumb();
+    _accFetchContent();
+  });
+}
+
+/* ── Fetch recent ────────────────────────────────────────────────── */
+async function _accFetchRecent() {
+  const list = document.getElementById('accRecentList');
+  if (!list) return;
+  try {
+    const res  = await fetch('/api/acceptance/files/recent');
+    const data = res.ok ? await res.json() : [];
+    if (!data.length) { list.innerHTML = `<div class="letters-empty-recent">No recent files.</div>`; return; }
+    list.innerHTML = data.map(f => `
+      <div class="letters-recent-item" data-id="${f.id}" data-name="${escHtml(f.file_name)}" data-type="${f.file_type||'file'}">
+        ${_accFileIcon(f.file_type)}
+        <span class="recent-name">${escHtml(f.file_name)}</span>
+      </div>`).join('');
+    list.querySelectorAll('.letters-recent-item').forEach(item => {
+      item.addEventListener('click', () =>
+        _accOpenPreview(parseInt(item.dataset.id), item.dataset.name, item.dataset.type));
+    });
+  } catch { list.innerHTML = `<div class="letters-empty-recent">Could not load.</div>`; }
+}
+
+/* ── Fetch content ───────────────────────────────────────────────── */
+async function _accFetchContent() {
+  const container = document.getElementById('accContent');
+  if (!container) return;
+  container.innerHTML = `<div class="letters-empty"><i class="ri-loader-4-line spin"></i></div>`;
+  _accRenderBreadcrumb();
+  const folderId = accCurrentFolderId();
+  const q = accSearchQuery;
+
+  try {
+    if (folderId) {
+      /* inside a folder: show subfolders + files */
+      const [fRes, fiRes] = await Promise.all([
+        fetch(`/api/acceptance/folders?parent_id=${folderId}`),
+        fetch(`/api/acceptance/folders/${folderId}/files${q ? '?q='+encodeURIComponent(q) : ''}`)
+      ]);
+      const subfolders = fRes.ok  ? await fRes.json()  : [];
+      const files      = fiRes.ok ? await fiRes.json() : [];
+      _accRenderFolderContents(subfolders, _accApplyFileFilters(files), folderId);
+    } else {
+      /* root: show all top-level folders, search files globally */
+      const fRes = await fetch('/api/acceptance/folders');
+      const folders = fRes.ok ? await fRes.json() : [];
+      if (q) {
+        const fiRes = await fetch(`/api/acceptance/files/search?q=${encodeURIComponent(q)}`);
+        const files = fiRes.ok ? await fiRes.json() : [];
+        _accRenderFolderContents([], _accApplyFileFilters(files), null);
+      } else {
+        _accRenderFolders(folders);
+      }
+      /* populate uploader filter */
+      fetch('/api/acceptance/uploaders').then(r => r.ok ? r.json() : []).then(names => {
+        const drop = document.getElementById('accDropUploader');
+        if (!drop) return;
+        const extra = names.map(n =>
+          `<div class="chip-option acc-opt-uploader${accFilterUploader===n?' active':''}" data-val="${escHtml(n)}">${escHtml(n)}</div>`
+        ).join('');
+        drop.innerHTML = `<div class="chip-option acc-opt-uploader${!accFilterUploader?' active':''}" data-val="">Anyone</div>${extra}`;
+        drop.querySelectorAll('.acc-opt-uploader').forEach(opt => {
+          opt.addEventListener('click', () => {
+            document.querySelectorAll('.acc-opt-uploader').forEach(o => o.classList.remove('active'));
+            opt.classList.add('active');
+            accFilterUploader = opt.dataset.val;
+            document.querySelector('#accChipUploader .chip-label').textContent =
+              opt.dataset.val ? opt.textContent.trim() : 'Uploader';
+            _accUpdateClearBtn();
+            _accFetchContent();
+          });
+        });
+      });
+    }
+  } catch(e) {
+    container.innerHTML = `<div class="letters-empty"><i class="ri-wifi-off-line"></i><p>Could not load content.</p></div>`;
+  }
+}
+
+/* ── Render folders (root) ───────────────────────────────────────── */
+function _accRenderFolders(folders) {
+  const c = document.getElementById('accContent');
+  if (!c) return;
+  if (!folders.length) {
+    c.innerHTML = `<div class="letters-empty"><i class="ri-folder-open-line"></i><p>No folders yet. Click <b>New</b> to create one.</p></div>`;
+    return;
+  }
+  c.innerHTML = `<div class="acc-folders-grid">${folders.map(f => `
+    <div class="acc-folder-card" data-id="${f.id}" data-name="${escHtml(f.folder_name)}">
+      <div class="acc-folder-card-top">
+        <div class="acc-folder-icon"><i class="ri-folder-3-fill"></i></div>
+        <button class="acc-folder-kebab folder-kebab-btn" data-id="${f.id}" data-name="${escHtml(f.folder_name)}" title="More"><i class="ri-more-2-fill"></i></button>
+      </div>
+      <div class="acc-folder-name">${escHtml(f.folder_name)}</div>
+      <div class="acc-folder-meta">${f.file_count} item${f.file_count !== 1 ? 's' : ''}</div>
+    </div>`).join('')}</div>`;
+  c.querySelectorAll('.acc-folder-card').forEach(card => {
+    card.addEventListener('click', e => {
+      if (e.target.closest('.folder-kebab-btn')) return;
+      accFolderStack.push({ id: parseInt(card.dataset.id), name: card.dataset.name });
+      _accRenderBreadcrumb();
+      _accFetchContent();
+    });
+  });
+  _accBindKebabs(c);
+}
+
+/* ── Render folder contents (subfolders + files) ─────────────────── */
+function _accRenderFolderContents(subfolders, files, parentId) {
+  const c = document.getElementById('accContent');
+  if (!c) return;
+  if (!subfolders.length && !files.length) {
+    c.innerHTML = `<div class="letters-empty"><i class="ri-inbox-line"></i><p>This folder is empty. Click <b>New</b> to add files.</p></div>`;
+    return;
+  }
+  const foldersHtml = subfolders.map(f => `
+    <div class="acc-folder-card" data-id="${f.id}" data-name="${escHtml(f.folder_name)}">
+      <div class="acc-folder-card-top">
+        <div class="acc-folder-icon"><i class="ri-folder-3-fill"></i></div>
+        <button class="acc-folder-kebab folder-kebab-btn" data-id="${f.id}" data-name="${escHtml(f.folder_name)}" title="More"><i class="ri-more-2-fill"></i></button>
+      </div>
+      <div class="acc-folder-name">${escHtml(f.folder_name)}</div>
+      <div class="acc-folder-meta">${f.file_count} item${f.file_count !== 1 ? 's' : ''}</div>
+    </div>`).join('');
+
+  const filesHtml = files.map(f => `
+    <div class="acc-file-row letters-file-row" data-id="${f.id}" data-name="${escHtml(f.file_name)}" data-type="${f.file_type||'file'}">
+      <div class="acc-file-icon">${_accFileIcon(f.file_type)}</div>
+      <div class="acc-file-body">
+        <div class="acc-file-name">${escHtml(f.file_name)}</div>
+        <div class="acc-file-meta">
+          ${f.uploader_name ? `<span><i class="ri-user-line"></i>${escHtml(f.uploader_name)}</span><span class="acc-meta-sep">·</span>` : ''}
+          <span><i class="ri-hard-drive-2-line"></i>${_accFmtSize(f.file_size)}</span>
+          <span class="acc-meta-sep">·</span>
+          <span><i class="ri-calendar-line"></i>${new Date(f.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</span>
+        </div>
+      </div>
+      <div class="acc-file-right">
+        <button class="acc-file-preview-btn" data-id="${f.id}" data-name="${escHtml(f.file_name)}" data-type="${f.file_type||'file'}">
+          <i class="ri-eye-line"></i> View
+        </button>
+        <button class="acc-file-kebab file-kebab-btn" data-id="${f.id}" data-name="${escHtml(f.file_name)}" data-type="${f.file_type||'file'}" data-folder="${parentId||''}" title="More"><i class="ri-more-2-fill"></i></button>
+      </div>
+    </div>`).join('');
+
+  c.innerHTML = `
+    ${subfolders.length ? `<div class="acc-folders-grid">${foldersHtml}</div>` : ''}
+    ${files.length ? `<div class="acc-files-list">${filesHtml}</div>` : ''}`;
+
+  c.querySelectorAll('.acc-folder-card').forEach(card => {
+    card.addEventListener('click', e => {
+      if (e.target.closest('.folder-kebab-btn')) return;
+      accFolderStack.push({ id: parseInt(card.dataset.id), name: card.dataset.name });
+      _accRenderBreadcrumb();
+      _accFetchContent();
+    });
+  });
+  c.querySelectorAll('.acc-file-row').forEach(row => {
+    row.addEventListener('click', e => {
+      if (e.target.closest('.file-kebab-btn') || e.target.closest('.acc-file-preview-btn')) return;
+      _accOpenPreview(parseInt(row.dataset.id), row.dataset.name, row.dataset.type);
+    });
+  });
+  c.querySelectorAll('.acc-file-preview-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      _accOpenPreview(parseInt(btn.dataset.id), btn.dataset.name, btn.dataset.type);
+    });
+  });
+  _accBindKebabs(c);
+}
+
+/* ── File icon helper ────────────────────────────────────────────── */
+function _accFileIcon(type) {
+  const map = {
+    pdf:   `<i class="ri-file-pdf-2-fill"  style="color:#e74c3c;font-size:20px"></i>`,
+    word:  `<i class="ri-file-word-2-fill" style="color:#2f4b85;font-size:20px"></i>`,
+    excel: `<i class="ri-file-excel-2-fill"style="color:#27ae60;font-size:20px"></i>`,
+    image: `<i class="ri-image-fill"        style="color:#f59e0b;font-size:20px"></i>`,
+    video: `<i class="ri-video-fill"        style="color:#8b5cf6;font-size:20px"></i>`,
+  };
+  return map[type] || `<i class="ri-file-line" style="color:#64748b;font-size:20px"></i>`;
+}
+
+function _accFmtSize(bytes) {
+  if (!bytes) return '—';
+  if (bytes >= 1048576) return (bytes/1048576).toFixed(1)+' MB';
+  if (bytes >= 1024)    return Math.round(bytes/1024)+' KB';
+  return bytes+' B';
+}
+
+/* ── Kebab menus ─────────────────────────────────────────────────── */
+function _accCloseAllKebabs() {
+  document.querySelectorAll('.acc-kebab-menu').forEach(m => m.remove());
+}
+
+function _accPositionMenu(menu, btn) {
+  const rect = btn.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.zIndex   = '9999';
+  /* align right edge of menu to right edge of button */
+  const menuWidth = 175;
+  let left = rect.right - menuWidth;
+  if (left < 8) left = 8;
+  let top = rect.bottom + 6;
+  /* flip upward if not enough room below */
+  if (top + 220 > window.innerHeight) top = rect.top - 6 - 220;
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+}
+
+function _accBindKebabs(container) {
+  container.querySelectorAll('.folder-kebab-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation(); _accCloseAllKebabs();
+      const id = parseInt(btn.dataset.id), name = btn.dataset.name;
+      const menu = document.createElement('div');
+      menu.className = 'letters-kebab-menu acc-kebab-menu';
+      menu.innerHTML = `
+        <div class="km-item km-rename"><i class="ri-edit-line"></i> Rename</div>
+        <div class="km-item km-copy"><i class="ri-file-copy-line"></i> Copy</div>
+        <div class="km-item km-delete"><i class="ri-delete-bin-line"></i> Delete</div>`;
+      document.body.appendChild(menu);
+      _accPositionMenu(menu, btn);
+      menu.querySelector('.km-rename').onclick = () => { _accCloseAllKebabs(); _accOpenRename('folder', id, name); };
+      menu.querySelector('.km-copy').onclick   = () => { _accCloseAllKebabs(); accClipboard = { type:'folder', id, name, sourceFolderId: accCurrentFolderId() }; _accUpdatePasteBtn(); };
+      menu.querySelector('.km-delete').onclick = () => { _accCloseAllKebabs(); _accOpenDelete('folder', id, name); };
+    });
+  });
+
+  container.querySelectorAll('.file-kebab-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation(); _accCloseAllKebabs();
+      const id = parseInt(btn.dataset.id), name = btn.dataset.name, type = btn.dataset.type;
+      const menu = document.createElement('div');
+      menu.className = 'letters-kebab-menu acc-kebab-menu';
+      menu.innerHTML = `
+        <div class="km-item km-preview"><i class="ri-eye-line"></i> Preview</div>
+        <div class="km-item km-rename"><i class="ri-edit-line"></i> Rename</div>
+        <div class="km-item km-copy"><i class="ri-file-copy-line"></i> Copy</div>
+        <div class="km-item km-download"><i class="ri-download-line"></i> Download</div>
+        <div class="km-item km-delete"><i class="ri-delete-bin-line"></i> Delete</div>`;
+      document.body.appendChild(menu);
+      _accPositionMenu(menu, btn);
+      menu.querySelector('.km-preview').onclick  = () => { _accCloseAllKebabs(); _accOpenPreview(id, name, type); };
+      menu.querySelector('.km-rename').onclick   = () => { _accCloseAllKebabs(); _accOpenRename('file', id, name); };
+      menu.querySelector('.km-copy').onclick     = () => { _accCloseAllKebabs(); accClipboard = { type:'file', id, name, sourceFolderId: accCurrentFolderId() }; _accUpdatePasteBtn(); };
+      menu.querySelector('.km-download').onclick = () => { _accCloseAllKebabs(); window.location.href = `/api/acceptance/files/${id}/download`; };
+      menu.querySelector('.km-delete').onclick   = () => { _accCloseAllKebabs(); _accOpenDelete('file', id, name); };
+    });
+  });
+
+  document.addEventListener('click', _accCloseAllKebabs, { once: true });
+}
+
+/* ── Preview ─────────────────────────────────────────────────────── */
+async function _accOpenPreview(id, name, type) {
+  const modal = document.getElementById('accPreviewModal');
+  const body  = document.getElementById('accPreviewBody');
+  const dlBtn = document.getElementById('accPreviewDownload');
+  const icon  = document.getElementById('accPreviewIcon');
+  const nameEl = document.getElementById('accPreviewName');
+  if (!modal) return;
+  nameEl.textContent = name;
+  dlBtn.href = `/api/acceptance/files/${id}/download`;
+  icon.className = { pdf:'ri-file-pdf-2-fill', word:'ri-file-word-2-fill', excel:'ri-file-excel-2-fill', image:'ri-image-fill', video:'ri-video-fill' }[type] || 'ri-file-line';
+  body.innerHTML = `<div class="letters-empty"><i class="ri-loader-4-line spin"></i><p>Loading preview…</p></div>`;
+  modal.classList.remove('hidden');
+  document.getElementById('accPreviewClose').onclick = () => modal.classList.add('hidden');
+  modal.onclick = e => { if (e.target === modal) modal.classList.add('hidden'); };
+
+  try {
+    const res = await fetch(`/api/acceptance/files/${id}/preview`);
+    if (!res.ok) {
+      body.innerHTML = `<div class="letters-preview-fallback"><i class="ri-file-warning-line"></i><p>Preview unavailable.</p><a href="/api/acceptance/files/${id}/download" class="tool-btn apply-btn"><i class="ri-download-line"></i> Download</a></div>`;
+      return;
+    }
+
+    if (type === 'pdf') {
+      const blob = await res.blob();
+      body.innerHTML = `<iframe src="${URL.createObjectURL(blob)}" class="letters-preview-frame" title="${name}"></iframe>`;
+
+    } else if (type === 'word') {
+      await _bddLoadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+      const ab = await res.arrayBuffer();
+      const r  = await mammoth.convertToHtml({ arrayBuffer: ab });
+      body.innerHTML = `<div class="letters-preview-docx">${r.value || '<p><em>Empty document.</em></p>'}</div>`;
+
+    } else if (type === 'excel') {
+      await _bddLoadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+      const ab = await res.arrayBuffer();
+      const wb = XLSX.read(ab, { type: 'array' });
+      const tabs = wb.SheetNames.length > 1
+        ? `<div class="letters-excel-tabs">${wb.SheetNames.map((s,i) =>
+            `<button class="letters-excel-tab${i===0?' active':''}" data-sheet="${s}">${s}</button>`
+          ).join('')}</div>` : '';
+      const firstHtml = XLSX.utils.sheet_to_html(wb.Sheets[wb.SheetNames[0]], { editable: false });
+      body.innerHTML = `${tabs}<div class="letters-preview-excel" id="accExcelContent">${firstHtml}</div>`;
+      styleExcelTable?.(body);
+      body.querySelectorAll('.letters-excel-tab').forEach(btn => {
+        btn.addEventListener('click', () => {
+          body.querySelectorAll('.letters-excel-tab').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          document.getElementById('accExcelContent').innerHTML =
+            XLSX.utils.sheet_to_html(wb.Sheets[btn.dataset.sheet], { editable: false });
+          styleExcelTable?.(body);
+        });
+      });
+
+    } else if (type === 'image') {
+      const blob = await res.blob();
+      body.innerHTML = `<div class="letters-preview-img-wrap"><img src="${URL.createObjectURL(blob)}" class="letters-preview-img" alt="${name}"></div>`;
+
+    } else if (type === 'video') {
+      const blob = await res.blob();
+      body.innerHTML = `<div class="letters-preview-video-wrap"><video class="letters-preview-video" controls autoplay muted><source src="${URL.createObjectURL(blob)}"><p>Your browser doesn't support this video.</p></video></div>`;
+
+    } else {
+      body.innerHTML = `<div class="letters-preview-fallback"><i class="ri-file-line"></i><p>Preview not available.<br><small>${name}</small></p><a href="/api/acceptance/files/${id}/download" class="tool-btn apply-btn"><i class="ri-download-line"></i> Download</a></div>`;
+    }
+  } catch (err) {
+    console.error('Acceptance preview error:', err);
+    body.innerHTML = `<div class="letters-preview-fallback"><i class="ri-wifi-off-line"></i><p>Could not load preview.</p></div>`;
+  }
+}
+
+/* ── New choice menu ─────────────────────────────────────────────── */
+function _accOpenNewChoiceMenu(anchor) {
+  const old = document.getElementById('accChoiceMenu');
+  if (old) { old.remove(); return; }
+  const menu = document.createElement('div');
+  menu.id = 'accChoiceMenu';
+  menu.innerHTML = `
+    <div class="choice-item" id="accChoiceFolder"><i class="ri-folder-add-line"></i> New Folder</div>
+    <div class="choice-item" id="accChoiceFile"><i class="ri-file-upload-line"></i> Upload File</div>`;
+  document.body.appendChild(menu);
+  /* position below the anchor button */
+  const rect = anchor.getBoundingClientRect();
+  menu.style.top  = (rect.bottom + 6) + 'px';
+  menu.style.left = Math.max(8, rect.right - 180) + 'px';
+  menu.querySelector('#accChoiceFolder').onclick = () => {
+    menu.remove();
+    document.getElementById('accFolderModal').classList.remove('hidden');
+    const inp = document.getElementById('accNewFolderName');
+    inp.value = ''; inp.focus();
+    document.getElementById('accFolderModalClose').onclick  = () => document.getElementById('accFolderModal').classList.add('hidden');
+    document.getElementById('accFolderModalCancel').onclick = () => document.getElementById('accFolderModal').classList.add('hidden');
+    document.getElementById('accFolderModalConfirm').onclick = async () => {
+      const name = inp.value.trim();
+      if (!name) return;
+      const res = await fetch('/api/acceptance/folders', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ folder_name: name, parent_id: accCurrentFolderId() })
+      });
+      if (res.ok) { document.getElementById('accFolderModal').classList.add('hidden'); _accFetchContent(); }
+      else { const e = await res.json(); alert(e.error||'Failed to create folder.'); }
+    };
+  };
+  menu.querySelector('#accChoiceFile').onclick = () => {
+    menu.remove();
+    const fid = accCurrentFolderId();
+    if (!fid) { alert('Please open a folder first before uploading files.'); return; }
+
+    const fileModal = document.getElementById('accFileModal');
+    fileModal.classList.remove('hidden');
+
+    /* close buttons */
+    document.getElementById('accFileModalClose').onclick  = () => fileModal.classList.add('hidden');
+    document.getElementById('accFileModalCancel').onclick = () => fileModal.classList.add('hidden');
+
+    /* clone confirm to clear stale handlers — capture fid in fresh closure */
+    const oldConfirm = document.getElementById('accFileModalConfirm');
+    const newConfirm = oldConfirm.cloneNode(true);
+    oldConfirm.replaceWith(newConfirm);
+
+    newConfirm.onclick = async () => {
+      const fileInput = document.getElementById('accNewFileInput');
+      const uploader  = document.getElementById('accNewFileUploader').value.trim();
+      if (!fileInput.files[0]) { alert('Please choose a file.'); return; }
+
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+      fd.append('folder_id', fid);
+      if (uploader) fd.append('uploader_name', uploader);
+
+      newConfirm.disabled = true;
+      newConfirm.innerHTML = '<i class="ri-loader-4-line spin"></i> Uploading…';
+      try {
+        const res = await fetch('/api/acceptance/files', { method: 'POST', body: fd });
+        if (res.ok) {
+          fileModal.classList.add('hidden');
+          fileInput.value = '';
+          document.getElementById('accNewFileUploader').value = '';
+          _accFetchContent();
+          _accFetchRecent();
+        } else {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || 'Upload failed. Please try again.');
+        }
+      } catch {
+        alert('Upload failed. Check your connection.');
+      } finally {
+        newConfirm.disabled = false;
+        newConfirm.innerHTML = '<i class="ri-upload-line"></i> Upload';
+      }
+    };
+  };
+  document.addEventListener('click', e => { if (!menu.contains(e.target) && e.target !== anchor) menu.remove(); }, { once:true });
+}
+
+/* ── Rename ──────────────────────────────────────────────────────── */
+function _accOpenRename(type, id, currentName) {
+  const modal = document.getElementById('accRenameModal');
+  const inp   = document.getElementById('accRenameInput');
+  inp.value = currentName;
+  modal.classList.remove('hidden');
+  document.getElementById('accRenameCancel').onclick = () => modal.classList.add('hidden');
+  document.getElementById('accRenameConfirm').onclick = async () => {
+    const newName = inp.value.trim();
+    if (!newName || newName === currentName) { modal.classList.add('hidden'); return; }
+    const url  = type === 'folder' ? `/api/acceptance/folders/${id}` : `/api/acceptance/files/${id}`;
+    const body = type === 'folder' ? { folder_name: newName } : { file_name: newName };
+    const res  = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (res.ok) { modal.classList.add('hidden'); _accFetchContent(); }
+    else { const e = await res.json(); alert(e.error||'Rename failed.'); }
+  };
+}
+
+/* ── Delete ──────────────────────────────────────────────────────── */
+function _accOpenDelete(type, id, name) {
+  const modal = document.getElementById('accDeleteModal');
+  if (!modal) return;
+  document.getElementById('accDeleteMsg').textContent = `Delete "${name}"? This cannot be undone.`;
+  modal.classList.remove('hidden');
+
+  /* Clone buttons to wipe stale handlers, then re-query by cloning result */
+  const cancelEl  = document.getElementById('accDeleteCancel');
+  const confirmEl = document.getElementById('accDeleteConfirm');
+  const newCancel  = cancelEl.cloneNode(true);
+  const newConfirm = confirmEl.cloneNode(true);
+  cancelEl.replaceWith(newCancel);
+  confirmEl.replaceWith(newConfirm);
+
+  /* Use direct node refs — getElementById won't find cloned nodes reliably */
+  newCancel.onclick = () => modal.classList.add('hidden');
+  modal.onclick = e => { if (e.target === modal) modal.classList.add('hidden'); };
+
+  newConfirm.onclick = async () => {
+    newConfirm.disabled = true;
+    newConfirm.innerHTML = '<i class="ri-loader-4-line spin"></i> Deleting…';
+    try {
+      const url = type === 'folder'
+        ? `/api/acceptance/folders/${id}`
+        : `/api/acceptance/files/${id}`;
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.ok) {
+        modal.classList.add('hidden');
+        _accFetchContent();
+        _accFetchRecent();
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || 'Delete failed. Please try again.');
+      }
+    } catch {
+      alert('Delete failed. Check your connection.');
+    } finally {
+      newConfirm.disabled = false;
+      newConfirm.innerHTML = '<i class="ri-delete-bin-line"></i> Delete';
+    }
+  };
+}
+
+/* ── Paste ───────────────────────────────────────────────────────── */
+function _accUpdatePasteBtn() {
+  const btn = document.getElementById('accPasteBtn');
+  if (btn) btn.classList.toggle('hidden', !accClipboard);
+}
+
+function _accBindPasteBtn() {
+  document.getElementById('accPasteBtn')?.addEventListener('click', async () => {
+    if (!accClipboard) return;
+    const targetFolderId = accCurrentFolderId();
+    if (!targetFolderId) { alert('Please open a folder to paste into.'); return; }
+    const { type, id } = accClipboard;
+    const url  = type === 'file' ? `/api/acceptance/files/${id}/copy` : `/api/acceptance/folders/${id}/copy`;
+    const body = type === 'file' ? { target_folder_id: targetFolderId } : { target_parent_id: targetFolderId };
+    const res  = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    if (res.ok) { accClipboard = null; _accUpdatePasteBtn(); _accFetchContent(); }
+    else { const e = await res.json(); alert(e.error||'Paste failed.'); }
+  });
 }
