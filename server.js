@@ -22,6 +22,17 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 app.options('*', cors());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => {
+  const userId = Number(req.headers['x-user-id']);
+  if (Number.isFinite(userId) && userId > 0 && req.path.startsWith('/api/')) {
+    const currentPage = String(req.headers['x-current-page'] || '').slice(0, 180) || null;
+    pool.query(
+      `UPDATE users SET last_active=NOW(), current_page=COALESCE($2, current_page) WHERE id=$1`,
+      [userId, currentPage]
+    ).catch(() => {});
+  }
+  next();
+});
 app.get('/settings', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'modules', 'finance', 'finance-dashboard.html'));
 });
@@ -68,12 +79,24 @@ pool.query(createTable)
   .then(() => console.log('Users table ready ✅'))
   .catch(err => console.error('Table creation error:', err));
 
+pool.query(`
+  ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+  ALTER TABLE users ADD CONSTRAINT users_role_check
+    CHECK (LOWER(role) IN ('executive','finance','noc','admin','bidder'));
+`).catch(err => console.error('Users role constraint migration error:', err.message));
+
+pool.query(`
+  ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS last_active TIMESTAMP,
+    ADD COLUMN IF NOT EXISTS current_page TEXT
+`).catch(err => console.error('Users activity columns error:', err.message));
+
 const createStaffIdsTable = `
 CREATE TABLE IF NOT EXISTS staff_ids (
   id SERIAL PRIMARY KEY,
   staff_id CITEXT UNIQUE NOT NULL,
   department TEXT,
-  assigned_role CITEXT NOT NULL CHECK (LOWER(assigned_role) IN ('noc','finance','admin')),
+  assigned_role CITEXT NOT NULL CHECK (LOWER(assigned_role) IN ('noc','finance','admin','bidder')),
   status TEXT NOT NULL DEFAULT 'unused' CHECK (LOWER(status) IN ('unused','used','disabled')),
   linked_user_id INT UNIQUE REFERENCES users(id) ON DELETE SET NULL,
   created_by_admin_id INT REFERENCES users(id) ON DELETE SET NULL,
@@ -83,12 +106,17 @@ CREATE TABLE IF NOT EXISTS staff_ids (
 `;
 
 pool.query(createStaffIdsTable)
-  .then(() => console.log('Staff IDs table ready'))
+  .then(async () => {
+    console.log('Staff IDs table ready');
+    await pool.query(`ALTER TABLE staff_ids DROP COLUMN IF EXISTS full_name`);
+    await pool.query(`ALTER TABLE staff_ids DROP CONSTRAINT IF EXISTS staff_ids_assigned_role_check`);
+    await pool.query(`
+      ALTER TABLE staff_ids ADD CONSTRAINT staff_ids_assigned_role_check
+        CHECK (LOWER(assigned_role) IN ('noc','finance','admin','bidder'))
+    `);
+    console.log('Staff IDs migrations applied');
+  })
   .catch(err => console.error('Staff IDs table error:', err));
-
-pool.query(`ALTER TABLE staff_ids DROP COLUMN IF EXISTS full_name`)
-  .then(() => console.log('Staff IDs migrations applied'))
-  .catch(err => console.error('Staff IDs migration error:', err));
 
 const createProbTable = `
 CREATE TABLE IF NOT EXISTS problematic_sites (
@@ -1137,6 +1165,9 @@ app.post('/api/auth', async (req, res) => {
       const user = result.rows[0];
       const validPassword = await bcrypt.compare(password, user.password_hash);
       if (!validPassword) return res.status(401).json({ success: false, error: 'Invalid credentials' });
+      await pool.query(`UPDATE users SET last_active=NOW(), current_page=$2 WHERE id=$1`, [user.id, 'Signed in']);
+      user.last_active = new Date();
+      user.current_page = 'Signed in';
       delete user.password_hash;
       return res.json({ success: true, user }); // includes photo field
     }
@@ -1145,6 +1176,18 @@ app.post('/api/auth', async (req, res) => {
   } catch (err) {
     console.error('API error:', err);
     return res.status(500).json({ success: false, error: 'Server error' });
+  }
+});
+
+app.post('/api/activity', async (req, res) => {
+  try {
+    const userId = Number(req.body?.user_id || req.headers['x-user-id']);
+    if (!Number.isFinite(userId) || userId <= 0) return res.status(400).json({ error: 'Invalid user id' });
+    const currentPage = String(req.body?.current_page || req.headers['x-current-page'] || '').slice(0, 180) || null;
+    await pool.query(`UPDATE users SET last_active=NOW(), current_page=COALESCE($2, current_page) WHERE id=$1`, [userId, currentPage]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1193,8 +1236,8 @@ app.post('/api/admin/staff-ids', ensureAdminAccess, async (req, res) => {
     if (!staffId || !assignedRole) {
       return res.status(400).json({ error: 'Staff ID and assigned role are required' });
     }
-    if (!['noc', 'finance', 'admin'].includes(assignedRole)) {
-      return res.status(400).json({ error: 'Assigned role must be NOC, Finance, or Admin' });
+    if (!['noc', 'finance', 'admin', 'bidder'].includes(assignedRole)) {
+      return res.status(400).json({ error: 'Assigned role must be NOC, Finance, Admin, or Bidder' });
     }
     const createdBy = financeUserId(req);
     const result = await pool.query(`
@@ -1295,6 +1338,233 @@ app.get('/api/admin/overview', ensureAdminAccess, async (req, res) => {
     });
   } catch (err) {
     console.error('GET /api/admin/overview error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/accounts-monitoring', ensureAdminAccess, async (req, res) => {
+  try {
+    const search = `%${String(req.query.search || '').trim()}%`;
+    const result = await pool.query(`
+      SELECT id, id_no, full_name, email, role, last_active, current_page, created_at,
+             CASE
+               WHEN last_active >= NOW() - INTERVAL '2 minutes' THEN 'Online'
+               WHEN last_active >= NOW() - INTERVAL '15 minutes' THEN 'Idle'
+               ELSE 'Offline'
+             END AS activity_status
+      FROM users
+      WHERE id_no ILIKE $1 OR full_name ILIKE $1 OR email ILIKE $1 OR role ILIKE $1
+      ORDER BY
+        CASE
+          WHEN last_active >= NOW() - INTERVAL '2 minutes' THEN 1
+          WHEN last_active >= NOW() - INTERVAL '15 minutes' THEN 2
+          ELSE 3
+        END,
+        last_active DESC NULLS LAST,
+        full_name ASC
+    `, [search]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('GET /api/admin/accounts-monitoring error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function adminRequestTableMeta(type) {
+  return {
+    leave: { table: 'leave_requests', statusCol: 'status', ownerCol: 'employee_id', label: 'Leave Request' },
+    id: { table: 'id_requests', statusCol: 'status', ownerCol: 'requested_by', label: 'ID Request' },
+    salary: { table: 'salary_increase_requests', statusCol: 'status', ownerCol: 'requested_by', label: 'Salary Increase Request' },
+    files: { table: 'files_requests', statusCol: 'status', ownerCol: 'requested_by', label: 'Files Request' },
+    reimbursement: { table: 'reimbursement_requests', statusCol: 'status', ownerCol: 'requested_by', label: 'Reimbursement Request' },
+    budget: { table: 'budget_requests', statusCol: 'status', ownerCol: 'requested_by', label: 'Budget Request' },
+    salary_advance: { table: 'salary_advance_requests', statusCol: 'status', ownerCol: 'requested_by', label: 'Salary Advance Request' }
+  }[String(type || '').trim().toLowerCase()] || null;
+}
+
+app.get('/api/admin/user-requests', ensureAdminAccess, async (req, res) => {
+  const role = String(req.query.role || 'all').trim().toLowerCase();
+  const status = String(req.query.status || 'all').trim().toLowerCase();
+  const search = `%${String(req.query.search || '').trim()}%`;
+  const baseParams = [search];
+  const roleSql = role && role !== 'all' ? ` AND LOWER(COALESCE(u.role, '')) = $2` : '';
+  const statusSql = status && status !== 'all' ? ` AND LOWER(COALESCE(req_status, 'pending')) = $${roleSql ? 3 : 2}` : '';
+  const paramsFor = () => {
+    const params = [...baseParams];
+    if (roleSql) params.push(role);
+    if (statusSql) params.push(status);
+    return params;
+  };
+  const safeQuery = async (sql) => {
+    try {
+      const result = await pool.query(sql, paramsFor());
+      return result.rows;
+    } catch (err) {
+      if (err.code === '42P01' || err.code === '42703') return [];
+      throw err;
+    }
+  };
+
+  try {
+    const commonWhere = `
+      WHERE (COALESCE(u.full_name,'') ILIKE $1 OR COALESCE(u.email,'') ILIKE $1 OR COALESCE(u.role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+      ${roleSql}
+      ${statusSql}
+    `;
+    const queries = [
+      safeQuery(`
+        SELECT * FROM (
+          SELECT lr.id, 'leave' AS request_key, 'Leave Request' AS req_type, lr.submitted_at AS requested_at,
+                 lr.status AS req_status, lr.reason AS summary, u.full_name, u.email, u.role, lr.handled_by_name AS handled_by, lr.handled_at
+          FROM leave_requests lr LEFT JOIN users u ON u.id=lr.employee_id
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `),
+      safeQuery(`
+        SELECT * FROM (
+          SELECT ir.id, 'id' AS request_key, 'ID Request' AS req_type, ir.created_at AS requested_at,
+                 ir.status AS req_status, ir.purpose AS summary, u.full_name, u.email, u.role, ir.handled_by_name AS handled_by, ir.handled_at
+          FROM id_requests ir LEFT JOIN users u ON u.id=ir.requested_by
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `),
+      safeQuery(`
+        SELECT * FROM (
+          SELECT sr.id, 'salary' AS request_key, 'Salary Increase Request' AS req_type, sr.created_at AS requested_at,
+                 sr.status AS req_status, sr.justification AS summary, u.full_name, u.email, u.role, sr.handled_by_name AS handled_by, sr.handled_at
+          FROM salary_increase_requests sr LEFT JOIN users u ON u.id=sr.requested_by
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `),
+      safeQuery(`
+        SELECT * FROM (
+          SELECT fr.id, 'files' AS request_key, 'Files Request' AS req_type, fr.created_at AS requested_at,
+                 fr.status AS req_status, fr.purpose AS summary, u.full_name, u.email, u.role, fr.handled_by_name AS handled_by, fr.handled_at
+          FROM files_requests fr LEFT JOIN users u ON u.id=fr.requested_by
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `),
+      safeQuery(`
+        SELECT * FROM (
+          SELECT rr.id, 'reimbursement' AS request_key, 'Reimbursement Request' AS req_type, rr.created_at AS requested_at,
+                 rr.status AS req_status, rr.purpose AS summary, u.full_name, u.email, u.role, rr.handled_by_name AS handled_by, rr.handled_at
+          FROM reimbursement_requests rr LEFT JOIN users u ON u.id=rr.requested_by
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `),
+      safeQuery(`
+        SELECT * FROM (
+          SELECT br.id, 'budget' AS request_key, 'Budget Request' AS req_type, br.created_at AS requested_at,
+                 br.status AS req_status, br.justification AS summary, u.full_name, u.email, u.role, br.handled_by_name AS handled_by, br.handled_at
+          FROM budget_requests br LEFT JOIN users u ON u.id=br.requested_by
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `),
+      safeQuery(`
+        SELECT * FROM (
+          SELECT ar.id, 'salary_advance' AS request_key, 'Salary Advance Request' AS req_type, ar.created_at AS requested_at,
+                 ar.status AS req_status, ar.reason AS summary, u.full_name, u.email, u.role, ar.handled_by_name AS handled_by, ar.handled_at
+          FROM salary_advance_requests ar LEFT JOIN users u ON u.id=ar.requested_by
+        ) q
+        WHERE (COALESCE(full_name,'') ILIKE $1 OR COALESCE(email,'') ILIKE $1 OR COALESCE(role,'') ILIKE $1 OR COALESCE(req_type,'') ILIKE $1)
+        ${roleSql.replaceAll('u.', '')}
+        ${statusSql}
+      `)
+    ];
+    const rows = (await Promise.all(queries)).flat()
+      .map(row => ({
+        id: row.id,
+        request_key: row.request_key,
+        request_id: `${row.request_key}-${row.id}`,
+        full_name: row.full_name || 'Unknown',
+        email: row.email || '',
+        role: row.role || 'other',
+        request_type: row.req_type,
+        requested_at: row.requested_at,
+        status: row.req_status || 'Pending',
+        summary: row.summary || '',
+        handled_by: row.handled_by || '',
+        handled_at: row.handled_at || null
+      }))
+      .sort((a, b) => new Date(b.requested_at || 0) - new Date(a.requested_at || 0));
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/admin/user-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/admin/user-requests/:type/:id', ensureAdminAccess, async (req, res) => {
+  try {
+    const meta = adminRequestTableMeta(req.params.type);
+    if (!meta) return res.status(400).json({ error: 'Invalid request type' });
+    const result = await pool.query(`
+      SELECT r.*,
+             u.full_name,
+             u.email,
+             u.role,
+             COALESCE(r.handled_by_name, h.full_name) AS handled_by_name
+      FROM ${meta.table} r
+      LEFT JOIN users u ON u.id = r.${meta.ownerCol}
+      LEFT JOIN users h ON h.id = r.handled_by_id
+      WHERE r.id = $1
+    `, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    const row = result.rows[0];
+    res.json({
+      ...row,
+      request_key: String(req.params.type),
+      request_id: `${req.params.type}-${row.id}`,
+      request_type: meta.label,
+      handled_by: row.handled_by_name || ''
+    });
+  } catch (err) {
+    console.error('GET /api/admin/user-requests/:type/:id error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/admin/user-requests/:type/:id/status', ensureAdminAccess, async (req, res) => {
+  try {
+    const meta = adminRequestTableMeta(req.params.type);
+    if (!meta) return res.status(400).json({ error: 'Invalid request type' });
+    const status = String(req.body?.status || '').trim();
+    const allowed = new Set(['Pending', 'Approved', 'Rejected', 'Cancelled', 'Released', 'Returned']);
+    if (!allowed.has(status)) return res.status(400).json({ error: 'Invalid status' });
+    const handledById = Number(req.headers['x-user-id'] || req.body?.handledById || 0) || null;
+    let handledByName = '';
+    if (handledById) {
+      const userResult = await pool.query(`SELECT full_name FROM users WHERE id=$1`, [handledById]);
+      handledByName = userResult.rows[0]?.full_name || '';
+    }
+    handledByName = handledByName || String(req.body?.handledByName || '').trim() || 'Admin';
+    const result = await pool.query(
+      `UPDATE ${meta.table}
+         SET ${meta.statusCol}=$1,
+             updated_at=NOW(),
+             handled_by_id=$3,
+             handled_by_name=$4,
+             handled_at=NOW()
+       WHERE id=$2
+       RETURNING *`,
+      [status, req.params.id, handledById, handledByName]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('PATCH /api/admin/user-requests/:type/:id/status error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -2357,17 +2627,36 @@ app.get('/api/employee/reimburse', ensureFinanceAccess, async (req, res) => {
     const statusSql = status ? ` AND r.status=$2` : '';
     if (status) params.push(status);
     const result = await pool.query(`
-      SELECT r.id, e.full_name AS name, e.full_name AS employee_name,
-             p.title AS role, p.title AS roles, r.date, r.description,
-             r.amount, r.status, r.comments
-      FROM finance_reimbursements r
-      JOIN finance_employees e ON e.id=r.employee_id
-      LEFT JOIN finance_positions p ON p.id=e.position_id
-      WHERE (e.full_name ILIKE $1 OR COALESCE(p.title,'') ILIKE $1 OR COALESCE(r.description,'') ILIKE $1)
+      SELECT r.id, r.requested_by,
+             COALESCE(u.full_name, u.email, 'Unknown') AS name,
+             COALESCE(u.full_name, u.email, 'Unknown') AS employee_name,
+             u.role AS role, u.role AS roles,
+             'Reimbursement Request' AS request_type,
+             r.request_date AS date,
+             r.purpose AS description,
+             r.amount, r.status, r.remarks AS comments,
+             r.category, r.department, r.expense_date, r.receipt_path, r.receipt_name,
+             r.created_at, r.updated_at
+      FROM reimbursement_requests r
+      LEFT JOIN users u ON u.id=r.requested_by
+      WHERE (COALESCE(u.full_name,'') ILIKE $1 OR COALESCE(u.email,'') ILIKE $1 OR COALESCE(r.category,'') ILIKE $1 OR COALESCE(r.purpose,'') ILIKE $1)
       ${statusSql}
-      ORDER BY r.date DESC, r.id DESC
+      ORDER BY r.created_at DESC, r.id DESC
     `, params);
     res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/reimburse/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT r.*, COALESCE(u.full_name, u.email, 'Unknown') AS employee_name, u.role
+      FROM reimbursement_requests r
+      LEFT JOIN users u ON u.id=r.requested_by
+      WHERE r.id=$1
+    `, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Reimbursement request not found' });
+    res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2408,17 +2697,36 @@ app.get('/api/employee/budget', ensureFinanceAccess, async (req, res) => {
     const statusSql = status ? ` AND br.status=$2` : '';
     if (status) params.push(status);
     const result = await pool.query(`
-      SELECT br.id, e.full_name AS name, e.full_name AS employee_name,
-             p.title AS role, p.title AS roles, br.date, br.description,
-             br.amount, br.status, br.comments
-      FROM finance_budget_requests br
-      JOIN finance_employees e ON e.id=br.employee_id
-      LEFT JOIN finance_positions p ON p.id=e.position_id
-      WHERE (e.full_name ILIKE $1 OR COALESCE(p.title,'') ILIKE $1 OR COALESCE(br.description,'') ILIKE $1)
+      SELECT br.id, br.requested_by,
+             COALESCE(u.full_name, u.email, 'Unknown') AS name,
+             COALESCE(u.full_name, u.email, 'Unknown') AS employee_name,
+             u.role AS role, u.role AS roles,
+             'Budget Request' AS request_type,
+             br.request_date AS date,
+             br.justification AS description,
+             br.requested_amount AS amount, br.status, br.remarks AS comments,
+             br.title, br.department_project, br.date_needed, br.supporting_file, br.supporting_file_name,
+             br.created_at, br.updated_at
+      FROM budget_requests br
+      LEFT JOIN users u ON u.id=br.requested_by
+      WHERE (COALESCE(u.full_name,'') ILIKE $1 OR COALESCE(u.email,'') ILIKE $1 OR COALESCE(br.title,'') ILIKE $1 OR COALESCE(br.justification,'') ILIKE $1)
       ${statusSql}
-      ORDER BY br.date DESC, br.id DESC
+      ORDER BY br.created_at DESC, br.id DESC
     `, params);
     res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/budget/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT br.*, COALESCE(u.full_name, u.email, 'Unknown') AS employee_name, u.role
+      FROM budget_requests br
+      LEFT JOIN users u ON u.id=br.requested_by
+      WHERE br.id=$1
+    `, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Budget request not found' });
+    res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -2454,22 +2762,76 @@ app.put('/api/employee/budget/:id', ensureFinanceAccess, async (req, res) => {
 
 app.patch('/api/employee/:type/:id/action', ensureFinanceAccess, async (req, res) => {
   const table = req.params.type === 'reimburse'
-    ? 'finance_reimbursements'
+    ? 'reimbursement_requests'
     : req.params.type === 'budget'
-      ? 'finance_budget_requests'
-      : req.params.type === 'salary'
-        ? 'finance_salary_advances'
-        : null;
+      ? 'budget_requests'
+      : req.params.type === 'salary' || req.params.type === 'salary-advances'
+        ? 'salary_advance_requests'
+        : req.params.type === 'salary-increase'
+          ? 'salary_increase_requests'
+          : null;
   if (!table) return res.status(404).json({ error: 'Employee request type not found' });
   try {
-    const { status, comment } = req.body || {};
-    if (!status) return res.status(400).json({ error: 'status is required' });
-    const commentColumn = table === 'finance_salary_advances' ? 'remarks' : 'comments';
+    const { status, comment, comments } = req.body || {};
+    const normalizedStatus = status === 'Decline' ? 'Rejected' : status;
+    const allowedStatuses = new Set(['Pending', 'Approved', 'Rejected', 'Cancelled']);
+    if (normalizedStatus && !allowedStatuses.has(normalizedStatus)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    if (!normalizedStatus && comment === undefined && comments === undefined) {
+      return res.status(400).json({ error: 'status or comments is required' });
+    }
+    const nextComment = comment !== undefined ? comment : comments;
+    const setParts = [];
+    const values = [];
+    if (normalizedStatus) {
+      values.push(normalizedStatus);
+      setParts.push(`status=$${values.length}`);
+    }
+    if (nextComment !== undefined) {
+      values.push(String(nextComment || '').trim() || null);
+      setParts.push(`remarks=$${values.length}`);
+    }
+    values.push(req.params.id);
     const result = await pool.query(
-      `UPDATE ${table} SET status=$1, ${commentColumn}=$2, updated_at=NOW() WHERE id=$3 RETURNING *`,
-      [status, comment || null, req.params.id]
+      `UPDATE ${table} SET ${setParts.join(', ')}, updated_at=NOW() WHERE id=$${values.length} RETURNING *`,
+      values
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Request not found' });
+    res.json(result.rows[0]);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary-increase-requests', ensureFinanceAccess, async (req, res) => {
+  try {
+    const q = `%${String(req.query.search || '').trim()}%`;
+    const status = String(req.query.status || '').trim();
+    const params = [q];
+    const statusSql = status ? ` AND sir.status=$2` : '';
+    if (status) params.push(status);
+    const result = await pool.query(`
+      SELECT sir.id, sir.requested_by, COALESCE(u.full_name, u.email, 'Unknown') AS employee_name,
+             sir.department, sir.current_salary, sir.requested_salary, sir.effective_date,
+             sir.justification, sir.request_date, sir.status, sir.remarks, sir.created_at, sir.updated_at
+      FROM salary_increase_requests sir
+      LEFT JOIN users u ON u.id=sir.requested_by
+      WHERE (COALESCE(u.full_name,'') ILIKE $1 OR COALESCE(u.email,'') ILIKE $1 OR COALESCE(sir.justification,'') ILIKE $1)
+      ${statusSql}
+      ORDER BY sir.created_at DESC, sir.id DESC
+    `, params);
+    res.json(result.rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/employee/salary-increase-requests/:id', ensureFinanceAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT sir.*, COALESCE(u.full_name, u.email, 'Unknown') AS employee_name
+      FROM salary_increase_requests sir
+      LEFT JOIN users u ON u.id=sir.requested_by
+      WHERE sir.id=$1
+    `, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary increase request not found' });
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -2481,13 +2843,23 @@ app.get('/api/employee/salary-advances', ensureFinanceAccess, async (req, res) =
     const statusSql = status ? ` AND sa.status=$2` : '';
     if (status) params.push(status);
     const result = await pool.query(`
-      SELECT sa.id, e.full_name AS name, e.full_name AS employee_name,
-             sa.amount_borrowed, sa.remaining_balance, sa.date_borrowed,
-             sa.status, sa.remarks, sa.employee_id
-      FROM finance_salary_advances sa
-      JOIN finance_employees e ON e.id=sa.employee_id
-      WHERE e.full_name ILIKE $1 ${statusSql}
-      ORDER BY sa.date_borrowed DESC, sa.id DESC
+      SELECT sa.id, sa.requested_by,
+             COALESCE(u.full_name, u.email, 'Unknown') AS name,
+             COALESCE(u.full_name, u.email, 'Unknown') AS employee_name,
+             u.role AS role, u.role AS roles,
+             'Salary Advance Request' AS request_type,
+             sa.request_date AS date,
+             sa.reason AS description,
+             sa.requested_amount AS amount,
+             sa.requested_amount AS amount_borrowed,
+             sa.status, sa.remarks,
+             sa.deduction_start_date, sa.deduction_terms, sa.supporting_file, sa.supporting_file_name,
+             sa.created_at, sa.updated_at
+      FROM salary_advance_requests sa
+      LEFT JOIN users u ON u.id=sa.requested_by
+      WHERE (COALESCE(u.full_name,'') ILIKE $1 OR COALESCE(u.email,'') ILIKE $1 OR COALESCE(sa.reason,'') ILIKE $1)
+      ${statusSql}
+      ORDER BY sa.created_at DESC, sa.id DESC
     `, params);
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2495,8 +2867,13 @@ app.get('/api/employee/salary-advances', ensureFinanceAccess, async (req, res) =
 
 app.get('/api/employee/salary-advances/:id', ensureFinanceAccess, async (req, res) => {
   try {
-    const result = await pool.query(`SELECT * FROM finance_salary_advances WHERE id=$1`, [req.params.id]);
-    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance not found' });
+    const result = await pool.query(`
+      SELECT sa.*, COALESCE(u.full_name, u.email, 'Unknown') AS employee_name, u.role
+      FROM salary_advance_requests sa
+      LEFT JOIN users u ON u.id=sa.requested_by
+      WHERE sa.id=$1
+    `, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Salary advance request not found' });
     res.json(result.rows[0]);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -5484,7 +5861,7 @@ app.put('/api/users/:id/password', async (req, res) => {
       )
     `);
 
-    await pool.query(`
+await pool.query(`
   CREATE TABLE IF NOT EXISTS files_requests (
     id               SERIAL PRIMARY KEY,
     requested_by     INT REFERENCES users(id) ON DELETE SET NULL,
@@ -5506,6 +5883,82 @@ app.put('/api/users/:id/password', async (req, res) => {
     updated_at       TIMESTAMP DEFAULT NOW()
   )
 `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reimbursement_requests (
+        id             SERIAL PRIMARY KEY,
+        requested_by   INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date   DATE NOT NULL DEFAULT CURRENT_DATE,
+        department     CITEXT,
+        category       CITEXT NOT NULL,
+        amount         NUMERIC(12,2) NOT NULL,
+        expense_date   DATE NOT NULL,
+        purpose        TEXT NOT NULL,
+        receipt_path   TEXT NOT NULL,
+        receipt_name   TEXT,
+        status         CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                         LOWER(status) IN ('pending','approved','rejected','cancelled')
+                       ),
+        remarks        TEXT,
+        created_at     TIMESTAMP DEFAULT NOW(),
+        updated_at     TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS budget_requests (
+        id              SERIAL PRIMARY KEY,
+        requested_by    INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+        title           TEXT NOT NULL,
+        department_project TEXT,
+        requested_amount NUMERIC(12,2) NOT NULL,
+        date_needed     DATE NOT NULL,
+        justification   TEXT NOT NULL,
+        supporting_file TEXT,
+        supporting_file_name TEXT,
+        status          CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                          LOWER(status) IN ('pending','approved','rejected','cancelled')
+                        ),
+        remarks         TEXT,
+        created_at      TIMESTAMP DEFAULT NOW(),
+        updated_at      TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS salary_advance_requests (
+        id              SERIAL PRIMARY KEY,
+        requested_by    INT REFERENCES users(id) ON DELETE SET NULL,
+        request_date    DATE NOT NULL DEFAULT CURRENT_DATE,
+        requested_amount NUMERIC(12,2) NOT NULL,
+        reason          TEXT NOT NULL,
+        deduction_start_date DATE NOT NULL,
+        deduction_terms TEXT NOT NULL,
+        supporting_file TEXT,
+        supporting_file_name TEXT,
+        status          CITEXT NOT NULL DEFAULT 'Pending' CHECK (
+                          LOWER(status) IN ('pending','approved','rejected','cancelled')
+                        ),
+        remarks         TEXT,
+        created_at      TIMESTAMP DEFAULT NOW(),
+        updated_at      TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    for (const table of [
+      'leave_requests',
+      'id_requests',
+      'salary_increase_requests',
+      'files_requests',
+      'reimbursement_requests',
+      'budget_requests',
+      'salary_advance_requests'
+    ]) {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS handled_by_id INT REFERENCES users(id) ON DELETE SET NULL`);
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS handled_by_name TEXT`);
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS handled_at TIMESTAMP`);
+    }
 
     await pool.query(`
       CREATE OR REPLACE FUNCTION fn_touch_request_updated_at()
@@ -5535,6 +5988,27 @@ await pool.query(`DROP TRIGGER IF EXISTS trg_touch_files_requests ON files_reque
 await pool.query(`
   CREATE TRIGGER trg_touch_files_requests
   BEFORE UPDATE ON files_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+await pool.query(`DROP TRIGGER IF EXISTS trg_touch_reimbursement_requests ON reimbursement_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_reimbursement_requests
+  BEFORE UPDATE ON reimbursement_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+await pool.query(`DROP TRIGGER IF EXISTS trg_touch_budget_requests ON budget_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_budget_requests
+  BEFORE UPDATE ON budget_requests
+  FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
+`);
+
+await pool.query(`DROP TRIGGER IF EXISTS trg_touch_salary_advance_requests ON salary_advance_requests`);
+await pool.query(`
+  CREATE TRIGGER trg_touch_salary_advance_requests
+  BEFORE UPDATE ON salary_advance_requests
   FOR EACH ROW EXECUTE FUNCTION fn_touch_request_updated_at()
 `);
 
@@ -5814,13 +6288,204 @@ app.post('/api/users/:id/files-requests', filesRequestProofUpload.single('proof_
 // GET /api/users/:id/my-requests
 // Returns all leave, id, salary-increase, and files requests for the user,
 // merged into one array sorted by created_at DESC.
+const reimbursementReceiptUpload = multer({
+  storage: multer.diskStorage({
+    destination: function (req, file, cb) {
+      const dir = path.join(__dirname, 'public', 'uploads', 'reimbursements');
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: function (req, file, cb) {
+      const safe = String(file.originalname || 'receipt')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '');
+      cb(null, `${Date.now()}-${safe}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: function (req, file, cb) {
+    const name = String(file.originalname || '').toLowerCase();
+    const ok = file.mimetype.startsWith('image/') || file.mimetype === 'application/pdf' || name.endsWith('.pdf');
+    cb(ok ? null : new Error('Receipt/proof must be an image or PDF file'), ok);
+  }
+});
+
+app.post('/api/users/:id/reimbursement-requests', (req, res) => {
+  reimbursementReceiptUpload.single('receipt')(req, res, async (uploadErr) => {
+  if (uploadErr) {
+    return res.status(400).json({ error: uploadErr.message || 'Invalid receipt/proof file' });
+  }
+  const employeeId = Number(req.params.id);
+  const {
+    request_date,
+    department,
+    category,
+    amount,
+    expense_date,
+    purpose,
+    remarks
+  } = req.body || {};
+
+  if (!Number.isFinite(employeeId) || employeeId <= 0) {
+    return res.status(400).json({ error: 'Invalid user id' });
+  }
+  if (!request_date) {
+    return res.status(400).json({ error: 'request_date is required' });
+  }
+  if (!String(category || '').trim()) {
+    return res.status(400).json({ error: 'category is required' });
+  }
+  if (amount === undefined || amount === null || amount === '' || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'amount is required' });
+  }
+  if (!expense_date) {
+    return res.status(400).json({ error: 'expense_date is required' });
+  }
+  if (!String(purpose || '').trim()) {
+    return res.status(400).json({ error: 'purpose is required' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'receipt/proof is required' });
+  }
+
+  try {
+    const receiptPath = `/uploads/reimbursements/${req.file.filename}`;
+    const result = await pool.query(
+      `INSERT INTO reimbursement_requests
+       (requested_by, request_date, department, category, amount, expense_date, purpose, receipt_path, receipt_name, remarks)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       RETURNING *`,
+      [
+        employeeId,
+        request_date,
+        department || null,
+        String(category).trim(),
+        Number(amount),
+        expense_date,
+        String(purpose).trim(),
+        receiptPath,
+        req.file.originalname || null,
+        String(remarks || '').trim() || null
+      ]
+    );
+
+    res.status(201).json({ success: true, row: result.rows[0] });
+  } catch (err) {
+    console.error('POST /api/users/:id/reimbursement-requests error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+  });
+});
+
+const requestSupportUpload = multer({
+  storage: multer.diskStorage({
+    destination: function (req, file, cb) {
+      const dir = path.join(__dirname, 'public', 'uploads', 'request-support');
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: function (req, file, cb) {
+      const safe = String(file.originalname || 'supporting-file')
+        .replace(/\s+/g, '-')
+        .replace(/[^a-zA-Z0-9._-]/g, '');
+      cb(null, `${Date.now()}-${safe}`);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+app.post('/api/users/:id/budget-requests', (req, res) => {
+  requestSupportUpload.single('supporting_file')(req, res, async (uploadErr) => {
+    if (uploadErr) return res.status(400).json({ error: uploadErr.message || 'Invalid supporting file' });
+    const employeeId = Number(req.params.id);
+    const { request_date, title, department_project, requested_amount, date_needed, justification, remarks } = req.body || {};
+
+    if (!Number.isFinite(employeeId) || employeeId <= 0) return res.status(400).json({ error: 'Invalid user id' });
+    if (!request_date) return res.status(400).json({ error: 'request_date is required' });
+    if (!String(title || '').trim()) return res.status(400).json({ error: 'title is required' });
+    if (requested_amount === undefined || requested_amount === null || requested_amount === '' || Number(requested_amount) <= 0) {
+      return res.status(400).json({ error: 'requested_amount is required' });
+    }
+    if (!date_needed) return res.status(400).json({ error: 'date_needed is required' });
+    if (!String(justification || '').trim()) return res.status(400).json({ error: 'justification is required' });
+
+    try {
+      const filePath = req.file ? `/uploads/request-support/${req.file.filename}` : null;
+      const result = await pool.query(
+        `INSERT INTO budget_requests
+         (requested_by, request_date, title, department_project, requested_amount, date_needed, justification, supporting_file, supporting_file_name, remarks)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         RETURNING *`,
+        [
+          employeeId,
+          request_date,
+          String(title).trim(),
+          String(department_project || '').trim() || null,
+          Number(requested_amount),
+          date_needed,
+          String(justification).trim(),
+          filePath,
+          req.file?.originalname || null,
+          String(remarks || '').trim() || null
+        ]
+      );
+      res.status(201).json({ success: true, row: result.rows[0] });
+    } catch (err) {
+      console.error('POST /api/users/:id/budget-requests error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+});
+
+app.post('/api/users/:id/salary-advance-requests', (req, res) => {
+  requestSupportUpload.single('supporting_file')(req, res, async (uploadErr) => {
+    if (uploadErr) return res.status(400).json({ error: uploadErr.message || 'Invalid supporting file' });
+    const employeeId = Number(req.params.id);
+    const { request_date, requested_amount, reason, deduction_start_date, deduction_terms, remarks } = req.body || {};
+
+    if (!Number.isFinite(employeeId) || employeeId <= 0) return res.status(400).json({ error: 'Invalid user id' });
+    if (!request_date) return res.status(400).json({ error: 'request_date is required' });
+    if (requested_amount === undefined || requested_amount === null || requested_amount === '' || Number(requested_amount) <= 0) {
+      return res.status(400).json({ error: 'requested_amount is required' });
+    }
+    if (!String(reason || '').trim()) return res.status(400).json({ error: 'reason is required' });
+    if (!deduction_start_date) return res.status(400).json({ error: 'deduction_start_date is required' });
+    if (!String(deduction_terms || '').trim()) return res.status(400).json({ error: 'deduction_terms is required' });
+
+    try {
+      const filePath = req.file ? `/uploads/request-support/${req.file.filename}` : null;
+      const result = await pool.query(
+        `INSERT INTO salary_advance_requests
+         (requested_by, request_date, requested_amount, reason, deduction_start_date, deduction_terms, supporting_file, supporting_file_name, remarks)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING *`,
+        [
+          employeeId,
+          request_date,
+          Number(requested_amount),
+          String(reason).trim(),
+          deduction_start_date,
+          String(deduction_terms).trim(),
+          filePath,
+          req.file?.originalname || null,
+          String(remarks || '').trim() || null
+        ]
+      );
+      res.status(201).json({ success: true, row: result.rows[0] });
+    } catch (err) {
+      console.error('POST /api/users/:id/salary-advance-requests error:', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+});
+
 app.get('/api/users/:id/my-requests', async (req, res) => {
   const userId = Number(req.params.id);
   if (!Number.isFinite(userId) || userId <= 0) {
     return res.status(400).json({ error: 'Invalid user id' });
   }
   try {
-    const [leaves, idReqs, salaryReqs, filesReqs] = await Promise.all([
+    const [leaves, idReqs, salaryReqs, filesReqs, reimbursementReqs, budgetReqs, salaryAdvanceReqs] = await Promise.all([
       pool.query(
         `SELECT id, 'leave' AS type, leave_type AS subtype,
                 reason AS summary,
@@ -5857,6 +6522,33 @@ app.get('/api/users/:id/my-requests', async (req, res) => {
          ORDER BY created_at DESC`,
         [userId]
       ),
+      pool.query(
+        `SELECT id, 'reimbursement' AS type, category AS subtype,
+                purpose AS summary,
+                status, created_at, updated_at
+         FROM reimbursement_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'budget' AS type, title AS subtype,
+                justification AS summary,
+                status, created_at, updated_at
+         FROM budget_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
+      pool.query(
+        `SELECT id, 'salary_advance' AS type, 'salary advance' AS subtype,
+                reason AS summary,
+                status, created_at, updated_at
+         FROM salary_advance_requests
+         WHERE requested_by = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      ),
     ]);
 
     const all = [
@@ -5864,6 +6556,9 @@ app.get('/api/users/:id/my-requests', async (req, res) => {
       ...idReqs.rows,
       ...salaryReqs.rows,
       ...filesReqs.rows,
+      ...reimbursementReqs.rows,
+      ...budgetReqs.rows,
+      ...salaryAdvanceReqs.rows,
     ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     res.json(all);
@@ -5888,6 +6583,9 @@ app.put('/api/users/:id/my-requests/:type/:requestId/cancel', async (req, res) =
     id:     { table: 'id_requests',              ownerCol: 'requested_by' },
     salary: { table: 'salary_increase_requests', ownerCol: 'requested_by' },
     files:  { table: 'files_requests',           ownerCol: 'requested_by' },
+    reimbursement: { table: 'reimbursement_requests', ownerCol: 'requested_by' },
+    budget: { table: 'budget_requests', ownerCol: 'requested_by' },
+    salary_advance: { table: 'salary_advance_requests', ownerCol: 'requested_by' },
   };
 
   const meta = tableMap[type];
@@ -5980,7 +6678,7 @@ app.get('/api/users/:id/threads', async (req, res) => {
 
     // ── Fetch requests ──────────────────────────────────────────────────────
     if (filter === 'all' || filter === 'requests') {
-      const [leaves, idReqs, salaryReqs, filesReqs] = await Promise.all([
+      const [leaves, idReqs, salaryReqs, filesReqs, reimbursementReqs, budgetReqs, salaryAdvanceReqs] = await Promise.all([
         pool.query(
           `SELECT id, 'leave' AS req_type, leave_type AS subtype, reason AS summary,
                   status, submitted_at AS created_at, updated_at, employee_id AS owner_id
@@ -6005,10 +6703,28 @@ app.get('/api/users/:id/threads', async (req, res) => {
            FROM files_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
           [userId]
         ),
+        pool.query(
+          `SELECT id, 'reimbursement' AS req_type, category AS subtype, purpose AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM reimbursement_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'budget' AS req_type, title AS subtype, justification AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM budget_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
+        pool.query(
+          `SELECT id, 'salary_advance' AS req_type, 'salary advance' AS subtype, reason AS summary,
+                  status, created_at, updated_at, requested_by AS owner_id
+           FROM salary_advance_requests WHERE requested_by = $1 ORDER BY created_at DESC`,
+          [userId]
+        ),
       ]);
 
-      const typeLabels = { leave: 'Leave Request', id: 'ID Request', salary: 'Salary Increase', files: 'Files Request' };
-      const allReqs = [...leaves.rows, ...idReqs.rows, ...salaryReqs.rows, ...filesReqs.rows];
+      const typeLabels = { leave: 'Leave Request', id: 'ID Request', salary: 'Salary Increase', files: 'Files Request', reimbursement: 'Reimbursement Request', budget: 'Budget Request', salary_advance: 'Salary Advance Request' };
+      const allReqs = [...leaves.rows, ...idReqs.rows, ...salaryReqs.rows, ...filesReqs.rows, ...reimbursementReqs.rows, ...budgetReqs.rows, ...salaryAdvanceReqs.rows];
 
       for (const r of allReqs) {
         const statusLower = (r.status || 'pending').toLowerCase();
@@ -6210,14 +6926,17 @@ app.get('/api/users/:id/threads/:threadId', async (req, res) => {
     // ── Request thread ─────────────────────────────────────────────────────
     if (threadId.startsWith('req_')) {
       const parts = threadId.replace('req_', '').split('_');
-      const reqType = parts[0];
-      const reqId = Number(parts[1]);
+      const reqId = Number(parts.pop());
+      const reqType = parts.join('_');
 
       const tableMap = {
         leave:  { table: 'leave_requests',           ownerCol: 'employee_id',  label: 'Leave Request'    },
         id:     { table: 'id_requests',              ownerCol: 'requested_by', label: 'ID Request'       },
         salary: { table: 'salary_increase_requests', ownerCol: 'requested_by', label: 'Salary Increase'  },
         files:  { table: 'files_requests',           ownerCol: 'requested_by', label: 'Files Request'    },
+        reimbursement: { table: 'reimbursement_requests', ownerCol: 'requested_by', label: 'Reimbursement Request' },
+        budget: { table: 'budget_requests', ownerCol: 'requested_by', label: 'Budget Request' },
+        salary_advance: { table: 'salary_advance_requests', ownerCol: 'requested_by', label: 'Salary Advance Request' },
       };
       const meta = tableMap[reqType];
       if (!meta) return res.status(400).json({ error: 'Invalid request type' });
@@ -6273,7 +6992,7 @@ app.get('/api/users/:id/threads/:threadId', async (req, res) => {
         });
       }
 
-      const subtype = req_row.leave_type || req_row.id_type || req_row.document_name || '';
+      const subtype = req_row.leave_type || req_row.id_type || req_row.document_name || req_row.category || req_row.title || '';
       return res.json({
         thread_id: threadId,
         type: 'request',

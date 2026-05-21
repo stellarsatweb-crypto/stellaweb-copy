@@ -26,6 +26,7 @@ const DASHBOARD_BY_ROLE = {
   admin: "/modules/admin/admin-dashboard.html",
   finance: "/modules/finance/finance-dashboard.html",
   noc: "/modules/noc/noc-dashboard.html",
+  bidder: "/modules/noc/noc-dashboard.html",
 };
 
 function getDashboardPathForRole(role) {

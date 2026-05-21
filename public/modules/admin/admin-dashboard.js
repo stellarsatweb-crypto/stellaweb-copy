@@ -6,6 +6,14 @@ const adminUser = (() => {
 let adminStaffIds = [];
 let adminStaffSearch = "";
 let adminStaffStatus = "all";
+let adminAccounts = [];
+let adminAccountSearch = "";
+let adminExpandedAccountId = null;
+let adminRequests = [];
+let adminRequestSearch = "";
+let adminRequestRole = "all";
+let adminRequestStatus = "all";
+const ADMIN_STAFF_ID_ROLES = ["noc", "finance", "admin", "bidder"];
 
 function adminHeaders() {
   return {
@@ -34,6 +42,60 @@ function adminEsc(value) {
     '"': "&quot;",
     "'": "&#39;"
   }[char]));
+}
+
+function adminCleanCurrentPage(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.toLowerCase() === "signed in") return "—";
+
+  const pageLabels = {
+    dashboard: "Dashboard",
+    map: "Map",
+    terminals: "Terminals",
+    "problematic-sites": "Problematic Sites",
+    acceptance: "Acceptance",
+    ticket: "Ticket",
+    reports: "Reports",
+    files: "Files",
+    inventory: "Inventory",
+    settings: "Settings",
+    "accounts-monitoring": "Accounts Monitoring",
+    "user-requests": "User Requests",
+    "staff-ids": "Staff IDs",
+    collections: "Collections",
+    employee: "Employee",
+    "financial-report": "Financial Report",
+    "company-income": "Company Income",
+    "company-expenses": "Company Expenses",
+    "project-expenses": "Project Expenses",
+    "salary-increase": "Salary Increase"
+  };
+
+  const slugToLabel = slug => {
+    const clean = String(slug || "")
+      .replace(/([a-z])([A-Z])/g, "$1-$2")
+      .toLowerCase()
+      .replace(/_/g, "-")
+      .replace(/^(admin|noc|finance)-/, "");
+    return pageLabels[clean] || clean.split("-").filter(Boolean)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  };
+
+  const route = raw.includes(":") ? raw.slice(raw.indexOf(":") + 1) : raw;
+  try {
+    const url = new URL(route, window.location.origin);
+    const pageParam = url.searchParams.get("page");
+    if (pageParam) return slugToLabel(pageParam);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const last = parts[parts.length - 1] || "";
+    const withoutExt = last.replace(/\.(html?|php)$/i, "");
+    if (/dashboard$/i.test(withoutExt) && parts.length > 1) return "Dashboard";
+    return withoutExt ? slugToLabel(withoutExt) : "—";
+  } catch {
+    const clean = route.split("?")[0].split("/").filter(Boolean).pop() || route;
+    return clean ? slugToLabel(clean) : "—";
+  }
 }
 
 function ensureAdminStylesheet(id, href) {
@@ -573,11 +635,180 @@ function adminRoleLabel(role) {
   if (key === "noc") return "NOC";
   if (key === "finance") return "Finance";
   if (key === "admin") return "Admin";
+  if (key === "bidder") return "Bidder";
   return role || "-";
 }
 
 function adminStatusClass(status) {
   return String(status || "unused").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function adminFormatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function adminRequestStatusClass(status) {
+  const key = String(status || "pending").toLowerCase();
+  if (key === "approved" || key === "released" || key === "returned") return "approved";
+  if (key === "rejected" || key === "cancelled") return "rejected";
+  return "pending";
+}
+
+function adminRequestGroupLabel(role) {
+  const key = String(role || "other").toLowerCase();
+  if (key === "noc") return "NOC Requests";
+  if (key === "finance") return "Finance Requests";
+  if (key === "admin") return "Admin Requests";
+  if (key === "bidder") return "Bidder Requests";
+  return "Other Requests";
+}
+
+function adminHumanizeKey(key) {
+  return String(key || "")
+    .replace(/_id$/i, " ID")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, char => char.toUpperCase());
+}
+
+function adminFormatDetailValue(key, value) {
+  if (value === null || value === undefined || value === "") return "&mdash;";
+  const keyLower = String(key || "").toLowerCase();
+  if (keyLower.includes("date") || keyLower.endsWith("_at")) return adminEsc(adminFormatDateTime(value));
+  if (keyLower.includes("amount") || keyLower.includes("salary")) return adminEsc(adminMoney(value));
+  if (keyLower.includes("attachment") || keyLower.includes("proof") || keyLower.includes("receipt") || keyLower.includes("supporting_file")) {
+    const href = String(value);
+    return `<a href="${adminEsc(href)}" target="_blank" rel="noopener">${adminEsc(href.split("/").pop() || "View file")}</a>`;
+  }
+  return adminEsc(value);
+}
+
+function adminRequestDateRequested(request) {
+  return request.request_date || request.submitted_at || request.created_at || request.requested_at || null;
+}
+
+function adminRequestFieldIcon(key) {
+  const k = String(key || "").toLowerCase();
+  if (k.includes("amount") || k.includes("salary")) return "ri-money-dollar-circle-line";
+  if (k.includes("date")) return "ri-calendar-line";
+  if (k.includes("department") || k.includes("position")) return "ri-building-4-line";
+  if (k.includes("reason") || k.includes("purpose") || k.includes("justification") || k.includes("summary")) return "ri-file-text-line";
+  if (k.includes("remarks") || k.includes("terms")) return "ri-chat-3-line";
+  if (k.includes("category") || k.includes("type")) return "ri-price-tag-3-line";
+  return "ri-file-list-3-line";
+}
+
+function adminRequestFieldConfig(type) {
+  return {
+    leave: [
+      ["Department", "department"], ["Position", "position"], ["Leave Type", "leave_type"],
+      ["Start Date", "start_date"], ["End Date", "end_date"], ["Number of Days", "number_of_days"],
+      ["Purpose / Reason", "reason"], ["Remarks", "remarks"]
+    ],
+    id: [
+      ["Department", "department"], ["ID Type", "id_type"], ["Purpose / Reason", "purpose"], ["Remarks", "remarks"]
+    ],
+    salary: [
+      ["Department", "department"], ["Current Salary", "current_salary"], ["Requested Salary", "requested_salary"],
+      ["Effective Date", "effective_date"], ["Purpose / Reason", "justification"], ["Remarks", "remarks"]
+    ],
+    files: [
+      ["Department", "department"], ["Document Name", "document_name"], ["Purpose / Reason", "purpose"],
+      ["Request Action", "request_action"], ["Copy Type", "copy_type"]
+    ],
+    reimbursement: [
+      ["Department", "department"], ["Reimbursement Category", "category"], ["Amount", "amount"],
+      ["Expense Date", "expense_date"], ["Purpose / Reason", "purpose"], ["Remarks", "remarks"]
+    ],
+    budget: [
+      ["Budget Title / Purpose", "title"], ["Department / Project", "department_project"],
+      ["Requested Amount", "requested_amount"], ["Date Needed", "date_needed"],
+      ["Reason / Justification", "justification"], ["Remarks", "remarks"]
+    ],
+    salary_advance: [
+      ["Requested Amount", "requested_amount"], ["Reason", "reason"],
+      ["Deduction Start Date", "deduction_start_date"], ["Deduction Terms / Number of Cutoffs", "deduction_terms"],
+      ["Remarks", "remarks"]
+    ]
+  }[String(type || "").toLowerCase()] || [];
+}
+
+function adminRequestFileItems(request) {
+  const pairs = [
+    ["Attachment", request.attachment, request.attachment_name],
+    ["Receipt / Proof", request.receipt_path, request.receipt_name],
+    ["Supporting File", request.supporting_file, request.supporting_file_name],
+    ["Proof of Return", request.proof_of_return, request.proof_of_return_name]
+  ];
+  return pairs.filter(([, href]) => href).map(([label, href, name]) => ({
+    label,
+    href: String(href),
+    name: String(name || href).split("/").pop()
+  }));
+}
+
+function adminRenderRequestField(label, key, value) {
+  return `
+    <div class="admin-request-detail-field">
+      <i class="${adminRequestFieldIcon(key)}"></i>
+      <div>
+        <span>${adminEsc(label)}</span>
+        <strong>${adminFormatDetailValue(key, value)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function adminRenderRequestFile(file) {
+  const isImage = /\.(png|jpe?g|gif|webp|bmp)$/i.test(file.href);
+  const ext = (file.name.split(".").pop() || "file").toUpperCase();
+  return `
+    <div class="admin-request-file-card">
+      <div class="admin-request-file-preview">
+        ${isImage
+          ? `<img src="${adminEsc(file.href)}" alt="${adminEsc(file.name)}">`
+          : `<i class="ri-file-text-line"></i>`}
+      </div>
+      <div>
+        <span>${adminEsc(file.label)}</span>
+        <strong>${adminEsc(file.name || "Open file")}</strong>
+        <small>${adminEsc(ext)} &bull; Size unavailable</small>
+      </div>
+      <a href="${adminEsc(file.href)}" target="_blank" rel="noopener">
+        <i class="ri-download-2-line"></i> Open
+      </a>
+    </div>
+  `;
+}
+
+function adminRequestTimeline(request) {
+  const submittedAt = adminRequestDateRequested(request);
+  const decidedAt = request.handled_at || request.updated_at;
+  const decidedBy = request.handled_by || request.handled_by_name || "—";
+  const status = String(request.status || "Pending");
+  const finalLabel = status.toLowerCase() === "rejected" ? "Rejected"
+    : status.toLowerCase() === "approved" ? "Approved"
+    : status;
+  return [
+    { cls: "submitted", label: "Submitted", user: request.full_name || "Requester", date: submittedAt },
+    { cls: "review", label: "Under Review", user: decidedBy !== "—" ? decidedBy : "Admin team", date: submittedAt },
+    { cls: adminRequestStatusClass(status), label: finalLabel, user: decidedBy, date: decidedAt }
+  ];
+}
+
+function adminRenderTimelineItem(item) {
+  return `
+    <div class="admin-request-timeline-item ${item.cls}">
+      <span></span>
+      <div>
+        <strong>${adminEsc(item.label)}</strong>
+        <p>${adminEsc(item.user || "—")}</p>
+        <small>${adminEsc(adminFormatDateTime(item.date))}</small>
+      </div>
+    </div>
+  `;
 }
 
 function loadAdminStaffIds() {
@@ -601,9 +832,7 @@ function loadAdminStaffIds() {
           <label>
             <span>Assigned System Role</span>
             <select name="assigned_role" required>
-              <option value="noc">NOC</option>
-              <option value="finance">Finance</option>
-              <option value="admin">Admin</option>
+              ${ADMIN_STAFF_ID_ROLES.map(role => `<option value="${role}">${adminEsc(adminRoleLabel(role))}</option>`).join("")}
             </select>
           </label>
           <button class="admin-action-btn primary" type="submit"><i class="ri-add-line"></i> Create Staff ID</button>
@@ -722,6 +951,14 @@ async function createAdminStaffId(event) {
   const btn = form.querySelector("button[type='submit']");
   const body = Object.fromEntries(new FormData(form).entries());
   if (message) message.textContent = "";
+  body.assigned_role = String(body.assigned_role || "").trim().toLowerCase();
+  if (!ADMIN_STAFF_ID_ROLES.includes(body.assigned_role)) {
+    if (message) {
+      message.className = "admin-staff-message error";
+      message.textContent = "Assigned role must be NOC, Finance, Admin, or Bidder.";
+    }
+    return;
+  }
   btn.disabled = true;
   try {
     const res = await fetch("/api/admin/staff-ids", {
@@ -762,9 +999,474 @@ async function disableAdminStaffId(id) {
   }
 }
 
+function loadAdminAccountsMonitoring() {
+  mainContent.innerHTML = `
+    <div class="admin-page admin-monitor-page">
+      <div class="admin-header">
+        <div class="admin-header-title">
+          <div class="admin-header-icon"><i class="ri-pulse-line"></i></div>
+          <div>
+            <h2>Accounts Monitoring</h2>
+            <p>Track all user accounts, activity status, and current module.</p>
+          </div>
+        </div>
+      </div>
+      <div class="admin-panel admin-monitor-panel">
+        <div class="admin-staff-toolbar">
+          <h3>User Accounts</h3>
+          <div class="admin-staff-filters">
+            <input id="adminAccountSearch" type="search" placeholder="Search accounts..." value="${adminEsc(adminAccountSearch)}">
+          </div>
+        </div>
+        <div id="adminAccountsHost" class="admin-table-host"><div class="admin-empty"><i class="ri-loader-4-line spin"></i> Loading accounts...</div></div>
+      </div>
+    </div>
+  `;
+  document.getElementById("adminAccountSearch")?.addEventListener("input", event => {
+    adminAccountSearch = event.target.value.trim();
+    clearTimeout(window.__adminAccountSearchTimer);
+    window.__adminAccountSearchTimer = setTimeout(fetchAdminAccounts, 220);
+  });
+  fetchAdminAccounts();
+}
+
+async function fetchAdminAccounts() {
+  const host = document.getElementById("adminAccountsHost");
+  if (!host) return;
+  const params = new URLSearchParams();
+  if (adminAccountSearch) params.set("search", adminAccountSearch);
+  try {
+    const res = await fetch(`/api/admin/accounts-monitoring?${params.toString()}`, { headers: adminHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Unable to load accounts.");
+    adminAccounts = Array.isArray(data) ? data : [];
+    renderAdminAccounts();
+  } catch (err) {
+    host.innerHTML = `<div class="admin-empty"><i class="ri-error-warning-line"></i> ${adminEsc(err.message || "Failed to load accounts.")}</div>`;
+  }
+}
+
+function renderAdminAccounts() {
+  const host = document.getElementById("adminAccountsHost");
+  if (!host) return;
+  if (!adminAccounts.length) {
+    host.innerHTML = `<div class="admin-empty"><i class="ri-user-search-line"></i> No accounts found.</div>`;
+    return;
+  }
+  if (adminExpandedAccountId && !adminAccounts.some(row => String(row.id) === String(adminExpandedAccountId))) {
+    adminExpandedAccountId = null;
+  }
+  host.innerHTML = `
+    <div class="admin-staff-table-wrap admin-monitor-table-wrap">
+      <table class="admin-staff-table admin-monitor-table">
+        <thead>
+          <tr>
+            <th>Full Name</th>
+            <th>Role</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${adminAccounts.map(row => {
+            const isOpen = String(adminExpandedAccountId) === String(row.id);
+            const currentPage = adminCleanCurrentPage(row.current_page);
+            return `
+            <tr class="admin-account-row ${isOpen ? "is-open" : ""}" data-account-row="${adminEsc(row.id)}" tabindex="0">
+              <td>
+                <div class="admin-account-id-cell">
+                  <button class="admin-account-chevron" type="button" aria-label="${isOpen ? "Collapse" : "Expand"} account details" aria-expanded="${isOpen}">
+                    <i class="ri-arrow-down-s-line"></i>
+                  </button>
+                  <strong>${adminEsc(row.full_name || "-")}</strong>
+                </div>
+              </td>
+              <td>${adminEsc(adminRoleLabel(row.role))}</td>
+              <td><span class="admin-activity-status ${adminStatusClass(row.activity_status)}">${adminEsc(row.activity_status || "Offline")}</span></td>
+            </tr>
+            <tr class="admin-account-detail-row ${isOpen ? "show" : ""}">
+              <td colspan="3">
+                <div class="admin-account-detail-card">
+                  <div class="admin-account-detail-item">
+                    <span>User ID</span>
+                    <strong>${adminEsc(row.id_no || row.id)}</strong>
+                  </div>
+                  <div class="admin-account-detail-item">
+                    <span>Email</span>
+                    <strong>${adminEsc(row.email || "—")}</strong>
+                  </div>
+                  <div class="admin-account-detail-item">
+                    <span>Last Active</span>
+                    <strong>${adminEsc(adminFormatDateTime(row.last_active))}</strong>
+                  </div>
+                  <div class="admin-account-detail-item">
+                    <span>Current Page</span>
+                    <strong>${adminEsc(currentPage)}</strong>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  host.querySelectorAll("[data-account-row]").forEach(rowEl => {
+    const toggle = () => {
+      const id = rowEl.dataset.accountRow;
+      adminExpandedAccountId = String(adminExpandedAccountId) === String(id) ? null : id;
+      renderAdminAccounts();
+    };
+    rowEl.addEventListener("click", toggle);
+    rowEl.addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggle();
+      }
+    });
+  });
+}
+
+function loadAdminUserRequests() {
+  mainContent.innerHTML = `
+    <div class="admin-page admin-requests-page">
+      <div class="admin-header">
+        <div class="admin-header-title">
+          <div class="admin-header-icon"><i class="ri-inbox-archive-line"></i></div>
+          <div>
+            <h2>User Requests</h2>
+            <p>Review user-submitted requests grouped by role.</p>
+          </div>
+        </div>
+      </div>
+      <div class="admin-panel admin-monitor-panel">
+        <div class="admin-staff-toolbar">
+          <h3>Requests</h3>
+          <div class="admin-staff-filters">
+            <input id="adminRequestSearch" type="search" placeholder="Search requests..." value="${adminEsc(adminRequestSearch)}">
+            <select id="adminRequestRole">
+              <option value="all" ${adminRequestRole === "all" ? "selected" : ""}>All Roles</option>
+              <option value="noc" ${adminRequestRole === "noc" ? "selected" : ""}>NOC</option>
+              <option value="finance" ${adminRequestRole === "finance" ? "selected" : ""}>Finance</option>
+              <option value="admin" ${adminRequestRole === "admin" ? "selected" : ""}>Admin</option>
+              <option value="bidder" ${adminRequestRole === "bidder" ? "selected" : ""}>Bidder</option>
+            </select>
+            <select id="adminRequestStatus">
+              <option value="all" ${adminRequestStatus === "all" ? "selected" : ""}>All Status</option>
+              <option value="pending" ${adminRequestStatus === "pending" ? "selected" : ""}>Pending</option>
+              <option value="approved" ${adminRequestStatus === "approved" ? "selected" : ""}>Approved</option>
+              <option value="rejected" ${adminRequestStatus === "rejected" ? "selected" : ""}>Rejected</option>
+              <option value="cancelled" ${adminRequestStatus === "cancelled" ? "selected" : ""}>Cancelled</option>
+            </select>
+          </div>
+        </div>
+        <div id="adminRequestsHost" class="admin-table-host"><div class="admin-empty"><i class="ri-loader-4-line spin"></i> Loading requests...</div></div>
+      </div>
+    </div>
+  `;
+  document.getElementById("adminRequestSearch")?.addEventListener("input", event => {
+    adminRequestSearch = event.target.value.trim();
+    clearTimeout(window.__adminRequestSearchTimer);
+    window.__adminRequestSearchTimer = setTimeout(fetchAdminRequests, 220);
+  });
+  document.getElementById("adminRequestRole")?.addEventListener("change", event => {
+    adminRequestRole = event.target.value;
+    fetchAdminRequests();
+  });
+  document.getElementById("adminRequestStatus")?.addEventListener("change", event => {
+    adminRequestStatus = event.target.value;
+    fetchAdminRequests();
+  });
+  fetchAdminRequests();
+}
+
+async function fetchAdminRequests() {
+  const host = document.getElementById("adminRequestsHost");
+  if (!host) return;
+  const params = new URLSearchParams();
+  if (adminRequestSearch) params.set("search", adminRequestSearch);
+  if (adminRequestRole !== "all") params.set("role", adminRequestRole);
+  if (adminRequestStatus !== "all") params.set("status", adminRequestStatus);
+  try {
+    const res = await fetch(`/api/admin/user-requests?${params.toString()}`, { headers: adminHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Unable to load requests.");
+    adminRequests = Array.isArray(data) ? data : [];
+    renderAdminRequests();
+  } catch (err) {
+    host.innerHTML = `<div class="admin-empty"><i class="ri-error-warning-line"></i> ${adminEsc(err.message || "Failed to load requests.")}</div>`;
+  }
+}
+
+function renderAdminRequests() {
+  const host = document.getElementById("adminRequestsHost");
+  if (!host) return;
+  if (!adminRequests.length) {
+    host.innerHTML = `<div class="admin-empty"><i class="ri-inbox-line"></i> No user requests found.</div>`;
+    return;
+  }
+  const groups = adminRequests.reduce((acc, row) => {
+    const label = adminRequestGroupLabel(row.role);
+    (acc[label] ||= []).push(row);
+    return acc;
+  }, {});
+  host.innerHTML = Object.entries(groups).map(([label, rows]) => `
+    <div class="admin-request-group">
+      <div class="admin-request-group-title">${adminEsc(label)} <span>${rows.length}</span></div>
+      <div class="admin-staff-table-wrap admin-monitor-table-wrap">
+        <table class="admin-staff-table admin-monitor-table">
+          <thead>
+            <tr>
+              <th>Employee/User Name</th>
+              <th>Role</th>
+              <th>Request Type</th>
+              <th>Status</th>
+              <th>Approved/Reviewed By</th>
+              <th>Status Update</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(row => `
+              <tr>
+                <td>
+                  <button class="admin-request-name-btn" type="button" data-request-row="${adminEsc(row.request_key)}:${row.id}">
+                    <span>${adminEsc(row.full_name || "-")}</span>
+                    <small>${adminEsc(row.email || "")}</small>
+                  </button>
+                </td>
+                <td>${adminEsc(adminRoleLabel(row.role))}</td>
+                <td>${adminEsc(row.request_type || "-")}</td>
+                <td><span class="admin-request-status ${adminRequestStatusClass(row.status)}">${adminEsc(row.status || "Pending")}</span></td>
+                <td>${adminEsc(row.handled_by || "—")}</td>
+                <td>
+                  <div class="admin-row-actions">
+                    <select class="admin-status-select" data-request-status="${adminEsc(row.request_key)}:${row.id}">
+                      ${["Pending", "Approved", "Rejected", "Cancelled"].map(status => `<option value="${status}" ${String(row.status).toLowerCase() === status.toLowerCase() ? "selected" : ""}>${status}</option>`).join("")}
+                    </select>
+                  </div>
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `).join("");
+  host.querySelectorAll("[data-request-row]").forEach(btn => {
+    const openDetails = () => {
+      const [type, id] = btn.dataset.requestRow.split(":");
+      showAdminRequestDetails(type, id);
+    };
+    btn.addEventListener("click", openDetails);
+  });
+  host.querySelectorAll("[data-request-status]").forEach(select => {
+    select.addEventListener("click", event => event.stopPropagation());
+    select.addEventListener("change", event => {
+      event.stopPropagation();
+      updateAdminRequestStatus(select.dataset.requestStatus, select.value);
+    });
+  });
+}
+
+async function updateAdminRequestStatus(key, status) {
+  const [type, id] = key.split(":");
+  try {
+    const res = await fetch(`/api/admin/user-requests/${type}/${id}/status`, {
+      method: "PATCH",
+      headers: adminHeaders(),
+      body: JSON.stringify({
+        status,
+        handledById: adminUser?.id || null,
+        handledByName: adminUser?.full_name || adminUser?.name || ""
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Unable to update request status.");
+    fetchAdminRequests();
+  } catch (err) {
+    alert(err.message || "Failed to update request status.");
+    fetchAdminRequests();
+  }
+}
+
+async function showAdminRequestDetails(type, id) {
+  try {
+    const res = await fetch(`/api/admin/user-requests/${type}/${id}`, { headers: adminHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Unable to load request details.");
+    showAdminRequestDetailsModal(data);
+  } catch (err) {
+    const fallback = adminRequests.find(row => row.request_key === type && String(row.id) === String(id));
+    if (fallback) {
+      showAdminRequestDetailsModal(fallback);
+      return;
+    }
+    console.error("Unable to load request details.", err);
+  }
+}
+
+function showAdminRequestDetailsModal(request) {
+  document.getElementById("adminInfoModal")?.remove();
+  const requestKey = String(request.request_key || "").toLowerCase();
+  const dateRequested = adminRequestDateRequested(request);
+  const reviewedBy = request.handled_by || request.handled_by_name || "—";
+  const fields = adminRequestFieldConfig(requestKey);
+  const files = adminRequestFileItems(request);
+  const timeline = adminRequestTimeline(request);
+  const statusKey = String(request.status || "Pending").toLowerCase();
+  const noteSource = request.remarks || request.summary || request.justification || request.reason || request.purpose || "";
+  const configuredKeys = new Set(fields.map(([, key]) => key));
+  const hiddenKeys = new Set([
+    "id", "requested_by", "employee_id", "handled_by_id", "handled_by_name", "handled_by",
+    "full_name", "email", "role", "request_key", "request_type", "request_id", "status",
+    "handled_at", "created_at", "updated_at", "submitted_at", "request_date", "requested_at",
+    "attachment", "attachment_name", "receipt_path", "receipt_name", "supporting_file",
+    "supporting_file_name", "proof_of_return", "proof_of_return_name"
+  ]);
+  const extraRows = Object.entries(request)
+    .filter(([key, value]) => !hiddenKeys.has(key) && !configuredKeys.has(key) && value !== null && value !== undefined && value !== "")
+    .map(([key, value]) => adminRenderRequestField(adminHumanizeKey(key), key, value));
+  const detailModal = document.createElement("div");
+  detailModal.className = "admin-info-modal";
+  detailModal.id = "adminInfoModal";
+  detailModal.innerHTML = `
+    <div class="admin-info-card admin-request-details-card">
+      <div class="admin-info-head admin-request-details-head">
+        <div>
+          <h3>${adminEsc(request.request_type || "Request Details")}</h3>
+          <p>${adminEsc(request.full_name || "—")} &bull; ${adminEsc(adminRoleLabel(request.role))}</p>
+        </div>
+        <span class="admin-request-status ${adminRequestStatusClass(request.status)}">${adminEsc(request.status || "Pending")}</span>
+        <button type="button" aria-label="Close"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="admin-info-body admin-request-details-body">
+        <section class="admin-request-info-strip">
+          ${[
+            ["ri-hashtag", "Request ID", request.request_id || `${request.request_key}-${request.id}`],
+            ["ri-checkbox-circle-line", "Status", request.status || "Pending"],
+            ["ri-calendar-line", "Date Requested", adminFormatDateTime(dateRequested)],
+            ["ri-user-star-line", "Reviewed/Decided By", reviewedBy],
+            ["ri-time-line", "Decided Date", adminFormatDateTime(request.handled_at)]
+          ].map(([icon, label, value]) => `
+            <div class="admin-request-info-card">
+              <i class="${icon}"></i>
+              <div><span>${adminEsc(label)}</span><strong>${adminEsc(value || "—")}</strong></div>
+            </div>
+          `).join("")}
+        </section>
+        <section class="admin-request-detail-section">
+          <h4>Request Summary</h4>
+          <div class="admin-request-detail-grid">
+            ${adminRenderRequestField("Request ID", "request_id", request.request_id || `${request.request_key}-${request.id}`)}
+            ${adminRenderRequestField("Employee/User Name", "full_name", request.full_name || "—")}
+            ${adminRenderRequestField("Role", "role", adminRoleLabel(request.role))}
+            ${adminRenderRequestField("Date Requested", "date_requested", dateRequested)}
+            ${adminRenderRequestField("Reviewed/Processed By", "handled_by", reviewedBy)}
+            ${adminRenderRequestField("Reviewed/Handled Date", "handled_at", request.handled_at)}
+          </div>
+        </section>
+        <section class="admin-request-detail-section">
+          <h4>Submitted Request Form</h4>
+          <div class="admin-request-detail-grid">
+            ${fields.map(([label, key]) => adminRenderRequestField(label, key, request[key])).join("")}
+            ${extraRows.join("")}
+          </div>
+        </section>
+        <section class="admin-request-detail-section">
+          <h4>Uploaded Files / Proofs</h4>
+          <div class="admin-request-files-grid">
+            ${files.length ? files.map(adminRenderRequestFile).join("") : `<div class="admin-request-no-file">No uploaded file attached.</div>`}
+          </div>
+        </section>
+        <section class="admin-request-detail-section">
+          <h4><i class="ri-time-line"></i> Request Timeline</h4>
+          <div class="admin-request-timeline">
+            ${timeline.map(adminRenderTimelineItem).join("")}
+          </div>
+        </section>
+        ${["approved", "rejected"].includes(statusKey) ? `
+          <section class="admin-request-decision-note ${statusKey}">
+            <strong>${statusKey === "approved" ? "Approval Note" : "Rejection Note"}</strong>
+            <p>${adminEsc(noteSource || (statusKey === "approved" ? "Request has been approved." : "Request has been rejected."))}</p>
+          </section>
+        ` : ""}
+      </div>
+    </div>
+  `;
+  detailModal.querySelector("button")?.addEventListener("click", () => detailModal.remove());
+  detailModal.addEventListener("click", event => { if (event.target === detailModal) detailModal.remove(); });
+  document.body.appendChild(detailModal);
+  return;
+  const skip = new Set([
+    "id", "requested_by", "employee_id", "handled_by_id", "handled_by_name",
+    "full_name", "email", "role", "request_key", "request_type", "request_id", "handled_by"
+  ]);
+  const baseRows = [
+    ["Request ID", adminEsc(request.request_id || `${request.request_key}-${request.id}`)],
+    ["Employee/User Name", adminEsc(request.full_name || "—")],
+    ["Role", adminEsc(adminRoleLabel(request.role))],
+    ["Request Type", adminEsc(request.request_type || "—")],
+    ["Date Requested", adminEsc(adminFormatDateTime(request.request_date || request.submitted_at || request.created_at))],
+    ["Status", adminEsc(request.status || "Pending")],
+    ["Handled By", adminEsc(request.handled_by || request.handled_by_name || "—")],
+    ["Handled At", adminEsc(adminFormatDateTime(request.handled_at))]
+  ];
+  const detailRows = Object.entries(request)
+    .filter(([key]) => !skip.has(key) && !["created_at", "updated_at", "submitted_at", "request_date", "status", "handled_at"].includes(key))
+    .map(([key, value]) => [adminHumanizeKey(key), adminFormatDetailValue(key, value)]);
+  const modal = document.createElement("div");
+  modal.className = "admin-info-modal";
+  modal.id = "adminInfoModal";
+  modal.innerHTML = `
+    <div class="admin-info-card admin-request-details-card">
+      <div class="admin-info-head">
+        <h3>Request Details</h3>
+        <button type="button" aria-label="Close"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="admin-info-body admin-request-details-grid">
+        ${[...baseRows, ...detailRows].map(([label, value]) => `
+          <div class="admin-info-row">
+            <span>${adminEsc(label)}</span>
+            <strong>${value}</strong>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+  modal.querySelector("button")?.addEventListener("click", () => modal.remove());
+  modal.addEventListener("click", event => { if (event.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
+function showAdminInfoModal(title, rows) {
+  document.getElementById("adminInfoModal")?.remove();
+  const modal = document.createElement("div");
+  modal.className = "admin-info-modal";
+  modal.id = "adminInfoModal";
+  modal.innerHTML = `
+    <div class="admin-info-card">
+      <div class="admin-info-head">
+        <h3>${adminEsc(title)}</h3>
+        <button type="button" aria-label="Close"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="admin-info-body">
+        ${rows.map(([label, value]) => `
+          <div class="admin-info-row"><span>${adminEsc(label)}</span><strong>${adminEsc(value || "-")}</strong></div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+  modal.querySelector("button")?.addEventListener("click", () => modal.remove());
+  modal.addEventListener("click", event => { if (event.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
 window.ADMIN_PAGE_DEFS = {
   adminDashboard: { label: "Admin Dashboard", icon: "ri-shield-user-line", loader: () => loadAdminDashboard() },
   staffIds: { label: "Staff ID Management", icon: "ri-id-card-line", loader: () => loadAdminStaffIds() },
+  accountsMonitoring: { label: "Accounts Monitoring", icon: "ri-pulse-line", loader: () => loadAdminAccountsMonitoring() },
+  userRequests: { label: "User Requests", icon: "ri-inbox-archive-line", loader: () => loadAdminUserRequests() },
   nocDashboard: { label: "NOC Dashboard", icon: "ri-dashboard-line", loader: () => loadAdminNocView("dashboard", "Dashboard") },
   nocMap: { label: "Map", icon: "ri-map-2-line", loader: () => loadAdminNocView("map", "Map") },
   nocTerminals: { label: "Terminals", icon: "ri-terminal-line", loader: () => loadAdminNocView("terminals", "Terminals") },
@@ -788,7 +1490,7 @@ window.ADMIN_PAGE_DEFS = {
 };
 
 window.ADMIN_SIDEBAR_SECTIONS = [
-  { label: "Main", pages: ["adminDashboard", "staffIds"] },
+  { label: "Main", pages: ["adminDashboard", "staffIds", "accountsMonitoring", "userRequests"] },
   {
     label: "Modules",
     groups: [
@@ -804,6 +1506,8 @@ window.ADMIN_START_PAGE = "adminDashboard";
 const ADMIN_VIEW_BY_PAGE = {
   adminDashboard: "admin-dashboard",
   staffIds: "staff-ids",
+  accountsMonitoring: "accounts-monitoring",
+  userRequests: "user-requests",
   nocDashboard: "noc-dashboard",
   nocMap: "noc-map",
   nocTerminals: "noc-terminals",

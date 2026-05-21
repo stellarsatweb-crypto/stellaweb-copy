@@ -2241,28 +2241,6 @@ async function loadFinancialReport() {
             <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;" id="rpHeaderSub">Yearly summary and breakdown</p>
           </div>
         </div>
-        <!-- Controls on right -->
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <select id="rpYearSel" class="pe-filter-select">${yearOpts}</select>
-          <select id="rpMonthSel" class="pe-filter-select">
-            <option value="">All Months</option>
-            ${["January","February","March","April","May","June","July","August","September","October","November","December"]
-              .map((m,i)=>`<option value="${String(i+1).padStart(2,'0')}">${m}</option>`).join("")}
-          </select>
-          <button onclick="rpExportExcel()"
-            style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;
-                   background:rgba(255,255,255,.12);color:white;border:1.5px solid rgba(255,255,255,.25);
-                   border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;">
-            <i class="ri-file-excel-2-line"></i> Export Excel
-          </button>
-          <button onclick="rpPrint()"
-            style="display:inline-flex;align-items:center;gap:6px;padding:9px 16px;
-                   background:white;color:#1e3a6e;border:none;
-                   border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;
-                   box-shadow:0 4px 14px rgba(0,0,0,.2);">
-            <i class="ri-printer-line"></i> Print / PDF
-          </button>
-        </div>
         </div>
       </div>
 
@@ -2290,23 +2268,32 @@ async function loadFinancialReport() {
     <div class="page-tab-row">
       <div class="page-tabs">
         <!-- Financial report has no sub-tabs — title only -->
-        <span style="font-size:13px;font-weight:800;color:#1e3a6e;display:flex;align-items:center;gap:8px;">
-          <i class="ri-bar-chart-2-line" style="color:#2d5fa8;"></i> Monthly Breakdown
-        </span>
+        <span class="finance-report-controls-icon"><i class="ri-filter-3-line"></i></span>
+        <div>
+          <strong>Report Controls</strong>
+          <span>Adjust the period, export the report, or print a clean copy.</span>
+        </div>
       </div>
-      <div class="page-tab-controls">
+      <div class="finance-report-controls-actions">
         <select id="rpYearSel" class="pe-filter-select">${yearOpts}</select>
         <select id="rpMonthSel" class="pe-filter-select">
           <option value="">All Months</option>
           <option value="01">January</option><option value="02">February</option><option value="03">March</option><option value="04">April</option><option value="05">May</option><option value="06">June</option><option value="07">July</option><option value="08">August</option><option value="09">September</option><option value="10">October</option><option value="11">November</option><option value="12">December</option>
         </select>
-        <button onclick="rpExportExcel()" class="pe-apply-btn" style="background:linear-gradient(135deg,#1e3a6e,#2d5fa8);border:none;">
-          <i class="ri-file-excel-2-line"></i> Export Excel
-        </button>
-        <button onclick="rpExportCSV()" class="pe-clear-btn">
-          <i class="ri-file-text-line"></i> CSV
-        </button>
-        <button onclick="rpPrint()" class="pe-apply-btn" style="background:#16a34a;border:none;">
+        <div class="rp-export-wrap">
+          <button onclick="rpToggleExportMenu(event)" class="rp-export-btn" type="button" aria-haspopup="true" aria-expanded="false">
+            <i class="ri-download-2-line"></i> Export <i class="ri-arrow-down-s-line"></i>
+          </button>
+          <div id="rpExportMenu" class="rp-export-menu" role="menu">
+            <button onclick="rpExportExcel(); rpCloseExportMenu();" type="button" role="menuitem">
+              <i class="ri-file-excel-2-line"></i> Export as Excel
+            </button>
+            <button onclick="rpExportCSV(); rpCloseExportMenu();" type="button" role="menuitem">
+              <i class="ri-file-text-line"></i> Export as CSV
+            </button>
+          </div>
+        </div>
+        <button onclick="rpPrint()" class="rp-print-btn" type="button">
           <i class="ri-printer-line"></i> Print
         </button>
       </div>
@@ -2371,8 +2358,8 @@ async function loadFinancialReport() {
         </span>
         <span id="rpTableLabel" style="color:rgba(255,255,255,.6);font-size:12px;font-weight:600;"></span>
       </div>
-      <div style="overflow-x:auto;">
-        <table id="rpTable" style="width:100%;border-collapse:collapse;font-size:13px;">
+      <div class="finance-report-table-scroll">
+        <table id="rpTable" class="finance-report-monthly-table" style="width:100%;border-collapse:collapse;font-size:13px;">
           <thead>
             <tr style="background:rgba(184,212,236,.45);">
               <th style="padding:12px 20px;text-align:left;font-size:10.5px;font-weight:900;color:#1e3a6e;text-transform:uppercase;letter-spacing:.8px;">Month</th>
@@ -2407,6 +2394,30 @@ async function loadFinancialReport() {
 }
 
 /* ── Load all data ── */
+function rpCloseExportMenu() {
+  const menu = document.getElementById("rpExportMenu");
+  const btn = document.querySelector(".rp-export-btn");
+  if (menu) menu.classList.remove("show");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function rpToggleExportMenu(event) {
+  if (event) event.stopPropagation();
+  const menu = document.getElementById("rpExportMenu");
+  const btn = document.querySelector(".rp-export-btn");
+  if (!menu) return;
+  const shouldOpen = !menu.classList.contains("show");
+  menu.classList.toggle("show", shouldOpen);
+  if (btn) btn.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+}
+
+if (!window.__financeReportExportMenuBound) {
+  document.addEventListener("click", e => {
+    if (!e.target.closest?.(".rp-export-wrap")) rpCloseExportMenu();
+  });
+  window.__financeReportExportMenuBound = true;
+}
+
 async function rpLoad() {
   const p = new URLSearchParams({ year: rpFilterYear });
   if (rpFilterMonth) p.set("month", rpFilterMonth);
@@ -2960,6 +2971,31 @@ async function rpExportExcel() {
 }
 
 /* ── Print / PDF ── */
+function rpExportCSV() {
+  const table = document.getElementById("rpTable");
+  if (!table) { showToast("No data to export.", "error"); return; }
+
+  const months = ["","January","February","March","April","May","June","July","August","September","October","November","December"];
+  const period = rpFilterMonth ? `${months[parseInt(rpFilterMonth)]}_${rpFilterYear}` : `Full_Year_${rpFilterYear}`;
+  const rows = [...table.querySelectorAll("tr")].map(tr =>
+    [...tr.querySelectorAll("th,td")].map(cell => {
+      const value = cell.textContent.trim().replace(/\s+/g, " ");
+      return `"${value.replace(/"/g, '""')}"`;
+    }).join(",")
+  );
+
+  const blob = new Blob(["\ufeff" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Financial_Report_${period}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast("CSV exported successfully.", "success");
+}
+
 function rpPrint() {
   const months = ["","January","February","March","April","May","June","July","August","September","October","November","December"];
   const period = rpFilterMonth ? `${months[parseInt(rpFilterMonth)]} ${rpFilterYear}` : `Full Year ${rpFilterYear}`;
@@ -2973,26 +3009,31 @@ function rpPrint() {
   <title>Financial Report — ${period}</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box;font-family:"Inter","Segoe UI",Arial,sans-serif;}
-    body{padding:36px;color:#1e293b;background:#fff;}
-    .header{background:linear-gradient(135deg,#0f2147,#1e3a6e);color:white;padding:24px 28px;border-radius:12px;margin-bottom:24px;}
-    .header h1{font-size:22px;font-weight:900;margin-bottom:4px;}
-    .header p{font-size:13px;opacity:.65;}
+    body{padding:36px;color:#111827;background:#fff;}
+    .header{background:#fff;color:#111827;padding:0 0 18px;border-bottom:2px solid #dbe4ef;margin-bottom:22px;}
+    .header h1{font-size:22px;font-weight:900;margin-bottom:6px;color:#10233f;}
+    .header p{font-size:12.5px;color:#64748b;}
     .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:24px;}
-    .kpi{border-radius:10px;padding:14px 16px;color:white;}
-    .kpi-lbl{font-size:10px;font-weight:700;opacity:.75;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;}
-    .kpi-val{font-size:17px;font-weight:900;}
-    table{width:100%;border-collapse:collapse;font-size:12.5px;}
-    th{background:#1e3a6e;color:white;padding:10px 14px;text-align:right;font-size:10px;text-transform:uppercase;letter-spacing:.5px;}
+    .kpi{border-radius:10px;padding:13px 14px;color:#111827!important;background:#fff!important;border:1px solid #d9e4f2;}
+    .kpi-lbl{font-size:9.5px;font-weight:800;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px;}
+    .kpi-val{font-size:15px;font-weight:900;color:#111827!important;}
+    table{width:100%;border-collapse:collapse;font-size:11.5px;background:#fff;border:1px solid #dbe4ef;}
+    th{background:#eef4fb!important;color:#22324a!important;padding:9px 11px;text-align:right;font-size:9.5px;text-transform:uppercase;letter-spacing:.45px;border-bottom:1px solid #dbe4ef;}
     th:first-child{text-align:left;}
-    td{padding:10px 14px;border-bottom:1px solid #e2e8f0;text-align:right;}
-    td:first-child{text-align:left;font-weight:700;color:#1e3a6e;}
-    tr:nth-child(even){background:#f8fafc;}
-    tfoot td{background:#0f2147;color:white;font-weight:800;padding:12px 14px;}
-    .footer{margin-top:20px;font-size:11px;color:#94a3b8;text-align:center;}
-    @media print{body{padding:18px;}}
+    td{padding:9px 11px;border-bottom:1px solid #e5edf6;text-align:right;color:#1f2937!important;background:transparent!important;}
+    td:first-child{text-align:left;font-weight:700;color:#1e3a6e!important;}
+    tr:nth-child(even){background:#f8fafc!important;}
+    tfoot td{background:#f1f5f9!important;color:#111827!important;font-weight:900;padding:11px;}
+    .footer{margin-top:20px;font-size:10.5px;color:#64748b;text-align:center;border-top:1px solid #e5edf6;padding-top:12px;}
+    @media print{
+      *{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+      body{padding:14mm;background:#fff!important;}
+      .header,.kpi,tr{break-inside:avoid;}
+      table{page-break-inside:auto;}
+    }
   </style></head><body>
   <div class="header">
-    <h1>&#x1F4CA; Financial Report</h1>
+    <h1>Financial Report</h1>
     <p>Period: ${period} &nbsp;&bull;&nbsp; Generated: ${new Date().toLocaleDateString("en-PH",{dateStyle:"long"})}</p>
   </div>
   <div class="kpis">
@@ -3764,10 +3805,11 @@ let empActionId      = null;
 let empRmbFilterStatus = "";
 let empBdgFilterStatus = "";
 let empSalFilterStatus = "";
+let empIncFilterStatus = "";
 
 function loadEmployee() {
   empActiveTab = "reimburse";
-  empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = "";
+  empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = empIncFilterStatus = "";
 
   getFinanceMainContent().innerHTML = `
   <div class="finance-page-shell finance-employee-page" style="background:#f0f4fa;min-height:100%;">
@@ -3784,7 +3826,7 @@ function loadEmployee() {
           </div>
           <div>
             <h2 style="font-size:22px;font-weight:800;color:white;margin:0;letter-spacing:-.3px;">Employee</h2>
-            <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Manage reimbursements, budgets, salary advances and payroll</p>
+            <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Review employee requests, salary advances, salary increases and payroll</p>
           </div>
         </div>
         <div class="search-box" style="max-width:300px;background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);">
@@ -3797,9 +3839,10 @@ function loadEmployee() {
     <!-- Tabs row — tabs left, filters + Add button right -->
     <div class="page-tab-row" id="empActionRow">
       <div class="page-tabs">
-        <button class="exp-tab active" id="empTabRmb" onclick="empSwitchTab('reimburse')">Reimburse</button>
-        <button class="exp-tab"        id="empTabBdg" onclick="empSwitchTab('budget')">Request of Budget</button>
+        <button class="exp-tab active" id="empTabRmb" onclick="empSwitchTab('reimburse')">Reimbursements</button>
+        <button class="exp-tab"        id="empTabBdg" onclick="empSwitchTab('budget')">Budget Requests</button>
         <button class="exp-tab"        id="empTabSal" onclick="empSwitchTab('salary')">Salary Advances</button>
+        <button class="exp-tab"        id="empTabInc" onclick="empSwitchTab('salary-increase')">Salary Increase</button>
         <button class="exp-tab"        id="empTabEmp" onclick="empSwitchTab('employee-salary')">Employee Salary</button>
       </div>
       <div class="page-tab-controls">
@@ -3815,16 +3858,36 @@ function loadEmployee() {
 
     <!-- Table card -->
     <div style="padding:0 32px 32px;">
-      <div class="finance-table-card" style="background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
-        <div id="empBanner"
-          style="background:linear-gradient(135deg,#1a3460,#1e3a6e,#2a52a0);color:white;text-align:center;
-                 font-size:16px;font-weight:700;padding:18px 24px;letter-spacing:1px;">
-          Employee Reimburse
+      <div class="finance-table-card emp-request-card">
+        <div class="emp-request-card-head">
+          <div class="emp-request-title-block">
+            <div class="emp-request-eyebrow">Finance Requests</div>
+            <h3 id="empBanner">Reimbursements</h3>
+            <p id="empBannerSub">Review and manage employee reimbursement requests.</p>
+          </div>
+          <div class="emp-request-stats" id="empRequestStats">
+            <div class="emp-request-stat">
+              <span>Total Requests</span>
+              <strong id="empTotalCount">0</strong>
+            </div>
+            <div class="emp-request-stat pending">
+              <span>Pending</span>
+              <strong id="empPendingCount">0</strong>
+            </div>
+            <div class="emp-request-stat approved">
+              <span>Approved</span>
+              <strong id="empApprovedCount">0</strong>
+            </div>
+            <div class="emp-request-stat rejected">
+              <span>Rejected</span>
+              <strong id="empRejectedCount">0</strong>
+            </div>
+          </div>
         </div>
-        <div style="overflow-x:auto;">
-          <table style="width:100%;border-collapse:collapse;">
+        <div class="emp-request-table-wrap">
+          <table class="emp-request-table">
             <thead>
-              <tr id="empThead" style="background:linear-gradient(90deg,rgba(184,212,236,.6),rgba(184,212,236,.3));"></tr>
+              <tr id="empThead"></tr>
             </thead>
             <tbody id="empTbody"></tbody>
           </table>
@@ -3841,25 +3904,36 @@ function loadEmployee() {
 /* ── Tab switch ── */
 function empSwitchTab(tab) {
   empActiveTab = tab;
-  ["Rmb","Bdg","Sal","Emp"].forEach(t => {
+  ["Rmb","Bdg","Sal","Inc","Emp"].forEach(t => {
     const b = document.getElementById("empTab"+t); if (b) b.classList.remove("active");
   });
-  const map = { reimburse:"Rmb", budget:"Bdg", salary:"Sal", "employee-salary":"Emp" };
+  const map = { reimburse:"Rmb", budget:"Bdg", salary:"Sal", "salary-increase":"Inc", "employee-salary":"Emp" };
   const ab = document.getElementById("empTab"+(map[tab]||"")); if (ab) ab.classList.add("active");
 
-  const banners = { reimburse:"Employee Reimburse", budget:"Budget Requests",
-                    salary:"Salary Advances", "employee-salary":"Employee Salary" };
+  const banners = { reimburse:"Reimbursements", budget:"Budget Requests",
+                    salary:"Salary Advances", "salary-increase":"Salary Increase Requests", "employee-salary":"Employee Salary" };
+  const subtitles = {
+    reimburse: "Review and manage employee reimbursement requests.",
+    budget: "Review and manage employee budget requests.",
+    salary: "Review and manage employee salary advance requests.",
+    "salary-increase": "Review and manage employee salary increase requests.",
+    "employee-salary": "Manage employee salary records and payroll periods.",
+  };
   const bn = document.getElementById("empBanner"); if (bn) bn.textContent = banners[tab]||"";
+  const sub = document.getElementById("empBannerSub"); if (sub) sub.textContent = subtitles[tab] || "";
+  const stats = document.getElementById("empRequestStats");
+  if (stats) stats.style.display = tab === "employee-salary" ? "none" : "grid";
 
   const heads = {
-    reimburse:         ["Name","Role","Date","Description","Amount","Status","Comments","Action"],
-    budget:            ["Name","Role","Date","Description","Amount","Status","Comments","Action"],
-    salary:            ["Name","Amount Borrowed","Remaining Balance","Date Borrowed","Status","Actions"],
+    reimburse:         ["Employee Name","Request Type","Amount","Purpose / Reason","Date Requested","Status","Actions"],
+    budget:            ["Employee Name","Request Type","Amount","Purpose / Reason","Date Requested","Status","Actions"],
+    salary:            ["Employee Name","Request Type","Amount","Purpose / Reason","Date Requested","Status","Actions"],
+    "salary-increase": ["Employee Name","Request Type","Amount","Purpose / Reason","Date Requested","Status","Actions"],
     "employee-salary": ["Employee Name","Position","Department","Current Salary","Period","Payroll Date","Actions"],
   };
   const tr = document.getElementById("empThead");
   if (tr) tr.innerHTML = (heads[tab]||[]).map(h =>
-    `<th style="padding:14px 20px;text-align:center;font-size:12px;font-weight:700;color:#1e3a6e;text-transform:uppercase;letter-spacing:.5px;">${h}</th>`
+    `<th>${h}</th>`
   ).join("");
 
   // Filters + Add button visibility
@@ -3873,6 +3947,8 @@ function empSwitchTab(tab) {
       al.innerHTML = empStatusFilterHTML("empBdgStatus", empBdgFilterStatus, "empApplyBdgFilter", "empClearBdgFilter");
     } else if (tab === "salary") {
       al.innerHTML = empStatusFilterHTML("empSalStatus", empSalFilterStatus, "empApplySalFilter", "empClearSalFilter");
+    } else if (tab === "salary-increase") {
+      al.innerHTML = empStatusFilterHTML("empIncStatus", empIncFilterStatus, "empApplyIncFilter", "empClearIncFilter");
     } else if (tab === "employee-salary") {
       al.innerHTML = `
         <input type="date" id="empEmpFrom"
@@ -3907,8 +3983,8 @@ function empStatusFilterHTML(selectId, currentVal, applyFn, clearFn) {
       <option value="" ${!currentVal?"selected":""}>All Status</option>
       <option value="Pending"  ${currentVal==="Pending" ?"selected":""}>Pending</option>
       <option value="Approved" ${currentVal==="Approved"?"selected":""}>Approved</option>
-      <option value="Done"     ${currentVal==="Done"    ?"selected":""}>Done</option>
-      <option value="Decline"  ${currentVal==="Decline" ?"selected":""}>Decline</option>
+      <option value="Rejected" ${currentVal==="Rejected"?"selected":""}>Rejected</option>
+      <option value="Cancelled" ${currentVal==="Cancelled"?"selected":""}>Cancelled</option>
     </select>`;
 }
 
@@ -3940,6 +4016,16 @@ function empApplySalFilter() {
 function empClearSalFilter() {
   empSalFilterStatus = "";
   const el = document.getElementById("empSalStatus"); if (el) el.value = "";
+  empRefresh();
+}
+// Filter - Salary Increase
+function empApplyIncFilter() {
+  empIncFilterStatus = document.getElementById("empIncStatus")?.value || "";
+  empRefresh();
+}
+function empClearIncFilter() {
+  empIncFilterStatus = "";
+  const el = document.getElementById("empIncStatus"); if (el) el.value = "";
   empRefresh();
 }
 // Filter — Employee Salary
@@ -3974,6 +4060,10 @@ async function empRefresh() {
       let url = `/api/employee/reimburse?search=${encodeURIComponent(q)}`;
       if (empRmbFilterStatus) url += `&status=${encodeURIComponent(empRmbFilterStatus)}`;
       const rows = await financeStandaloneApi("GET", url);
+      empUpdateRequestSummary(rows);
+      if (!rows.length) { tbody.innerHTML = empNoData(7); return; }
+      tbody.innerHTML = empRenderRequestRows(rows, "reimburse");
+      return;
       if (!rows.length) { tbody.innerHTML = empNoData(8); return; }
       tbody.innerHTML = rows.map(r => {
         const statusCls = r.status==="Done"||r.status==="Approved" ? "completed"
@@ -4005,6 +4095,10 @@ async function empRefresh() {
       let url = `/api/employee/budget?search=${encodeURIComponent(q)}`;
       if (empBdgFilterStatus) url += `&status=${encodeURIComponent(empBdgFilterStatus)}`;
       const rows = await financeStandaloneApi("GET", url);
+      empUpdateRequestSummary(rows);
+      if (!rows.length) { tbody.innerHTML = empNoData(7); return; }
+      tbody.innerHTML = empRenderRequestRows(rows, "budget");
+      return;
       if (!rows.length) { tbody.innerHTML = empNoData(8); return; }
       tbody.innerHTML = rows.map(r => {
         const statusCls = r.status==="Done"||r.status==="Approved" ? "completed"
@@ -4036,6 +4130,10 @@ async function empRefresh() {
       let url = `/api/employee/salary-advances?search=${encodeURIComponent(q)}`;
       if (empSalFilterStatus) url += `&status=${encodeURIComponent(empSalFilterStatus)}`;
       const rows = await financeStandaloneApi("GET", url);
+      empUpdateRequestSummary(rows);
+      if (!rows.length) { tbody.innerHTML = empNoData(7); return; }
+      tbody.innerHTML = empRenderRequestRows(rows, "salary");
+      return;
       if (!rows.length) { tbody.innerHTML = empNoData(6); return; }
       // Clear any expanded state on refresh
       salExpandedRows.clear();
@@ -4067,11 +4165,50 @@ async function empRefresh() {
         </tr>`;
       }).join("");
 
+    } else if (empActiveTab === "salary-increase") {
+      let url = `/api/employee/salary-increase-requests?search=${encodeURIComponent(q)}`;
+      if (empIncFilterStatus) url += `&status=${encodeURIComponent(empIncFilterStatus)}`;
+      const rows = await financeStandaloneApi("GET", url);
+      empUpdateRequestSummary(rows);
+      if (!rows.length) { tbody.innerHTML = empNoData(7); return; }
+      tbody.innerHTML = empRenderRequestRows(rows, "salary-increase");
+      return;
+      if (!rows.length) { tbody.innerHTML = empNoData(7); return; }
+      tbody.innerHTML = rows.map(r => {
+        const statusCls = r.status==="Approved" ? "completed"
+                        : r.status==="Rejected"||r.status==="Decline" ? "overdue" : "progress";
+        const nameEsc = (r.employee_name||"").replace(/'/g,"&apos;");
+        const remEsc  = (r.remarks||"").replace(/'/g,"&apos;");
+        return `<tr style="border-bottom:1px solid #eef2f8;transition:background .15s;" onmouseover="this.style.background='#f8faff'" onmouseout="this.style.background=''">
+          <td style="padding:16px 20px;text-align:center;font-weight:600;">${r.employee_name||"&mdash;"}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:700;">${r.current_salary == null ? "&mdash;" : "&#8369;" + Number(r.current_salary).toLocaleString("en-PH",{minimumFractionDigits:2})}</td>
+          <td style="padding:16px 20px;text-align:center;font-weight:800;color:#1e3a6e;">&#8369;${Number(r.requested_salary||0).toLocaleString("en-PH",{minimumFractionDigits:2})}</td>
+          <td style="padding:16px 20px;text-align:center;max-width:260px;word-break:break-word;">${r.justification||"&mdash;"}</td>
+          <td style="padding:16px 20px;text-align:center;">${empFmtDate(r.request_date || r.created_at)}</td>
+          <td style="padding:16px 20px;text-align:center;">
+            <span class="badge ${statusCls}">${r.status||"Pending"}</span>
+          </td>
+          <td style="padding:16px 20px;text-align:center;">
+            <div style="display:flex;gap:6px;justify-content:center;align-items:center;flex-wrap:wrap;">
+              <button onclick="empOpenSalaryIncreaseView('${r.id}')"
+                style="display:inline-flex;align-items:center;gap:4px;padding:6px 11px;background:#eef6ff;color:#1e3a6e;border:1.5px solid #c8d8e8;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">
+                <i class="ri-eye-line"></i> View
+              </button>
+              <button onclick="empOpenAction('salary-increase','${r.id}','${nameEsc}','${remEsc}')"
+                style="display:inline-flex;align-items:center;gap:4px;padding:6px 11px;background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;">
+                <i class="ri-check-line"></i> Action
+              </button>
+            </div>
+          </td>
+        </tr>`;
+      }).join("");
+
     } else if (empActiveTab === "employee-salary") {
       let url = `/api/employee/employee-salary?search=${encodeURIComponent(q)}`;
       if (empEmpFilterPer) url += `&period_start=${empEmpFilterPer}`;
       if (empEmpFilterEnd) url += `&period_end=${empEmpFilterEnd}`;
       const rows = await financeStandaloneApi("GET", url);
+      empUpdateRequestSummary(rows);
       if (!rows.length) { tbody.innerHTML = empNoData(7); return; }
       tbody.innerHTML = rows.map(r => `
         <tr style="border-bottom:1px solid #eef2f8;transition:background .15s;" onmouseover="this.style.background='#f8faff'" onmouseout="this.style.background=''">
@@ -4103,17 +4240,29 @@ async function empRefresh() {
     }
 
   } catch(err) {
-    const cols = {reimburse:8, budget:8, salary:6, "employee-salary":7}[empActiveTab]||8;
+    const cols = {reimburse:7, budget:7, salary:7, "salary-increase":7, "employee-salary":7}[empActiveTab]||7;
     tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center;padding:40px;color:#dc2626;">Error loading data: ${err.message}</td></tr>`;
   }
 }
 
 function empLoadingRow() {
-  const cols = {reimburse:8, budget:8, salary:6, "employee-salary":7}[empActiveTab]||8;
+  const cols = {reimburse:7, budget:7, salary:7, "salary-increase":7, "employee-salary":7}[empActiveTab]||7;
   return `<tr><td colspan="${cols}" style="text-align:center;padding:40px;color:#9ca3af;">Loading...</td></tr>`;
 }
 function empNoData(cols) {
   return `<tr><td colspan="${cols}" style="text-align:center;padding:44px;color:#94a3b8;">No records found.</td></tr>`;
+}
+function empUpdateRequestSummary(rows) {
+  const totalEl = document.getElementById("empTotalCount");
+  const pendingEl = document.getElementById("empPendingCount");
+  const approvedEl = document.getElementById("empApprovedCount");
+  const rejectedEl = document.getElementById("empRejectedCount");
+  const rowsArr = Array.isArray(rows) ? rows : [];
+  const countByStatus = status => rowsArr.filter(r => String(r.status || 'Pending').toLowerCase() === status).length;
+  if (totalEl) totalEl.textContent = rowsArr.length;
+  if (pendingEl) pendingEl.textContent = countByStatus('pending');
+  if (approvedEl) approvedEl.textContent = countByStatus('approved');
+  if (rejectedEl) rejectedEl.textContent = countByStatus('rejected');
 }
 function empEmptyRows(count, cols, total) {
   const n = Math.max(0, total - count);
@@ -4122,17 +4271,287 @@ function empEmptyRows(count, cols, total) {
   ).join("");
 }
 function empFmtDate(d) {
-  if (!d) return "—";
+  if (!d) return "&mdash;";
   try { return new Date(d).toLocaleDateString("en-PH",{month:"short",day:"numeric",year:"numeric"}); }
   catch { return d; }
 }
 
+function empRequestStatusCls(status) {
+  const s = String(status || '').toLowerCase();
+  if (s === 'approved' || s === 'done') return 'completed';
+  if (s === 'rejected' || s === 'decline' || s === 'cancelled') return 'overdue';
+  return 'progress';
+}
+
+function empMoney(value) {
+  if (value === null || value === undefined || value === '') return '&mdash;';
+  return `&#8369;${Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2 })}`;
+}
+
+function empJsString(value) {
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, ' ');
+}
+
+function empInitials(name) {
+  const parts = String(name || 'U').trim().split(/\s+/).filter(Boolean);
+  return ((parts[0]?.[0] || 'U') + (parts[1]?.[0] || '')).toUpperCase();
+}
+
+function empAvatarTone(seed) {
+  const tones = ['blue', 'green', 'violet', 'gold', 'cyan'];
+  const n = String(seed || '').split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+  return tones[n % tones.length];
+}
+
+function empRequestEndpoint(type, id = '') {
+  const base = {
+    reimburse: '/api/employee/reimburse',
+    budget: '/api/employee/budget',
+    salary: '/api/employee/salary-advances',
+    'salary-increase': '/api/employee/salary-increase-requests',
+  }[type] || '';
+  return id ? `${base}/${id}` : base;
+}
+
+function empCloseActionMenus() {
+  document.querySelectorAll('.emp-request-menu.show').forEach(menu => {
+    menu.classList.remove('show');
+    menu.style.left = '';
+    menu.style.top = '';
+  });
+}
+
+function empToggleActionMenu(event, key) {
+  event.stopPropagation();
+  const menu = document.getElementById(`empReqMenu_${key}`);
+  const isOpen = menu?.classList.contains('show');
+  empCloseActionMenus();
+  if (menu && !isOpen) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    menu.classList.add('show');
+    const menuRect = menu.getBoundingClientRect();
+    const left = Math.min(window.innerWidth - menuRect.width - 12, Math.max(12, rect.right - menuRect.width));
+    const top = Math.min(window.innerHeight - menuRect.height - 12, rect.bottom + 8);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+}
+
+if (!window.__empRequestMenuOutsideBound) {
+  document.addEventListener('click', event => {
+    if (!event.target.closest?.('.emp-request-menu-wrap')) empCloseActionMenus();
+  });
+  window.__empRequestMenuOutsideBound = true;
+}
+
+function empRenderRequestRows(rows, type) {
+  return rows.map(r => {
+    const employee = r.employee_name || r.name || 'Unknown';
+    const employeeId = r.id_no || `REQ-${String(r.id || '').padStart(4, '0')}`;
+    const requestType = r.request_type || ({
+      reimburse: 'Reimbursement Request',
+      budget: 'Budget Request',
+      salary: 'Salary Advance Request',
+      'salary-increase': 'Salary Increase Request',
+    }[type] || 'Request');
+    const amount = type === 'salary-increase' ? r.requested_salary : r.amount;
+    const reason = r.description || r.purpose || r.reason || r.justification || '&mdash;';
+    const comment = r.comments || r.remarks || '';
+    const employeeArg = escapeHtml(empJsString(employee));
+    const commentArg = escapeHtml(empJsString(comment));
+    const statusArg = escapeHtml(empJsString(r.status || 'Pending'));
+    return `<tr>
+      <td>
+        <div class="emp-request-person">
+          <div class="emp-request-avatar ${empAvatarTone(employee)}">${escapeHtml(empInitials(employee))}</div>
+          <div>
+            <strong>${escapeHtml(employee)}</strong>
+            <span>ID: ${escapeHtml(employeeId)}</span>
+          </div>
+        </div>
+      </td>
+      <td><span class="emp-request-type-pill"><i class="ri-wallet-3-line"></i>${escapeHtml(requestType)}</span></td>
+      <td class="emp-request-amount">${empMoney(amount)}</td>
+      <td><span class="emp-request-reason" title="${reason === '&mdash;' ? '' : escapeHtml(reason)}">${reason === '&mdash;' ? reason : escapeHtml(reason)}</span></td>
+      <td class="emp-request-date">${empFmtDate(r.date || r.request_date || r.created_at)}</td>
+      <td><span class="emp-request-status ${empRequestStatusCls(r.status)}">${escapeHtml(r.status || 'Pending')}</span></td>
+      <td>
+        <div class="emp-request-actions">
+          <button class="emp-request-view-btn" onclick="empOpenRequestDetails('${type}','${r.id}')">
+            <i class="ri-eye-line"></i> View
+          </button>
+          <div class="emp-request-menu-wrap">
+            <button class="emp-request-menu-btn" onclick="empToggleActionMenu(event, '${type}_${r.id}')" title="More actions">
+              <i class="ri-more-2-fill"></i>
+            </button>
+            <div class="emp-request-menu" id="empReqMenu_${type}_${r.id}">
+              <button onclick="empQuickStatus('${type}','${r.id}','Approved')"><i class="ri-check-line"></i> Approve</button>
+              <button onclick="empQuickStatus('${type}','${r.id}','Rejected')"><i class="ri-close-line"></i> Reject</button>
+              <button onclick="empOpenAction('${type}','${r.id}','${employeeArg}','${commentArg}','${statusArg}')"><i class="ri-edit-2-line"></i> Update Status</button>
+              <button onclick="empOpenRequestDetails('${type}','${r.id}')"><i class="ri-eye-line"></i> View Details</button>
+            </div>
+          </div>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function empRequestDetailRows(type, r) {
+  const attachment = r.receipt_path || r.supporting_file || '';
+  const attachmentName = r.receipt_name || r.supporting_file_name || 'View attachment';
+  const rows = [
+    ['Employee Name', r.employee_name],
+    ['Status', r.status || 'Pending'],
+  ];
+  if (type === 'reimburse') {
+    rows.push(
+      ['Request Type', 'Reimbursement Request'],
+      ['Category', r.category],
+      ['Amount', empMoney(r.amount)],
+      ['Date Requested', empFmtDate(r.request_date || r.created_at)],
+      ['Date of Expense', empFmtDate(r.expense_date)],
+      ['Purpose / Reason', r.purpose],
+      ['Department', r.department],
+      ['Remarks', r.remarks]
+    );
+  } else if (type === 'budget') {
+    rows.push(
+      ['Request Type', 'Budget Request'],
+      ['Budget Title / Purpose', r.title],
+      ['Department / Project', r.department_project],
+      ['Requested Amount', empMoney(r.requested_amount)],
+      ['Date Requested', empFmtDate(r.request_date || r.created_at)],
+      ['Date Needed', empFmtDate(r.date_needed)],
+      ['Reason / Justification', r.justification],
+      ['Remarks', r.remarks]
+    );
+  } else if (type === 'salary') {
+    rows.push(
+      ['Request Type', 'Salary Advance Request'],
+      ['Requested Amount', empMoney(r.requested_amount)],
+      ['Date Requested', empFmtDate(r.request_date || r.created_at)],
+      ['Preferred Deduction Start Date', empFmtDate(r.deduction_start_date)],
+      ['Deduction Terms / Number of Cutoffs', r.deduction_terms],
+      ['Reason', r.reason],
+      ['Remarks', r.remarks]
+    );
+  } else if (type === 'salary-increase') {
+    rows.push(
+      ['Request Type', 'Salary Increase Request'],
+      ['Current Salary', empMoney(r.current_salary)],
+      ['Requested Salary', empMoney(r.requested_salary)],
+      ['Date Requested', empFmtDate(r.request_date || r.created_at)],
+      ['Effective Date', empFmtDate(r.effective_date)],
+      ['Reason / Justification', r.justification],
+      ['Department', r.department],
+      ['Remarks', r.remarks]
+    );
+  }
+  if (attachment) {
+    rows.push(['Attachment', `<a href="${escapeHtml(attachment)}" target="_blank" rel="noopener" style="color:#1e3a6e;font-weight:800;">${escapeHtml(attachmentName)}</a>`]);
+  }
+  return rows.map(([label, value]) => {
+    const rawValue = String(value || value === 0 ? value : '&mdash;');
+    const htmlValue = rawValue.startsWith('<a ') || rawValue.includes('&#8369;') || rawValue === '&mdash;'
+      ? rawValue
+      : escapeHtml(rawValue);
+    return `
+    <div class="inc-fg" style="margin-bottom:0;">
+      <label>${escapeHtml(label)}</label>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;color:#374151;min-height:40px;word-break:break-word;">
+        ${htmlValue}
+      </div>
+    </div>
+  `;
+  }).join('');
+}
+
+async function empOpenRequestDetails(type, id) {
+  try {
+    empCloseActionMenus();
+    const r = await financeStandaloneApi("GET", empRequestEndpoint(type, id));
+    document.getElementById("empRequestDetailsModal")?.remove();
+    const modal = document.createElement("div");
+    modal.className = "inc-modal-overlay";
+    modal.id = "empRequestDetailsModal";
+    modal.style.display = "flex";
+    modal.innerHTML = `
+      <div class="inc-modal-box" style="max-width:680px;max-height:86vh;overflow:hidden;display:flex;flex-direction:column;">
+        <h3 style="color:#1e3a6e;font-size:16px;font-weight:900;margin-bottom:14px;padding-bottom:14px;border-bottom:2px solid rgba(30,58,110,.1);display:flex;align-items:center;gap:8px;">
+          <i class="ri-file-list-3-line"></i> Request Details
+        </h3>
+        <div style="overflow:auto;padding-right:4px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;">
+            ${empRequestDetailRows(type, r)}
+          </div>
+        </div>
+        <div class="inc-mbtns" style="margin-top:16px;border-top:1px solid #e5e7eb;padding-top:14px;">
+          <button class="inc-mbtn" onclick="document.getElementById('empRequestDetailsModal')?.remove()"><i class="ri-close-line"></i> Close</button>
+        </div>
+      </div>`;
+    modal.addEventListener("click", e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  } catch(err) {
+    showToast("Failed to load details: " + err.message, "error");
+  }
+}
+
+async function empQuickStatus(type, id, status) {
+  try {
+    await financeStandaloneApi("PATCH", `/api/employee/${type === "salary" ? "salary-advances" : type}/${id}/action`, { status });
+    showToast(`Marked as ${status}.`, status === "Approved" ? "success" : "info");
+    empCloseActionMenus();
+    empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = empIncFilterStatus = "";
+    empRefresh();
+  } catch(err) {
+    showToast("Failed: " + err.message, "error");
+  }
+}
+
+async function empOpenSalaryIncreaseView(id) {
+  try {
+    const r = await financeStandaloneApi("GET", `/api/employee/salary-increase-requests/${id}`);
+    document.getElementById("empSalaryIncreaseViewModal")?.remove();
+    const statusCls = r.status==="Approved" ? "completed"
+                    : r.status==="Rejected"||r.status==="Decline" ? "overdue" : "progress";
+    const modal = document.createElement("div");
+    modal.className = "inc-modal-overlay";
+    modal.id = "empSalaryIncreaseViewModal";
+    modal.style.display = "flex";
+    modal.innerHTML = `
+      <div class="inc-modal-box" style="max-width:520px;">
+        <h3 style="color:#1e3a6e;"><i class="ri-money-dollar-circle-line"></i> Salary Increase Details</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+          <div class="inc-fg"><label>Employee</label><div style="font-weight:800;color:#1e3a6e;">${r.employee_name||"&mdash;"}</div></div>
+          <div class="inc-fg"><label>Status</label><span class="badge ${statusCls}">${r.status||"Pending"}</span></div>
+          <div class="inc-fg"><label>Current Salary</label><div>${r.current_salary == null ? "&mdash;" : "&#8369;" + Number(r.current_salary).toLocaleString("en-PH",{minimumFractionDigits:2})}</div></div>
+          <div class="inc-fg"><label>Requested Salary</label><div style="font-weight:800;color:#1e3a6e;">&#8369;${Number(r.requested_salary||0).toLocaleString("en-PH",{minimumFractionDigits:2})}</div></div>
+          <div class="inc-fg"><label>Date Requested</label><div>${empFmtDate(r.request_date || r.created_at)}</div></div>
+          <div class="inc-fg"><label>Effective Date</label><div>${empFmtDate(r.effective_date)}</div></div>
+        </div>
+        <div class="inc-fg"><label>Reason / Justification</label><div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;color:#374151;">${r.justification||"&mdash;"}</div></div>
+        <div class="inc-fg"><label>Remarks</label><div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;color:#374151;">${r.remarks||"No remarks yet."}</div></div>
+        <div class="inc-mbtns">
+          <button class="inc-mbtn" onclick="document.getElementById('empSalaryIncreaseViewModal')?.remove()"><i class="ri-close-line"></i> Close</button>
+        </div>
+      </div>`;
+    modal.addEventListener("click", e => { if (e.target === modal) modal.remove(); });
+    document.body.appendChild(modal);
+  } catch(err) {
+    showToast("Failed to load details: " + err.message, "error");
+  }
+}
+
 /* ── Action modal (Reimburse & Budget: Approve/Decline + comment) ── */
-function empOpenAction(type, id, name, existingComment) {
+function empOpenAction(type, id, name, existingComment, currentStatus = "Pending") {
+  empCloseActionMenus();
   empActionType = type;
   empActionId   = id;
   document.getElementById("empActionName").textContent    = name;
   document.getElementById("empActionComment").value       = existingComment || "";
+  const statusEl = document.getElementById("empActionStatus");
+  if (statusEl) statusEl.value = currentStatus || "Pending";
   document.getElementById("empActionModal").style.display = "flex";
 }
 function empCloseAction() {
@@ -4142,18 +4561,24 @@ function empCloseAction() {
 async function empDoAction(status) {
   const comments = document.getElementById("empActionComment").value.trim();
   const type = empActionType === "salary" ? "salary-advances" : empActionType;
+  const nextStatus = status === "Decline" ? "Rejected" : status;
   const url = `/api/employee/${type}/${empActionId}/action`;
   try {
-    await financeStandaloneApi("PATCH", url, { status, comments: comments || undefined });
-    showToast(`Marked as ${status}.`, status==="Approved"||status==="Done" ? "success" : "info");
+    await financeStandaloneApi("PATCH", url, { status: nextStatus, comments: comments || undefined });
+    showToast(`Marked as ${nextStatus}.`, nextStatus==="Approved"||nextStatus==="Done" ? "success" : "info");
     empCloseAction();
     // Reset filter to show all records (so the updated record stays visible)
-    empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = "";
-    const selMap = { reimburse: "empRmbStatus", budget: "empBdgStatus", salary: "empSalStatus" };
+    empRmbFilterStatus = empBdgFilterStatus = empSalFilterStatus = empIncFilterStatus = "";
+    const selMap = { reimburse: "empRmbStatus", budget: "empBdgStatus", salary: "empSalStatus", "salary-increase": "empIncStatus" };
     const sel = document.getElementById(selMap[empActiveTab] || "");
     if (sel) sel.value = "";
     empRefresh();
   } catch(err) { showToast("Failed: " + err.message, "error"); }
+}
+
+async function empSaveStatusUpdate() {
+  const status = document.getElementById("empActionStatus")?.value || "Pending";
+  await empDoAction(status);
 }
 
 async function empSaveComment() {
@@ -5414,30 +5839,38 @@ function formatFinanceInventoryInputValue(value, type) {
         Employee: <strong id="empActionName"></strong>
       </p>
       <div class="inc-fg">
+        <label>Status</label>
+        <select id="empActionStatus"
+          style="width:100%;padding:10px 12px;border:1.5px solid #d1d5db;border-radius:9px;font-size:13.5px;font-family:inherit;outline:none;background:white;color:#374151;">
+          <option value="Pending">Pending</option>
+          <option value="Approved">Approved</option>
+          <option value="Rejected">Rejected</option>
+          <option value="Cancelled">Cancelled</option>
+        </select>
+      </div>
+      <div class="inc-fg">
         <label>Comment <span style="color:#94a3b8;font-weight:400;">(optional)</span></label>
         <textarea id="empActionComment" rows="3"
           placeholder="Add a comment..."
           style="width:100%;padding:10px 14px;border-radius:11px;border:1.5px solid #e2e8f0;font-size:13px;font-family:inherit;outline:none;resize:vertical;"
           onfocus="this.style.borderColor='#1e3a6e'" onblur="this.style.borderColor='#e2e8f0'"></textarea>
       </div>
-      <!-- Save Comment row -->
       <div style="margin-top:12px;display:flex;justify-content:flex-end;">
-        <button onclick="empSaveComment()"
+        <button onclick="empSaveStatusUpdate()"
           style="display:inline-flex;align-items:center;gap:6px;padding:9px 20px;border-radius:50px;border:none;
                  background:linear-gradient(135deg,#1e3a6e,#2d5fa8);color:white;font-size:13px;font-weight:700;
                  cursor:pointer;font-family:inherit;box-shadow:0 4px 12px rgba(30,58,110,.3);">
-          <i class="ri-save-line"></i> Save Comment
+          <i class="ri-save-line"></i> Update Status
         </button>
       </div>
-      <!-- Approve / Decline row -->
       <div class="inc-mbtns" style="margin-top:14px;justify-content:space-between;border-top:1px solid #e5e7eb;padding-top:14px;">
         <button class="inc-mbtn" onclick="empCloseAction()">
           <i class="ri-close-line"></i> Cancel
         </button>
         <div style="display:flex;gap:8px;">
-          <button onclick="empDoAction('Decline')"
+          <button onclick="empDoAction('Rejected')"
             style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border-radius:50px;border:none;background:linear-gradient(135deg,#dc2626,#ef4444);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 4px 12px rgba(220,38,38,.3);">
-            <i class="ri-close-circle-line"></i> Decline
+            <i class="ri-close-circle-line"></i> Reject
           </button>
           <button onclick="empDoAction('Approved')"
             style="display:inline-flex;align-items:center;gap:6px;padding:10px 20px;border-radius:50px;border:none;background:linear-gradient(135deg,#16a34a,#22c55e);color:white;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;box-shadow:0 4px 12px rgba(22,163,74,.3);">

@@ -9,7 +9,8 @@
       let role = "noc";
       try {
         const user = JSON.parse(localStorage.getItem("user") || "{}");
-        role = String(user.role || "").trim().toLowerCase() === "finance" ? "finance" : "noc";
+        const normalizedRole = String(user.role || "").trim().toLowerCase();
+        role = normalizedRole === "finance" ? "finance" : "noc";
       } catch {
         role = "noc";
       }

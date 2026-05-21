@@ -33,6 +33,7 @@ if (user && dashboardShell) {
     admin: ["admin", "noc", "finance"],
     finance: ["finance"],
     noc: ["noc"],
+    bidder: ["noc"],
   };
   const allowedShells = allowedShellsByRole[roleKey] || ["noc"];
   if (!allowedShells.includes(dashboardShell)) {
@@ -57,3 +58,20 @@ document.body.classList.toggle("admin-module", activeShellKey === "admin");
 document.body.classList.toggle("finance-role", activeShellKey === "finance");
 document.body.classList.toggle("noc-module", activeShellKey === "noc");
 document.body.classList.toggle("finance-module", activeShellKey === "finance");
+
+function sendUserActivity() {
+  if (!user?.id) return;
+  const currentPage = `${activeShellKey || "dashboard"}:${window.location.pathname}${window.location.search}`;
+  fetch("/api/activity", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-User-Id": user.id, "X-User-Role": user.role || "" },
+    body: JSON.stringify({ user_id: user.id, current_page: currentPage })
+  }).catch(() => {});
+}
+
+sendUserActivity();
+window.addEventListener("focus", sendUserActivity);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) sendUserActivity();
+});
+setInterval(sendUserActivity, 60000);

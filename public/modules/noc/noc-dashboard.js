@@ -7828,6 +7828,24 @@ function openRequestSelectorModal(user) {
     <div class="rq-type-title">Files Request</div>
     <div class="rq-type-desc">Request file pickup, return, or document copy</div>
   </button>
+
+  <button type="button" class="rq-type-card" data-type="reimbursement">
+    <div class="rq-type-icon"><i class="ri-refund-2-line"></i></div>
+    <div class="rq-type-title">Reimbursement Request</div>
+    <div class="rq-type-desc">Submit expense reimbursement with receipt or proof</div>
+  </button>
+
+  <button type="button" class="rq-type-card" data-type="budget">
+    <div class="rq-type-icon"><i class="ri-wallet-3-line"></i></div>
+    <div class="rq-type-title">Budget Request</div>
+    <div class="rq-type-desc">Request budget for a department, project, or purpose</div>
+  </button>
+
+  <button type="button" class="rq-type-card" data-type="salary_advance">
+    <div class="rq-type-icon"><i class="ri-hand-coin-line"></i></div>
+    <div class="rq-type-title">Salary Advance Request</div>
+    <div class="rq-type-desc">Request a salary advance with deduction terms</div>
+  </button>
 </div>
       </div>
 
@@ -7871,6 +7889,18 @@ function openRequestSelectorModal(user) {
     }
     if (type === 'files') {
       openFilesRequestModal(user);
+      return;
+    }
+    if (type === 'reimbursement') {
+      openReimbursementRequestModal(user);
+      return;
+    }
+    if (type === 'budget') {
+      openBudgetRequestModal(user);
+      return;
+    }
+    if (type === 'salary_advance') {
+      openSalaryAdvanceRequestModal(user);
     }
   });
 });
@@ -8445,6 +8475,584 @@ function openFilesRequestModal(user) {
       showToast('Files request submitted successfully.', 'success');
       sendRequestNotification('files',
         `Document: ${document_name}\nPurpose: ${purpose}\nAction: ${request_action}\nCopy Type: ${copy_type}${department ? '\nDepartment: ' + department : ''}`
+      );
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request';
+    }
+  });
+}
+
+function openReimbursementRequestModal(user) {
+  if (document.getElementById('reimbursementRequestModal')) return;
+
+  const deptDefault = getSettingsDeptDefault(user);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const m = document.createElement('div');
+  m.id = 'reimbursementRequestModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-form-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-refund-2-line"></i></div>
+          <div>
+            <div class="lv-header-title">Reimbursement Request Form</div>
+            <div class="lv-header-sub">Complete the details below to submit your reimbursement request</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="reimbursementRequestClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        ${buildRequestUserBanner(user, deptDefault)}
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-line"></i> Request Date</div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-event-line lv-input-icon"></i>
+              <input type="date" id="rmbReqDate" class="lv-input lv-input-icon-pad" value="${today}">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-building-4-line"></i> Department</div>
+            <div class="lv-select-wrap">
+              <select id="rmbReqDept" class="lv-input lv-select">
+                <option value="">Select department…</option>
+                <option value="NOC Department" ${deptDefault==='NOC Department'?'selected':''}>NOC Department</option>
+                <option value="Finance Department" ${deptDefault==='Finance Department'?'selected':''}>Finance Department</option>
+                <option value="Executive" ${deptDefault==='Executive'?'selected':''}>Executive</option>
+                <option value="Admin" ${deptDefault==='Admin'?'selected':''}>Admin</option>
+                <option value="Bidder" ${deptDefault==='Bidder'?'selected':''}>Bidder</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-price-tag-3-line"></i> Reimbursement Type / Category <span class="lv-req">*</span></div>
+            <div class="lv-select-wrap">
+              <select id="rmbCategory" class="lv-input lv-select">
+                <option value="">Select category…</option>
+                <option value="Transportation">Transportation</option>
+                <option value="Meal">Meal</option>
+                <option value="Office Supplies">Office Supplies</option>
+                <option value="Project Expense">Project Expense</option>
+                <option value="Other">Other</option>
+              </select>
+              <i class="ri-arrow-down-s-line lv-select-arrow"></i>
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-money-dollar-circle-line"></i> Amount <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-money-dollar-circle-line lv-input-icon"></i>
+              <input type="number" id="rmbAmount" class="lv-input lv-input-icon-pad" min="0.01" step="0.01" placeholder="Amount">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-check-line"></i> Date of Expense <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-line lv-input-icon"></i>
+              <input type="date" id="rmbExpenseDate" class="lv-input lv-input-icon-pad">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-attachment-2"></i> Upload Receipt / Proof <span class="lv-req">*</span></div>
+            <label class="lv-upload-zone rq-upload-zone" for="rmbReceiptInput" id="rmbReceiptZone">
+              <div class="lv-upload-content" id="rmbReceiptContent">
+                <div class="lv-upload-icon"><i class="ri-file-upload-line"></i></div>
+                <div class="lv-upload-text">
+                  <span class="lv-upload-cta">Click to upload</span> receipt or proof
+                </div>
+                <div class="lv-upload-hint">Image or PDF only — max 10MB</div>
+              </div>
+              <input type="file" id="rmbReceiptInput" style="display:none;" accept="image/*,.pdf,application/pdf">
+            </label>
+          </div>
+        </div>
+
+        <div class="rq-image-preview hidden" id="rmbReceiptPreviewWrap">
+          <img id="rmbReceiptPreviewImg" alt="Receipt Preview">
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Purpose / Reason <span class="lv-req">*</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="rmbPurpose" class="lv-input rq-textarea" placeholder="State the purpose or reason for this reimbursement…"></textarea>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-sticky-note-line"></i> Remarks <span class="lv-optional">(optional)</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="rmbRemarks" class="lv-input rq-textarea" placeholder="Additional remarks…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note">
+          <i class="ri-information-line"></i>
+          Your reimbursement request will be reviewed before approval.
+        </div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="rmbReqCancel">
+            <i class="ri-close-line"></i> Cancel
+          </button>
+          <button class="lv-submit-btn" id="rmbReqSubmit">
+            <i class="ri-send-plane-fill"></i> Submit Request
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+
+  const close = () => m.remove();
+  document.getElementById('reimbursementRequestClose').onclick = close;
+  document.getElementById('rmbReqCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  const receiptInput = document.getElementById('rmbReceiptInput');
+  const receiptContent = document.getElementById('rmbReceiptContent');
+  const receiptZone = document.getElementById('rmbReceiptZone');
+  const previewWrap = document.getElementById('rmbReceiptPreviewWrap');
+  const previewImg = document.getElementById('rmbReceiptPreviewImg');
+
+  receiptInput.addEventListener('change', function () {
+    const file = this.files[0];
+    previewImg.removeAttribute('src');
+    previewWrap.classList.add('hidden');
+    if (!file) return;
+
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isImage = file.type.startsWith('image/');
+    if (!isPdf && !isImage) {
+      showToast('Receipt/proof must be an image or PDF file.', 'error');
+      this.value = '';
+      return;
+    }
+
+    if (isImage) {
+      const reader = new FileReader();
+      reader.onload = ev => {
+        previewImg.src = ev.target.result;
+        previewWrap.classList.remove('hidden');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    receiptContent.innerHTML = `
+      <div class="lv-upload-icon" style="color:#22c55e;"><i class="${isPdf ? 'ri-file-pdf-2-line' : 'ri-checkbox-circle-line'}"></i></div>
+      <div class="lv-upload-text">
+        <span class="lv-upload-cta" style="color:#16a34a;">${escHtml(file.name)}</span>
+      </div>
+      <div class="lv-upload-hint">${(file.size / 1024).toFixed(1)} KB — click to change</div>
+    `;
+    receiptZone.style.borderColor = '#22c55e';
+    receiptZone.style.background = '#f0fdf4';
+  });
+
+  document.getElementById('rmbReqSubmit').addEventListener('click', async () => {
+    const request_date = document.getElementById('rmbReqDate').value;
+    const department = document.getElementById('rmbReqDept').value;
+    const category = document.getElementById('rmbCategory').value;
+    const amount = document.getElementById('rmbAmount').value;
+    const expense_date = document.getElementById('rmbExpenseDate').value;
+    const purpose = document.getElementById('rmbPurpose').value.trim();
+    const remarks = document.getElementById('rmbRemarks').value.trim();
+    const receipt_file = receiptInput.files[0];
+
+    if (!request_date)  { showToast('Request date is required.', 'error'); return; }
+    if (!category)      { showToast('Please select a reimbursement category.', 'error'); return; }
+    if (!amount || Number(amount) <= 0) { showToast('Amount is required.', 'error'); return; }
+    if (!expense_date)  { showToast('Date of expense is required.', 'error'); return; }
+    if (!purpose)       { showToast('Purpose / reason is required.', 'error'); return; }
+    if (!receipt_file)  { showToast('Receipt / proof is required.', 'error'); return; }
+
+    const btn = document.getElementById('rmbReqSubmit');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const formData = new FormData();
+      formData.append('request_date', request_date);
+      formData.append('department', department);
+      formData.append('category', category);
+      formData.append('amount', amount);
+      formData.append('expense_date', expense_date);
+      formData.append('purpose', purpose);
+      formData.append('remarks', remarks);
+      formData.append('receipt', receipt_file);
+
+      const res = await fetch(`/api/users/${user.id}/reimbursement-requests`, {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(result.error || 'Submission failed.', 'error');
+        return;
+      }
+
+      close();
+      showToast('Reimbursement request submitted successfully.', 'success');
+      sendRequestNotification('reimbursement',
+        `Category: ${category}\nAmount: ${amount}\nDate of Expense: ${expense_date}\nPurpose: ${purpose}${remarks ? '\nRemarks: ' + remarks : ''}${department ? '\nDepartment: ' + department : ''}`
+      );
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request';
+    }
+  });
+}
+
+function openBudgetRequestModal(user) {
+  if (document.getElementById('budgetRequestModal')) return;
+
+  const deptDefault = getSettingsDeptDefault(user);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const m = document.createElement('div');
+  m.id = 'budgetRequestModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-form-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-wallet-3-line"></i></div>
+          <div>
+            <div class="lv-header-title">Budget Request Form</div>
+            <div class="lv-header-sub">Complete the details below to submit your budget request</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="budgetRequestClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        ${buildRequestUserBanner(user, deptDefault)}
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-line"></i> Request Date</div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-event-line lv-input-icon"></i>
+              <input type="date" id="bdgReqDate" class="lv-input lv-input-icon-pad" value="${today}">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-building-4-line"></i> Department / Project</div>
+            <div class="lv-input-wrap">
+              <i class="ri-building-line lv-input-icon"></i>
+              <input type="text" id="bdgDeptProject" class="lv-input lv-input-icon-pad" value="${deptDefault}" placeholder="Department or project">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-file-list-3-line"></i> Budget Title / Purpose <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-edit-line lv-input-icon"></i>
+              <input type="text" id="bdgTitle" class="lv-input lv-input-icon-pad" placeholder="e.g. Site deployment materials">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-money-dollar-circle-line"></i> Requested Amount <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-money-dollar-circle-line lv-input-icon"></i>
+              <input type="number" id="bdgAmount" class="lv-input lv-input-icon-pad" min="0.01" step="0.01" placeholder="Amount">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-check-line"></i> Date Needed <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-line lv-input-icon"></i>
+              <input type="date" id="bdgDateNeeded" class="lv-input lv-input-icon-pad">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-attachment-2"></i> Supporting File <span class="lv-optional">(optional)</span></div>
+            <label class="lv-upload-zone rq-upload-zone" for="bdgSupportInput" id="bdgSupportZone">
+              <div class="lv-upload-content" id="bdgSupportContent">
+                <div class="lv-upload-icon"><i class="ri-file-upload-line"></i></div>
+                <div class="lv-upload-text"><span class="lv-upload-cta">Click to upload</span> supporting file</div>
+                <div class="lv-upload-hint">Optional — max 10MB</div>
+              </div>
+              <input type="file" id="bdgSupportInput" style="display:none;">
+            </label>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Reason / Justification <span class="lv-req">*</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="bdgJustification" class="lv-input rq-textarea" placeholder="State the reason or justification…"></textarea>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-sticky-note-line"></i> Remarks <span class="lv-optional">(optional)</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="bdgRemarks" class="lv-input rq-textarea" placeholder="Additional remarks…"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note"><i class="ri-information-line"></i> Your budget request will be submitted as Pending.</div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="bdgReqCancel"><i class="ri-close-line"></i> Cancel</button>
+          <button class="lv-submit-btn" id="bdgReqSubmit"><i class="ri-send-plane-fill"></i> Submit Request</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  document.getElementById('budgetRequestClose').onclick = close;
+  document.getElementById('bdgReqCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  const supportInput = document.getElementById('bdgSupportInput');
+  const supportContent = document.getElementById('bdgSupportContent');
+  const supportZone = document.getElementById('bdgSupportZone');
+  supportInput.addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+    supportContent.innerHTML = `
+      <div class="lv-upload-icon" style="color:#22c55e;"><i class="ri-checkbox-circle-line"></i></div>
+      <div class="lv-upload-text"><span class="lv-upload-cta" style="color:#16a34a;">${escHtml(file.name)}</span></div>
+      <div class="lv-upload-hint">${(file.size / 1024).toFixed(1)} KB — click to change</div>
+    `;
+    supportZone.style.borderColor = '#22c55e';
+    supportZone.style.background = '#f0fdf4';
+  });
+
+  document.getElementById('bdgReqSubmit').addEventListener('click', async () => {
+    const request_date = document.getElementById('bdgReqDate').value;
+    const title = document.getElementById('bdgTitle').value.trim();
+    const department_project = document.getElementById('bdgDeptProject').value.trim();
+    const requested_amount = document.getElementById('bdgAmount').value;
+    const date_needed = document.getElementById('bdgDateNeeded').value;
+    const justification = document.getElementById('bdgJustification').value.trim();
+    const remarks = document.getElementById('bdgRemarks').value.trim();
+
+    if (!request_date) { showToast('Request date is required.', 'error'); return; }
+    if (!title) { showToast('Budget title / purpose is required.', 'error'); return; }
+    if (!requested_amount || Number(requested_amount) <= 0) { showToast('Requested amount is required.', 'error'); return; }
+    if (!date_needed) { showToast('Date needed is required.', 'error'); return; }
+    if (!justification) { showToast('Reason / justification is required.', 'error'); return; }
+
+    const btn = document.getElementById('bdgReqSubmit');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const formData = new FormData();
+      formData.append('request_date', request_date);
+      formData.append('title', title);
+      formData.append('department_project', department_project);
+      formData.append('requested_amount', requested_amount);
+      formData.append('date_needed', date_needed);
+      formData.append('justification', justification);
+      formData.append('remarks', remarks);
+      if (supportInput.files[0]) formData.append('supporting_file', supportInput.files[0]);
+
+      const res = await fetch(`/api/users/${user.id}/budget-requests`, { method: 'POST', body: formData });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(result.error || (res.status === 404 ? 'Budget request API is not available. Please restart the server.' : 'Submission failed.'), 'error');
+        return;
+      }
+
+      close();
+      showToast('Budget request submitted successfully.', 'success');
+      sendRequestNotification('budget',
+        `Title: ${title}\nDepartment / Project: ${department_project || 'N/A'}\nRequested Amount: ${requested_amount}\nDate Needed: ${date_needed}\nJustification: ${justification}${remarks ? '\nRemarks: ' + remarks : ''}`
+      );
+    } catch {
+      showToast('Network error.', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="ri-send-plane-fill"></i> Submit Request';
+    }
+  });
+}
+
+function openSalaryAdvanceRequestModal(user) {
+  if (document.getElementById('salaryAdvanceRequestModal')) return;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const m = document.createElement('div');
+  m.id = 'salaryAdvanceRequestModal';
+  m.className = 'modal-overlay';
+  m.innerHTML = `
+    <div class="lv-shell rq-form-shell">
+      <div class="lv-header">
+        <div class="lv-header-left">
+          <div class="lv-header-icon"><i class="ri-hand-coin-line"></i></div>
+          <div>
+            <div class="lv-header-title">Salary Advance Request Form</div>
+            <div class="lv-header-sub">Complete the details below to submit your salary advance request</div>
+          </div>
+        </div>
+        <button class="lv-close-btn" id="salaryAdvanceRequestClose"><i class="ri-close-line"></i></button>
+      </div>
+
+      <div class="lv-body">
+        ${buildRequestUserBanner(user, getSettingsDeptDefault(user))}
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-line"></i> Request Date</div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-event-line lv-input-icon"></i>
+              <input type="date" id="advReqDate" class="lv-input lv-input-icon-pad" value="${today}">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-money-dollar-circle-line"></i> Requested Amount <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-money-dollar-circle-line lv-input-icon"></i>
+              <input type="number" id="advAmount" class="lv-input lv-input-icon-pad" min="0.01" step="0.01" placeholder="Amount">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-calendar-check-line"></i> Preferred Deduction Start Date <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-calendar-line lv-input-icon"></i>
+              <input type="date" id="advDeductionStart" class="lv-input lv-input-icon-pad">
+            </div>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-repeat-2-line"></i> Deduction Terms / Number of Cutoffs <span class="lv-req">*</span></div>
+            <div class="lv-input-wrap">
+              <i class="ri-list-check-2 lv-input-icon"></i>
+              <input type="text" id="advTerms" class="lv-input lv-input-icon-pad" placeholder="e.g. 4 cutoffs">
+            </div>
+          </div>
+        </div>
+
+        <div class="lv-section">
+          <div class="lv-section-label"><i class="ri-chat-quote-line"></i> Reason <span class="lv-req">*</span></div>
+          <div class="lv-input-wrap rq-textarea-wrap">
+            <textarea id="advReason" class="lv-input rq-textarea" placeholder="State the reason for this salary advance…"></textarea>
+          </div>
+        </div>
+
+        <div class="lv-section lv-grid-2">
+          <div>
+            <div class="lv-section-label"><i class="ri-attachment-2"></i> Supporting File <span class="lv-optional">(optional)</span></div>
+            <label class="lv-upload-zone rq-upload-zone" for="advSupportInput" id="advSupportZone">
+              <div class="lv-upload-content" id="advSupportContent">
+                <div class="lv-upload-icon"><i class="ri-file-upload-line"></i></div>
+                <div class="lv-upload-text"><span class="lv-upload-cta">Click to upload</span> supporting file</div>
+                <div class="lv-upload-hint">Optional — max 10MB</div>
+              </div>
+              <input type="file" id="advSupportInput" style="display:none;">
+            </label>
+          </div>
+          <div>
+            <div class="lv-section-label"><i class="ri-sticky-note-line"></i> Remarks <span class="lv-optional">(optional)</span></div>
+            <div class="lv-input-wrap rq-textarea-wrap">
+              <textarea id="advRemarks" class="lv-input rq-textarea" placeholder="Additional remarks…"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lv-footer">
+        <div class="lv-footer-note"><i class="ri-information-line"></i> Your salary advance request will be submitted as Pending.</div>
+        <div class="lv-footer-actions">
+          <button class="lv-cancel-btn" id="advReqCancel"><i class="ri-close-line"></i> Cancel</button>
+          <button class="lv-submit-btn" id="advReqSubmit"><i class="ri-send-plane-fill"></i> Submit Request</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(m);
+  const close = () => m.remove();
+  document.getElementById('salaryAdvanceRequestClose').onclick = close;
+  document.getElementById('advReqCancel').onclick = close;
+  m.onclick = e => { if (e.target === m) close(); };
+
+  const supportInput = document.getElementById('advSupportInput');
+  const supportContent = document.getElementById('advSupportContent');
+  const supportZone = document.getElementById('advSupportZone');
+  supportInput.addEventListener('change', function () {
+    const file = this.files[0];
+    if (!file) return;
+    supportContent.innerHTML = `
+      <div class="lv-upload-icon" style="color:#22c55e;"><i class="ri-checkbox-circle-line"></i></div>
+      <div class="lv-upload-text"><span class="lv-upload-cta" style="color:#16a34a;">${escHtml(file.name)}</span></div>
+      <div class="lv-upload-hint">${(file.size / 1024).toFixed(1)} KB — click to change</div>
+    `;
+    supportZone.style.borderColor = '#22c55e';
+    supportZone.style.background = '#f0fdf4';
+  });
+
+  document.getElementById('advReqSubmit').addEventListener('click', async () => {
+    const request_date = document.getElementById('advReqDate').value;
+    const requested_amount = document.getElementById('advAmount').value;
+    const deduction_start_date = document.getElementById('advDeductionStart').value;
+    const deduction_terms = document.getElementById('advTerms').value.trim();
+    const reason = document.getElementById('advReason').value.trim();
+    const remarks = document.getElementById('advRemarks').value.trim();
+
+    if (!request_date) { showToast('Request date is required.', 'error'); return; }
+    if (!requested_amount || Number(requested_amount) <= 0) { showToast('Requested amount is required.', 'error'); return; }
+    if (!reason) { showToast('Reason is required.', 'error'); return; }
+    if (!deduction_start_date) { showToast('Preferred deduction start date is required.', 'error'); return; }
+    if (!deduction_terms) { showToast('Deduction terms are required.', 'error'); return; }
+
+    const btn = document.getElementById('advReqSubmit');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ri-loader-4-line spin"></i> Submitting…';
+
+    try {
+      const formData = new FormData();
+      formData.append('request_date', request_date);
+      formData.append('requested_amount', requested_amount);
+      formData.append('reason', reason);
+      formData.append('deduction_start_date', deduction_start_date);
+      formData.append('deduction_terms', deduction_terms);
+      formData.append('remarks', remarks);
+      if (supportInput.files[0]) formData.append('supporting_file', supportInput.files[0]);
+
+      const res = await fetch(`/api/users/${user.id}/salary-advance-requests`, { method: 'POST', body: formData });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(result.error || (res.status === 404 ? 'Salary advance request API is not available. Please restart the server.' : 'Submission failed.'), 'error');
+        return;
+      }
+
+      close();
+      showToast('Salary advance request submitted successfully.', 'success');
+      sendRequestNotification('salary_advance',
+        `Requested Amount: ${requested_amount}\nReason: ${reason}\nDeduction Start: ${deduction_start_date}\nDeduction Terms: ${deduction_terms}${remarks ? '\nRemarks: ' + remarks : ''}`
       );
     } catch {
       showToast('Network error.', 'error');
@@ -11157,6 +11765,9 @@ async function sendRequestNotification(requestType, details) {
     id:     'ID Request',
     salary: 'Salary Increase Request',
     files:  'Files Request',
+    reimbursement: 'Reimbursement Request',
+    budget: 'Budget Request',
+    salary_advance: 'Salary Advance Request',
   };
   const label   = typeLabels[requestType] || 'Request';
   const subject = `[${label}] Submitted — Pending Review`;
@@ -11227,6 +11838,9 @@ function renderMyRequestsTable(mount, rows) {
     id:     { label: 'ID Request',      icon: 'ri-id-card-line',          color: '#0ea5e9' },
     salary: { label: 'Salary Increase', icon: 'ri-money-dollar-circle-line', color: '#10b981' },
     files:  { label: 'Files Request',   icon: 'ri-folder-open-line',      color: '#f59e0b' },
+    reimbursement: { label: 'Reimbursement', icon: 'ri-refund-2-line', color: '#14b8a6' },
+    budget: { label: 'Budget Request', icon: 'ri-wallet-3-line', color: '#7c3aed' },
+    salary_advance: { label: 'Salary Advance', icon: 'ri-hand-coin-line', color: '#0f766e' },
   };
   const statusConfig = {
     pending:   { cls: 'req-badge-pending',   label: 'Pending'   },
@@ -11240,7 +11854,7 @@ function renderMyRequestsTable(mount, rows) {
       <div class="stg-req-empty">
         <i class="ri-file-list-3-line"></i>
         <span>No requests yet.</span>
-        <small>Submit a Leave, ID, Salary, or Files request to see it here.</small>
+        <small>Submit a Leave, ID, Salary, Files, Reimbursement, Budget, or Salary Advance request to see it here.</small>
       </div>`;
     return;
   }
@@ -11396,6 +12010,19 @@ function renderMyRequestDetailModal(data, typeMeta, statusConfig = {}) {
     request_action: 'Request Action',
     copy_type: 'Copy Type',
     proof_of_return: 'Proof of Return',
+    category: 'Reimbursement Type / Category',
+    amount: 'Amount',
+    expense_date: 'Date of Expense',
+    receipt_path: 'Receipt / Proof',
+    title: 'Budget Title / Purpose',
+    department_project: 'Department / Project',
+    requested_amount: 'Requested Amount',
+    date_needed: 'Date Needed',
+    justification: 'Reason / Justification',
+    supporting_file: 'Supporting File',
+    reason: 'Reason',
+    deduction_start_date: 'Preferred Deduction Start Date',
+    deduction_terms: 'Deduction Terms / Number of Cutoffs',
     start_date: 'Start Date',
     end_date: 'End Date',
   };
@@ -11406,7 +12033,7 @@ function renderMyRequestDetailModal(data, typeMeta, statusConfig = {}) {
       const d = new Date(value);
       if (!Number.isNaN(d.getTime())) return escHtml(d.toLocaleString());
     }
-    if (key === 'proof_of_return' && String(value).startsWith('/')) {
+    if (['proof_of_return', 'receipt_path', 'supporting_file'].includes(key) && String(value).startsWith('/')) {
       return `<a href="${escHtml(value)}" target="_blank" rel="noopener">View attachment</a>`;
     }
     return escHtml(String(value));
