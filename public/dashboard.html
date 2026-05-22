@@ -10,12 +10,14 @@
       try {
         const user = JSON.parse(localStorage.getItem("user") || "{}");
         const normalizedRole = String(user.role || "").trim().toLowerCase();
-        role = normalizedRole === "finance" ? "finance" : "noc";
+        role = normalizedRole === "finance" ? "finance" : normalizedRole === "bidder" ? "bidder" : "noc";
       } catch {
         role = "noc";
       }
       window.location.replace(role === "finance"
         ? "/modules/finance/finance-dashboard.html"
+        : role === "bidder"
+          ? "/modules/bidder/bidder-dashboard.html"
         : "/modules/noc/noc-dashboard.html");
     })();
   </script>

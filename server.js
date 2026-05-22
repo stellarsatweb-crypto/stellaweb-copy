@@ -45,6 +45,9 @@ app.get('/finance/inventory', (req, res) => {
 app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'modules', 'admin', 'admin-dashboard.html'));
 });
+app.get('/bidder', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'modules', 'bidder', 'bidder-dashboard.html'));
+});
 
 /* ================= POSTGRES CONNECTION ================= */
 
@@ -8103,6 +8106,1372 @@ function getLocalIP() {
 }
 
 const HOST = '0.0.0.0';
+
+
+/* ================= BIDDER MODULE ROUTES: BIDDING + ELIGIBILITY ================= */
+/* ================= BIDDING DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bidding_documents (
+        id          SERIAL PRIMARY KEY,
+        bidder_id   INTEGER       NOT NULL,
+        file_name   TEXT          NOT NULL,
+        file_url    TEXT,
+        doc_type    TEXT,
+        file_size   BIGINT        DEFAULT 0,
+        status      TEXT          NOT NULL CHECK (status IN ('awarded','rejected')),
+        description TEXT,
+        date        DATE          DEFAULT CURRENT_DATE,
+        created_at  TIMESTAMPTZ   DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ   DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bidding_bidder_id ON bidding_documents(bidder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bidding_status    ON bidding_documents(status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_bidding_date      ON bidding_documents(date DESC)`);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION set_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS bidding_documents_updated_at ON bidding_documents`);
+    await pool.query(`
+      CREATE TRIGGER bidding_documents_updated_at
+        BEFORE UPDATE ON bidding_documents
+        FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+    `);
+    console.log('Bidding documents table ready ✅');
+  } catch (e) {
+    console.error('Bidding documents setup error:', e.message);
+  }
+})();
+
+const multerBidding = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'bidding');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(ext)) cb(null, true);
+    else cb(new Error('Invalid file type. Allowed: PDF, DOC, DOCX, XLS, XLSX, ZIP'));
+  }
+});
+
+function getBidderId(req) {
+  const id = Number(req.headers['x-user-id'] || req.query.user_id || req.body?.user_id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/* GET /api/bidder/bidding/:id/preview */
+app.get('/api/bidder/bidding/:id/preview', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM bidding_documents WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM bidding_documents WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    const fs       = require('fs');
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk.' });
+    const ext = path.extname(f.file_name).toLowerCase();
+    const mimeTypes = {
+      '.pdf':  'application/pdf',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',
+      '.webp': 'image/webp',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc':  'application/msword',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls':  'application/vnd.ms-excel',
+      '.mp4':  'video/mp4',
+      '.webm': 'video/webm',
+      '.mov':  'video/quicktime',
+      '.avi':  'video/x-msvideo',
+      '.mkv':  'video/x-matroska',
+    };
+    res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${f.file_name}"`);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    console.error('GET /api/bidder/bidding/:id/preview:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/bidding/:id/download */
+app.get('/api/bidder/bidding/:id/download', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM bidding_documents WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM bidding_documents WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk.' });
+    });
+  } catch (e) {
+    console.error('GET /api/bidder/bidding/:id/download:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/bidding?status=awarded|rejected */
+app.get('/api/bidder/bidding', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required (x-user-id header)' });
+  const { status } = req.query;
+  if (!status || !['awarded', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be awarded or rejected' });
+  try {
+    const result = await pool.query(
+      `SELECT * FROM bidding_documents WHERE bidder_id=$1 AND status=$2 ORDER BY date DESC, created_at DESC`,
+      [bidderId, status]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    console.error('GET /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* POST /api/bidder/bidding — Add Files modal */
+app.post('/api/bidder/bidding', multerBidding.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required (x-user-id header)' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const { doc_type, date, status, description } = req.body || {};
+  if (!status || !['awarded', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be awarded or rejected' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO bidding_documents (bidder_id, file_name, file_url, doc_type, file_size, status, description, date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [
+        bidderId,
+        file.originalname,
+        '/uploads/bidding/' + file.filename,
+        doc_type    || null,
+        file.size   || 0,
+        status,
+        description || null,
+        date        || new Date().toISOString().slice(0, 10)
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* POST /api/bidder/bidding/upload — drag-and-drop quick upload */
+app.post('/api/bidder/bidding/upload', multerBidding.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required (x-user-id header)' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const status = ['awarded', 'rejected'].includes(req.body.status) ? req.body.status : 'awarded';
+  try {
+    const result = await pool.query(
+      `INSERT INTO bidding_documents (bidder_id, file_name, file_url, file_size, status, date)
+       VALUES ($1,$2,$3,$4,$5,CURRENT_DATE) RETURNING *`,
+      [bidderId, file.originalname, '/uploads/bidding/' + file.filename, file.size || 0, status]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/bidding/upload error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* PUT /api/bidder/bidding/:id — Edit document metadata */
+app.put('/api/bidder/bidding/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const { doc_type, date, status, description } = req.body || {};
+  if (status && !['awarded', 'rejected'].includes(status))
+    return res.status(400).json({ error: 'status must be awarded or rejected' });
+  try {
+    const result = await pool.query(
+      `UPDATE bidding_documents
+       SET doc_type    = COALESCE($1, doc_type),
+           date        = COALESCE($2::date, date),
+           status      = COALESCE($3, status),
+           description = COALESCE($4, description),
+           updated_at  = NOW()
+       WHERE id = $5 AND bidder_id = $6
+       RETURNING *`,
+      [
+        doc_type    || null,
+        date        || null,
+        status      || null,
+        description !== undefined ? description : null,
+        req.params.id,
+        bidderId
+      ]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Document not found' });
+    res.json(result.rows[0]);
+  } catch (e) {
+    console.error('PUT /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* DELETE /api/bidder/bidding/:id */
+app.delete('/api/bidder/bidding/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const existing = await pool.query(
+      `SELECT file_url FROM bidding_documents WHERE id=$1 AND bidder_id=$2`,
+      [req.params.id, bidderId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
+    const filePath = existing.rows[0].file_url;
+    if (filePath) require('fs').unlink(path.join(__dirname, 'public', filePath), () => {});
+    await pool.query(`DELETE FROM bidding_documents WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('DELETE /api/bidder/bidding error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* Multer error handler for bidding routes */
+app.use((err, req, res, next) => {
+  if (err && req.path.startsWith('/api/bidder/bidding'))
+    return res.status(400).json({ error: err.message });
+  next(err);
+});
+
+/* ================= END BIDDING DOCUMENTS ================= */
+
+/* ================= ELIGIBILITY DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS eligibility_documents (
+        id           SERIAL PRIMARY KEY,
+        bidder_id    INTEGER      NOT NULL,
+        file_name    TEXT         NOT NULL,
+        file_url     TEXT,
+        doc_name     TEXT,
+        category     TEXT,
+        file_size    BIGINT       DEFAULT 0,
+        issued_date  DATE,
+        expiry_date  DATE         NOT NULL,
+        result       TEXT         CHECK (result IN ('win','loss')),
+        notes        TEXT,
+        created_at   TIMESTAMPTZ  DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ  DEFAULT NOW()
+      )
+    `);
+    /* migrate existing tables that may not have result column yet */
+    await pool.query(`ALTER TABLE eligibility_documents ADD COLUMN IF NOT EXISTS result TEXT CHECK (result IN ('win','loss'))`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_elig_bidder_id  ON eligibility_documents(bidder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_elig_expiry     ON eligibility_documents(expiry_date)`);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION set_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS eligibility_documents_updated_at ON eligibility_documents`);
+    await pool.query(`
+      CREATE TRIGGER eligibility_documents_updated_at
+        BEFORE UPDATE ON eligibility_documents
+        FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+    `);
+    console.log('Eligibility documents table ready ✅');
+  } catch (e) {
+    console.error('Eligibility documents setup error:', e.message);
+  }
+})();
+
+const multerElig = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'eligibility');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.pdf','.doc','.docx','.xls','.xlsx','.jpg','.jpeg','.png'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    allowed.includes(ext) ? cb(null, true) : cb(new Error('Invalid file type'));
+  }
+});
+
+/* GET /api/bidder/eligibility — returns all docs for this bidder */
+app.get('/api/bidder/eligibility', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const result = await pool.query(
+      `SELECT * FROM eligibility_documents WHERE bidder_id=$1 ORDER BY expiry_date ASC`,
+      [bidderId]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    console.error('GET /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* POST /api/bidder/eligibility — upload new document */
+app.post('/api/bidder/eligibility', multerElig.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const { doc_name, category, issued_date, expiry_date, result, notes } = req.body || {};
+  if (!expiry_date) return res.status(400).json({ error: 'expiry_date is required' });
+  const safeResult = ['win','loss'].includes(result) ? result : null;
+  try {
+    const dbResult = await pool.query(
+      `INSERT INTO eligibility_documents
+         (bidder_id, file_name, file_url, doc_name, category, file_size, issued_date, expiry_date, result, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [
+        bidderId,
+        file.originalname,
+        '/uploads/eligibility/' + file.filename,
+        doc_name    || file.originalname,
+        category    || null,
+        file.size   || 0,
+        issued_date || null,
+        expiry_date,
+        safeResult,
+        notes       || null
+      ]
+    );
+    res.status(201).json(dbResult.rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* DELETE /api/bidder/eligibility/:id */
+app.delete('/api/bidder/eligibility/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const existing = await pool.query(
+      `SELECT file_url FROM eligibility_documents WHERE id=$1 AND bidder_id=$2`,
+      [req.params.id, bidderId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
+    const { file_url } = existing.rows[0];
+    if (file_url) require('fs').unlink(path.join(__dirname, 'public', file_url), () => {});
+    await pool.query(`DELETE FROM eligibility_documents WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('DELETE /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* PUT /api/bidder/eligibility/:id — edit metadata (no file re-upload) */
+app.put('/api/bidder/eligibility/:id', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const { doc_name, category, issued_date, expiry_date, result, notes } = req.body || {};
+  if (!expiry_date) return res.status(400).json({ error: 'expiry_date is required' });
+  const safeResult = ['win','loss'].includes(result) ? result : null;
+  try {
+    const existing = await pool.query(
+      `SELECT id FROM eligibility_documents WHERE id=$1 AND bidder_id=$2`,
+      [req.params.id, bidderId]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Document not found' });
+    const updated = await pool.query(
+      `UPDATE eligibility_documents
+       SET doc_name=$1, category=$2, issued_date=$3, expiry_date=$4, result=$5, notes=$6
+       WHERE id=$7 AND bidder_id=$8 RETURNING *`,
+      [doc_name||null, category||null, issued_date||null, expiry_date, safeResult, notes||null, req.params.id, bidderId]
+    );
+    res.json(updated.rows[0]);
+  } catch (e) {
+    console.error('PUT /api/bidder/eligibility error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/eligibility/:id/preview */
+app.get('/api/bidder/eligibility/:id/preview', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM eligibility_documents WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM eligibility_documents WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    if (!require('fs').existsSync(filePath))
+      return res.status(404).json({ error: 'File not found on disk.' });
+    const mimeTypes = {
+      '.pdf':  'application/pdf',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',  '.webp': 'image/webp',
+      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      '.doc':  'application/msword',
+      '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      '.xls':  'application/vnd.ms-excel',
+      '.mp4':  'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+    };
+    const ext = path.extname(f.file_name).toLowerCase();
+    res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${f.file_name}"`);
+    require('fs').createReadStream(filePath).pipe(res);
+  } catch (e) {
+    console.error('GET /api/bidder/eligibility/:id/preview:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/bidder/eligibility/:id/download */
+app.get('/api/bidder/eligibility/:id/download', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM eligibility_documents WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM eligibility_documents WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const f        = rows[0];
+    const filePath = path.join(__dirname, 'public', f.file_url);
+    res.download(filePath, f.file_name, err => {
+      if (err && !res.headersSent)
+        res.status(404).json({ error: 'File not found on disk.' });
+    });
+  } catch (e) {
+    console.error('GET /api/bidder/eligibility/:id/download:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ================= END ELIGIBILITY DOCUMENTS ================= */
+/* ================= END BIDDER MODULE ROUTES: BIDDING + ELIGIBILITY ================= */
+
+/* ================= BIDDER JOINT VENTURE DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS joint_venture_documents (
+        id SERIAL PRIMARY KEY,
+        bidder_id INTEGER NOT NULL,
+        doc_section TEXT NOT NULL CHECK (doc_section IN ('eligibility','noa','contract','ntp','acceptance')),
+        doc_name TEXT,
+        file_name TEXT NOT NULL,
+        file_url TEXT NOT NULL,
+        file_type TEXT,
+        category TEXT,
+        file_size BIGINT DEFAULT 0,
+        status TEXT DEFAULT 'valid',
+        folder_year INTEGER,
+        document_date DATE DEFAULT CURRENT_DATE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS joint_venture_year_folders (
+        id SERIAL PRIMARY KEY,
+        bidder_id INTEGER NOT NULL,
+        folder_year INTEGER NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (bidder_id, folder_year)
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_jv_docs_bidder_section ON joint_venture_documents(bidder_id, doc_section)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_jv_docs_year ON joint_venture_documents(bidder_id, folder_year)`);
+    console.log('Joint venture documents tables ready ✅');
+  } catch (e) {
+    console.error('Joint venture documents setup error:', e.message);
+  }
+})();
+
+const JV_SECTIONS = ['eligibility', 'noa', 'contract', 'ntp', 'acceptance'];
+const JV_STATUSES = ['valid', 'issued', 'signed', 'attached', 'contract', 'bond', 'completed'];
+
+const multerJointVenture = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'joint-venture');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.jpg', '.jpeg', '.png'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    allowed.includes(ext) ? cb(null, true) : cb(new Error('Invalid file type'));
+  }
+});
+
+function jointVentureMimeType(filename) {
+  const ext = path.extname(filename || '').toLowerCase();
+  const mimeTypes = {
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.doc': 'application/msword',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xls': 'application/vnd.ms-excel',
+    '.zip': 'application/zip'
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
+}
+
+app.get('/api/bidder/joint-venture', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const section = String(req.query.section || '').toLowerCase();
+  if (!JV_SECTIONS.includes(section)) return res.status(400).json({ error: 'Invalid section' });
+  const year = req.query.year ? Number(req.query.year) : null;
+  try {
+    const params = [bidderId, section];
+    let where = 'WHERE bidder_id = $1 AND doc_section = $2';
+    if (Number.isInteger(year)) {
+      params.push(year);
+      where += ` AND folder_year = $${params.length}`;
+    }
+    const { rows } = await pool.query(
+      `SELECT * FROM joint_venture_documents ${where} ORDER BY document_date DESC, created_at DESC`,
+      params
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error('GET /api/bidder/joint-venture error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/joint-venture/years', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const { rows } = await pool.query(
+      `WITH years AS (
+         SELECT folder_year AS year, created_at
+           FROM joint_venture_year_folders
+          WHERE bidder_id = $1
+         UNION
+         SELECT folder_year AS year, MIN(created_at) AS created_at
+           FROM joint_venture_documents
+          WHERE bidder_id = $1 AND doc_section = 'acceptance' AND folder_year IS NOT NULL
+          GROUP BY folder_year
+       )
+       SELECT y.year, MIN(y.created_at) AS created_at, COUNT(d.id)::int AS file_count
+         FROM years y
+         LEFT JOIN joint_venture_documents d
+           ON d.bidder_id = $1
+          AND d.doc_section = 'acceptance'
+          AND d.folder_year = y.year
+        GROUP BY y.year
+        ORDER BY y.year DESC`,
+      [bidderId]
+    );
+    res.json(rows.filter(r => r.year));
+  } catch (e) {
+    console.error('GET /api/bidder/joint-venture/years error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/joint-venture/years', express.json(), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const year = Number(req.body?.year);
+  if (!Number.isInteger(year) || year < 1900 || year > 2200)
+    return res.status(400).json({ error: 'Valid year is required' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO joint_venture_year_folders (bidder_id, folder_year)
+       VALUES ($1, $2)
+       ON CONFLICT (bidder_id, folder_year) DO UPDATE SET folder_year = EXCLUDED.folder_year
+       RETURNING folder_year AS year, created_at`,
+      [bidderId, year]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/joint-venture/years error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/joint-venture', multerJointVenture.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const file = req.file;
+  if (!file) return res.status(400).json({ error: 'No file uploaded' });
+  const section = String(req.body?.section || '').toLowerCase();
+  if (!JV_SECTIONS.includes(section)) return res.status(400).json({ error: 'Invalid section' });
+  const status = JV_STATUSES.includes(req.body?.status) ? req.body.status : (section === 'acceptance' ? 'completed' : 'valid');
+  const folderYear = req.body?.folder_year ? Number(req.body.folder_year) : null;
+  if (section === 'acceptance' && (!Number.isInteger(folderYear) || folderYear < 1900 || folderYear > 2200))
+    return res.status(400).json({ error: 'Acceptance uploads require a valid folder_year' });
+  try {
+    if (section === 'acceptance') {
+      await pool.query(
+        `INSERT INTO joint_venture_year_folders (bidder_id, folder_year)
+         VALUES ($1, $2)
+         ON CONFLICT (bidder_id, folder_year) DO NOTHING`,
+        [bidderId, folderYear]
+      );
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO joint_venture_documents
+        (bidder_id, doc_section, doc_name, file_name, file_url, file_type, category, file_size, status, folder_year, document_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING *`,
+      [
+        bidderId,
+        section,
+        req.body?.doc_name || file.originalname,
+        file.originalname,
+        '/uploads/joint-venture/' + file.filename,
+        path.extname(file.originalname).replace('.', '').toLowerCase(),
+        req.body?.category || null,
+        file.size || 0,
+        status,
+        section === 'acceptance' ? folderYear : null,
+        req.body?.document_date || new Date().toISOString().slice(0, 10)
+      ]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/joint-venture error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/joint-venture/:id/preview', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM joint_venture_documents WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM joint_venture_documents WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const filePath = path.join(__dirname, 'public', rows[0].file_url);
+    const fs = require('fs');
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk.' });
+    res.setHeader('Content-Type', jointVentureMimeType(rows[0].file_name));
+    res.setHeader('Content-Disposition', `inline; filename="${rows[0].file_name}"`);
+    fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    console.error('GET /api/bidder/joint-venture/:id/preview:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/joint-venture/:id/download', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM joint_venture_documents WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM joint_venture_documents WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const filePath = path.join(__dirname, 'public', rows[0].file_url);
+    res.download(filePath, rows[0].file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk.' });
+    });
+  } catch (e) {
+    console.error('GET /api/bidder/joint-venture/:id/download:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.use((err, req, res, next) => {
+  if (err && req.path.startsWith('/api/bidder/joint-venture'))
+    return res.status(400).json({ error: err.message });
+  next(err);
+});
+
+/* ================= END BIDDER JOINT VENTURE DOCUMENTS ================= */
+
+/* ================= BIDDER FINISHED PROJECT ARCHIVES ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS finished_project_archive_folders (
+        id SERIAL PRIMARY KEY,
+        bidder_id INTEGER NOT NULL,
+        archive_year INTEGER NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (bidder_id, archive_year)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS finished_project_archive_files (
+        id SERIAL PRIMARY KEY,
+        bidder_id INTEGER NOT NULL,
+        folder_id INTEGER REFERENCES finished_project_archive_folders(id) ON DELETE CASCADE,
+        archive_year INTEGER NOT NULL,
+        title TEXT,
+        file_name TEXT NOT NULL,
+        file_url TEXT NOT NULL,
+        file_type TEXT,
+        category TEXT,
+        file_size BIGINT DEFAULT 0,
+        status TEXT DEFAULT 'completed',
+        archived_date DATE DEFAULT CURRENT_DATE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_finished_archive_folders_bidder ON finished_project_archive_folders(bidder_id, archive_year)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_finished_archive_files_bidder_year ON finished_project_archive_files(bidder_id, archive_year)`);
+    console.log('Finished project archive tables ready ✅');
+  } catch (e) {
+    console.error('Finished project archive setup error:', e.message);
+  }
+})();
+
+const multerFinishedArchive = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'finished-projects');
+      require('fs').mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      cb(null, Date.now() + '-' + file.originalname.replace(/\s+/g, '_'));
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.zip', '.jpg', '.jpeg', '.png'];
+    const ext = path.extname(file.originalname).toLowerCase();
+    allowed.includes(ext) ? cb(null, true) : cb(new Error('Invalid file type'));
+  }
+});
+
+function finishedArchiveMimeType(filename) {
+  const ext = path.extname(filename || '').toLowerCase();
+  return ({
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.doc': 'application/msword',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xls': 'application/vnd.ms-excel',
+    '.zip': 'application/zip'
+  })[ext] || 'application/octet-stream';
+}
+
+app.get('/api/bidder/finished-projects/folders', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT f.id, f.archive_year AS year, f.created_at, COUNT(d.id)::int AS project_count
+         FROM finished_project_archive_folders f
+         LEFT JOIN finished_project_archive_files d
+           ON d.folder_id = f.id AND d.bidder_id = f.bidder_id
+        WHERE f.bidder_id = $1
+        GROUP BY f.id
+        ORDER BY f.archive_year DESC`,
+      [bidderId]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error('GET /api/bidder/finished-projects/folders error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/finished-projects/folders', express.json(), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const year = Number(req.body?.year);
+  if (!Number.isInteger(year) || year < 1900 || year > 2200)
+    return res.status(400).json({ error: 'Valid year is required' });
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO finished_project_archive_folders (bidder_id, archive_year)
+       VALUES ($1, $2)
+       RETURNING id, archive_year AS year, created_at, 0::int AS project_count`,
+      [bidderId, year]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'Archive folder already exists for this year' });
+    console.error('POST /api/bidder/finished-projects/folders error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/finished-projects/files', async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const year = Number(req.query.year);
+  if (!Number.isInteger(year)) return res.status(400).json({ error: 'Valid year is required' });
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM finished_project_archive_files
+        WHERE bidder_id = $1 AND archive_year = $2
+        ORDER BY archived_date DESC, created_at DESC`,
+      [bidderId, year]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error('GET /api/bidder/finished-projects/files error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/finished-projects/files', multerFinishedArchive.single('file'), async (req, res) => {
+  const bidderId = getBidderId(req);
+  if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+  const year = Number(req.body?.year);
+  if (!Number.isInteger(year) || year < 1900 || year > 2200)
+    return res.status(400).json({ error: 'Valid year is required' });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  try {
+    const folder = await pool.query(
+      `INSERT INTO finished_project_archive_folders (bidder_id, archive_year)
+       VALUES ($1, $2)
+       ON CONFLICT (bidder_id, archive_year) DO UPDATE SET archive_year = EXCLUDED.archive_year
+       RETURNING id`,
+      [bidderId, year]
+    );
+    const { rows } = await pool.query(
+      `INSERT INTO finished_project_archive_files
+        (bidder_id, folder_id, archive_year, title, file_name, file_url, file_type, category, file_size, status, archived_date)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'completed',$10)
+       RETURNING *`,
+      [
+        bidderId,
+        folder.rows[0].id,
+        year,
+        req.body?.title || req.file.originalname,
+        req.file.originalname,
+        '/uploads/finished-projects/' + req.file.filename,
+        path.extname(req.file.originalname).replace('.', '').toLowerCase(),
+        req.body?.category || 'Project Completion Documents',
+        req.file.size || 0,
+        req.body?.archived_date || new Date().toISOString().slice(0, 10)
+      ]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) {
+    console.error('POST /api/bidder/finished-projects/files error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/finished-projects/files/:id/preview', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM finished_project_archive_files WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM finished_project_archive_files WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    const fs = require('fs');
+    const filePath = path.join(__dirname, 'public', rows[0].file_url);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk.' });
+    res.setHeader('Content-Type', finishedArchiveMimeType(rows[0].file_name));
+    res.setHeader('Content-Disposition', `inline; filename="${rows[0].file_name}"`);
+    fs.createReadStream(filePath).pipe(res);
+  } catch (e) {
+    console.error('GET /api/bidder/finished-projects/files/:id/preview:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/finished-projects/files/:id/download', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const { rows } = bidderId
+      ? await pool.query('SELECT * FROM finished_project_archive_files WHERE id = $1 AND bidder_id = $2', [req.params.id, bidderId])
+      : await pool.query('SELECT * FROM finished_project_archive_files WHERE id = $1', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Document not found.' });
+    res.download(path.join(__dirname, 'public', rows[0].file_url), rows[0].file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk.' });
+    });
+  } catch (e) {
+    console.error('GET /api/bidder/finished-projects/files/:id/download:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.use((err, req, res, next) => {
+  if (err && req.path.startsWith('/api/bidder/finished-projects'))
+    return res.status(400).json({ error: err.message });
+  next(err);
+});
+
+/* ================= END BIDDER FINISHED PROJECT ARCHIVES ================= */
+
+/* ================= BIDDER ACCEPTANCE DOCUMENTS ================= */
+
+(async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS acceptance_doc_folders (
+        id SERIAL PRIMARY KEY,
+        bidder_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        folder_name VARCHAR(150) NOT NULL,
+        parent_id INTEGER REFERENCES acceptance_doc_folders(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (bidder_id, folder_name, parent_id)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS acceptance_doc_files (
+        id SERIAL PRIMARY KEY,
+        folder_id INTEGER NOT NULL REFERENCES acceptance_doc_folders(id) ON DELETE CASCADE,
+        bidder_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        file_name VARCHAR(255) NOT NULL,
+        file_path TEXT NOT NULL,
+        file_size BIGINT DEFAULT 0,
+        file_type VARCHAR(50),
+        project_name TEXT,
+        acceptance_type TEXT,
+        issued_by TEXT,
+        issued_date DATE,
+        expiry_date DATE,
+        status TEXT DEFAULT 'active' CHECK (status IN ('active','expired','archived')),
+        notes TEXT,
+        uploader_name TEXT,
+        last_access TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION set_updated_at()
+      RETURNS TRIGGER AS $$
+      BEGIN NEW.updated_at = NOW(); RETURN NEW; END;
+      $$ LANGUAGE plpgsql
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS acc_doc_folders_updated_at ON acceptance_doc_folders`);
+    await pool.query(`
+      CREATE TRIGGER acc_doc_folders_updated_at
+        BEFORE UPDATE ON acceptance_doc_folders
+        FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+    `);
+    await pool.query(`DROP TRIGGER IF EXISTS acc_doc_files_updated_at ON acceptance_doc_files`);
+    await pool.query(`
+      CREATE TRIGGER acc_doc_files_updated_at
+        BEFORE UPDATE ON acceptance_doc_files
+        FOR EACH ROW EXECUTE FUNCTION set_updated_at()
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_doc_folders_bidder ON acceptance_doc_folders(bidder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_doc_folders_parent ON acceptance_doc_folders(parent_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_doc_files_folder ON acceptance_doc_files(folder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_doc_files_bidder ON acceptance_doc_files(bidder_id)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_doc_files_status ON acceptance_doc_files(status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_acc_doc_files_expiry ON acceptance_doc_files(expiry_date)`);
+    console.log('Bidder acceptance document tables ready');
+  } catch (e) {
+    console.error('Bidder acceptance setup error:', e.message);
+  }
+})();
+
+const bidderAcceptanceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      const dir = path.join(__dirname, 'public', 'uploads', 'bidder-acceptance');
+      fs.mkdirSync(dir, { recursive: true });
+      cb(null, dir);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname || '');
+      const base = path.basename(file.originalname || 'file', ext).replace(/[^a-zA-Z0-9_-]/g, '_');
+      cb(null, `${Date.now()}_${base}${ext}`);
+    }
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 }
+});
+
+function bidderFileType(filename = '') {
+  const ext = path.extname(filename).toLowerCase().replace('.', '');
+  const map = {
+    pdf: 'pdf',
+    doc: 'word',
+    docx: 'word',
+    xls: 'excel',
+    xlsx: 'excel',
+    txt: 'text',
+    png: 'image',
+    jpg: 'image',
+    jpeg: 'image',
+    gif: 'image',
+    webp: 'image',
+    mp4: 'video',
+    webm: 'video',
+    mov: 'video',
+    avi: 'video',
+    mkv: 'video'
+  };
+  return map[ext] || ext || 'file';
+}
+
+function bidderMimeType(filename = '') {
+  return ({
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.doc': 'application/msword',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xls': 'application/vnd.ms-excel',
+    '.mp4': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.mkv': 'video/x-matroska'
+  })[path.extname(filename).toLowerCase()] || 'application/octet-stream';
+}
+
+async function requireBidderId(req, res) {
+  const bidderId = getBidderId(req);
+  if (!bidderId) {
+    res.status(401).json({ error: 'User ID required' });
+    return null;
+  }
+  return bidderId;
+}
+
+app.get('/api/bidder/acceptance/folders', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  try {
+    const rawParent = req.query.parent_id;
+    const parentId = rawParent !== undefined && rawParent !== '' ? Number(rawParent) : null;
+    const result = parentId !== null
+      ? await pool.query(`
+          SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+                 (SELECT COUNT(*)::int FROM acceptance_doc_files fi WHERE fi.folder_id = f.id AND fi.bidder_id = $1) +
+                 (SELECT COUNT(*)::int FROM acceptance_doc_folders sf WHERE sf.parent_id = f.id AND sf.bidder_id = $1) AS file_count
+          FROM acceptance_doc_folders f
+          WHERE f.bidder_id = $1 AND f.parent_id = $2 AND f.id != $2
+          ORDER BY f.folder_name
+        `, [bidderId, parentId])
+      : await pool.query(`
+          SELECT f.id, f.folder_name, f.parent_id, f.created_at,
+                 (SELECT COUNT(*)::int FROM acceptance_doc_files fi WHERE fi.folder_id = f.id AND fi.bidder_id = $1) +
+                 (SELECT COUNT(*)::int FROM acceptance_doc_folders sf WHERE sf.parent_id = f.id AND sf.bidder_id = $1) AS file_count
+          FROM acceptance_doc_folders f
+          WHERE f.bidder_id = $1 AND f.parent_id IS NULL
+          ORDER BY f.folder_name
+        `, [bidderId]);
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/acceptance/folders', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const folderName = String(req.body?.folder_name || '').trim();
+  const parentId = req.body?.parent_id || null;
+  if (!folderName) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `INSERT INTO acceptance_doc_folders (bidder_id, folder_name, parent_id) VALUES ($1,$2,$3) RETURNING *`,
+      [bidderId, folderName, parentId]
+    );
+    res.status(201).json({ success: true, folder: result.rows[0] });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/bidder/acceptance/folders/:id', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const folderName = String(req.body?.folder_name || '').trim();
+  if (!folderName) return res.status(400).json({ error: 'folder_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE acceptance_doc_folders SET folder_name=$1 WHERE id=$2 AND bidder_id=$3 RETURNING *`,
+      [folderName, req.params.id, bidderId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true, folder: result.rows[0] });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'A folder with that name already exists' });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/bidder/acceptance/folders/:id', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  try {
+    const result = await pool.query(`DELETE FROM acceptance_doc_folders WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/acceptance/folders/:id/files', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const q = req.query.q ? `%${req.query.q}%` : null;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM acceptance_doc_files WHERE bidder_id=$1 AND folder_id=$2 ${q ? 'AND file_name ILIKE $3' : ''} ORDER BY created_at DESC`,
+      q ? [bidderId, req.params.id, q] : [bidderId, req.params.id]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/acceptance/files/recent', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  try {
+    const result = await pool.query(`SELECT * FROM acceptance_doc_files WHERE bidder_id=$1 ORDER BY created_at DESC LIMIT 8`, [bidderId]);
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/acceptance/files/search', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const q = req.query.q ? `%${req.query.q}%` : '%';
+  try {
+    const result = await pool.query(
+      `SELECT * FROM acceptance_doc_files WHERE bidder_id=$1 AND file_name ILIKE $2 ORDER BY created_at DESC LIMIT 50`,
+      [bidderId, q]
+    );
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/acceptance/uploaders', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT uploader_name FROM acceptance_doc_files WHERE bidder_id=$1 AND uploader_name IS NOT NULL ORDER BY uploader_name`,
+      [bidderId]
+    );
+    res.json(result.rows.map(row => row.uploader_name));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/acceptance/files', (req, res) => {
+  bidderAcceptanceUpload.single('file')(req, res, async (uploadErr) => {
+    if (uploadErr) return res.status(400).json({ error: uploadErr.message });
+    const bidderId = getBidderId(req);
+    if (!bidderId) return res.status(401).json({ error: 'User ID required' });
+    const folderId = req.body?.folder_id;
+    if (!folderId) return res.status(400).json({ error: 'folder_id is required' });
+    if (!req.file) return res.status(400).json({ error: 'No file received' });
+    const filePath = `/uploads/bidder-acceptance/${req.file.filename}`;
+    try {
+      const result = await pool.query(
+        `INSERT INTO acceptance_doc_files
+         (folder_id, bidder_id, uploader_name, file_name, file_path, file_size, file_type, last_access)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) RETURNING *`,
+        [
+          folderId,
+          bidderId,
+          req.body?.uploader_name || null,
+          req.file.originalname,
+          filePath,
+          req.file.size || 0,
+          bidderFileType(req.file.originalname)
+        ]
+      );
+      res.status(201).json({ success: true, file: result.rows[0] });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+});
+
+app.put('/api/bidder/acceptance/files/:id', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const fileName = String(req.body?.file_name || '').trim();
+  if (!fileName) return res.status(400).json({ error: 'file_name is required' });
+  try {
+    const result = await pool.query(
+      `UPDATE acceptance_doc_files SET file_name=$1 WHERE id=$2 AND bidder_id=$3 RETURNING *`,
+      [fileName, req.params.id, bidderId]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
+    res.json({ success: true, file: result.rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/bidder/acceptance/files/:id', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  try {
+    const existing = await pool.query(`SELECT file_path FROM acceptance_doc_files WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'File not found' });
+    await pool.query(`DELETE FROM acceptance_doc_files WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    const absolutePath = path.join(__dirname, 'public', existing.rows[0].file_path);
+    fs.unlink(absolutePath, () => {});
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/acceptance/files/:id/download', async (req, res) => {
+  const bidderId = getBidderId(req);
+  try {
+    const result = bidderId
+      ? await pool.query(`SELECT * FROM acceptance_doc_files WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId])
+      : await pool.query(`SELECT * FROM acceptance_doc_files WHERE id=$1`, [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
+    const file = result.rows[0];
+    if (bidderId) {
+      await pool.query(`UPDATE acceptance_doc_files SET last_access=NOW() WHERE id=$1 AND bidder_id=$2`, [file.id, bidderId]);
+    }
+    res.download(path.join(__dirname, 'public', file.file_path), file.file_name, err => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'File not found on disk' });
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/bidder/acceptance/files/:id/preview', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  try {
+    const result = await pool.query(`SELECT * FROM acceptance_doc_files WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'File not found' });
+    const file = result.rows[0];
+    const absolutePath = path.join(__dirname, 'public', file.file_path);
+    if (!fs.existsSync(absolutePath)) return res.status(404).json({ error: 'File not found on disk' });
+    res.setHeader('Content-Type', bidderMimeType(file.file_name));
+    res.setHeader('Content-Disposition', 'inline');
+    fs.createReadStream(absolutePath).pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/acceptance/files/:id/copy', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const targetFolderId = req.body?.target_folder_id;
+  if (!targetFolderId) return res.status(400).json({ error: 'target_folder_id is required' });
+  try {
+    const existing = await pool.query(`SELECT * FROM acceptance_doc_files WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    if (!existing.rowCount) return res.status(404).json({ error: 'File not found' });
+    const file = existing.rows[0];
+    const ext = path.extname(file.file_name);
+    const base = path.basename(file.file_name, ext).replace(/\s*\(copy.*\)$/, '').trimEnd();
+    const copiedName = `${base} (copy)${ext}`;
+    const copiedPath = `/uploads/bidder-acceptance/${Date.now()}_${path.basename(file.file_path)}`;
+    fs.mkdirSync(path.dirname(path.join(__dirname, 'public', copiedPath)), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, 'public', file.file_path), path.join(__dirname, 'public', copiedPath));
+    const result = await pool.query(
+      `INSERT INTO acceptance_doc_files (folder_id, bidder_id, uploader_name, file_name, file_path, file_size, file_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [targetFolderId, bidderId, file.uploader_name, copiedName, copiedPath, file.file_size, file.file_type]
+    );
+    res.status(201).json({ success: true, file: result.rows[0] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/bidder/acceptance/folders/:id/copy', async (req, res) => {
+  const bidderId = await requireBidderId(req, res);
+  if (!bidderId) return;
+  const targetParentId = req.body?.target_parent_id;
+  if (!targetParentId) return res.status(400).json({ error: 'target_parent_id is required' });
+  try {
+    const sourceFolder = await pool.query(`SELECT * FROM acceptance_doc_folders WHERE id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    if (!sourceFolder.rowCount) return res.status(404).json({ error: 'Folder not found' });
+    const inserted = await pool.query(
+      `INSERT INTO acceptance_doc_folders (bidder_id, folder_name, parent_id) VALUES ($1,$2,$3) RETURNING *`,
+      [bidderId, `${sourceFolder.rows[0].folder_name} (copy)`, targetParentId]
+    );
+    const newFolderId = inserted.rows[0].id;
+    const files = await pool.query(`SELECT * FROM acceptance_doc_files WHERE folder_id=$1 AND bidder_id=$2`, [req.params.id, bidderId]);
+    for (const file of files.rows) {
+      try {
+        const copiedPath = `/uploads/bidder-acceptance/${Date.now()}_${path.basename(file.file_path)}`;
+        fs.mkdirSync(path.dirname(path.join(__dirname, 'public', copiedPath)), { recursive: true });
+        fs.copyFileSync(path.join(__dirname, 'public', file.file_path), path.join(__dirname, 'public', copiedPath));
+        await pool.query(
+          `INSERT INTO acceptance_doc_files (folder_id, bidder_id, uploader_name, file_name, file_path, file_size, file_type)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [newFolderId, bidderId, file.uploader_name, file.file_name, copiedPath, file.file_size, file.file_type]
+        );
+      } catch {
+        // Skip individual files that cannot be copied.
+      }
+    }
+    res.status(201).json({ success: true, folder_id: newFolderId });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ================= END BIDDER ACCEPTANCE DOCUMENTS ================= */
 
 const server = app.listen(PORT, HOST, () => {
   const localIP = getLocalIP();

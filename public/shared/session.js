@@ -24,16 +24,18 @@ function getDashboardPathForRole(role) {
     ? "/modules/admin/admin-dashboard.html"
     : normalizedRole === "finance"
       ? "/modules/finance/finance-dashboard.html"
+      : normalizedRole === "bidder"
+        ? "/modules/bidder/bidder-dashboard.html"
       : "/modules/noc/noc-dashboard.html";
   return window.location.pathname === "/settings" ? `${path}?page=settings` : path;
 }
 
 if (user && dashboardShell) {
   const allowedShellsByRole = {
-    admin: ["admin", "noc", "finance"],
+    admin: ["admin", "noc", "finance", "bidder"],
     finance: ["finance"],
     noc: ["noc"],
-    bidder: ["noc"],
+    bidder: ["bidder"],
   };
   const allowedShells = allowedShellsByRole[roleKey] || ["noc"];
   if (!allowedShells.includes(dashboardShell)) {
@@ -43,7 +45,7 @@ if (user && dashboardShell) {
 
 const mainContent = document.getElementById("mainContent");
 const sidebarMenu = document.getElementById("sidebarMenu");
-const activeShellKey = dashboardShell || (roleKey === "admin" ? "admin" : roleKey === "finance" ? "finance" : "noc");
+const activeShellKey = dashboardShell || (roleKey === "admin" ? "admin" : roleKey === "finance" ? "finance" : roleKey === "bidder" ? "bidder" : "noc");
 let currentPage = 1;
 const rowsPerPage = 7;
 let leafletMap = null;
@@ -58,6 +60,7 @@ document.body.classList.toggle("admin-module", activeShellKey === "admin");
 document.body.classList.toggle("finance-role", activeShellKey === "finance");
 document.body.classList.toggle("noc-module", activeShellKey === "noc");
 document.body.classList.toggle("finance-module", activeShellKey === "finance");
+document.body.classList.toggle("bidder-module", activeShellKey === "bidder");
 
 function sendUserActivity() {
   if (!user?.id) return;

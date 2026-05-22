@@ -4,6 +4,30 @@
 */
 
 const getFinanceMainContent = () => document.getElementById("mainContent");
+
+function financePageHeader({ title, subtitle, icon, searchId = "", extraClass = "", controls = "" }) {
+  const search = searchId ? `
+        <div style="width:338px;max-width:100%;height:54px;display:inline-flex;align-items:center;gap:12px;padding:0 24px;border-radius:999px;border:1px solid #dbe4ef;background:#fff;box-shadow:0 3px 10px rgba(20,44,86,.08);">
+          <i class="ri-search-line" style="color:#8a9bb4;font-size:20px;"></i>
+          <input type="text" placeholder="Search here" id="${searchId}" style="width:100%;min-width:0;height:100%;border:0;outline:0;background:transparent;color:#3f4b5f;font-size:16px;font-weight:500;">
+        </div>` : "";
+  const headerControls = search || controls ? `
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;flex-wrap:wrap;">
+          ${search}
+          ${controls}
+        </div>` : "";
+
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;min-height:92px;padding:32px 22px 18px;margin:0;background:transparent;border:0;border-radius:0;box-shadow:none;color:#173d7a;">
+      <div style="display:flex;align-items:center;gap:14px;min-width:240px;flex:1 1 auto;">
+        <i class="${icon}" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;color:#173d7a;font-size:29px;"></i>
+        <div>
+          <h2 style="margin:0;color:#173d7a;font-size:34px;line-height:1.1;font-weight:900;letter-spacing:-.6px;">${title}</h2>
+        </div>
+      </div>
+      ${headerControls}
+    </div>`;
+}
 const financeUser = (() => { try { return JSON.parse(localStorage.getItem("user") || "{}"); } catch { return {}; } })();
 const FINANCE_STANDALONE_API = "";
 const financeChartColors = {
@@ -39,129 +63,212 @@ function financeStandaloneEnsureCharts() {
   return window.__financeStandaloneChartPromise;
 }
 
+function dashboardSparkSVG(color, trend) {
+  const w = 120, h = 44, pts = trend;
+  const stepX = w / (pts.length - 1);
+  const points = pts.map((v, i) => `${i * stepX},${h - (v / 100) * h}`).join(" ");
+  const fillPts = `0,${h} ` + points + ` ${w},${h}`;
+  const gid = "sg" + color.replace(/[^a-zA-Z0-9]/g, "");
+  return `<svg viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="width:120px;height:44px;overflow:visible;">
+    <defs>
+      <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" style="stop-color:${color};stop-opacity:0.18"/>
+        <stop offset="1" style="stop-color:${color};stop-opacity:0"/>
+      </linearGradient>
+    </defs>
+    <polygon points="${fillPts}" fill="url(#${gid})" />
+    <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
 function loadDashboard() {
+  const kpiCards = [
+    {
+      id: "kpiIncome",
+      label: "TOTAL COMPANY INCOME",
+      icon: "ri-line-chart-line",
+      colorClass: "exp-kpi-teal",
+      sparkColor: "#4caf50",
+      trend: [30,45,38,55,48,62,58,72,65,80,75,90],
+      pct: "+18.5%", pctUp: true,
+      onclick: "companyIncome"
+    },
+    {
+      id: "kpiCompExp",
+      label: "COMPANY EXPENSES",
+      icon: "ri-shopping-cart-line",
+      colorClass: "exp-kpi-blue",
+      sparkColor: "#2196f3",
+      trend: [40,52,47,60,55,65,60,70,68,74,72,80],
+      pct: "+8.2%", pctUp: false,
+      onclick: "companyExpenses"
+    },
+    {
+      id: "kpiProjExp",
+      label: "PROJECT EXPENSES",
+      icon: "ri-file-list-3-line",
+      colorClass: "exp-kpi-cyan",
+      sparkColor: "#00bcd4",
+      trend: [60,55,65,58,70,64,75,68,80,72,85,78],
+      pct: "-12.4%", pctUp: false,
+      onclick: "projectExpenses"
+    },
+    {
+      id: "kpiCollections",
+      label: "TOTAL COLLECTIONS",
+      icon: "ri-hand-coin-line",
+      colorClass: "exp-kpi-indigo",
+      sparkColor: "#673ab7",
+      trend: [25,38,30,48,42,55,50,62,58,68,65,75],
+      pct: "+5.6%", pctUp: true,
+      onclick: "collections"
+    }
+  ];
+
   getFinanceMainContent().innerHTML = `
   <div class="exp-page finance-dashboard">
 
-    <!-- Page Header — matches NOC page-header-banner pattern -->
-    <div class="page-header-banner finance-dashboard-header" style="position:relative;z-index:2;">
-      <div class="dec-circle-1"></div>
-      <div class="dec-circle-2"></div>
-      <div class="header-inner">
-        <div class="header-identity">
-          <div class="header-icon"><i class="ri-dashboard-line"></i></div>
-          <div>
-            <h2>Dashboard</h2>
-            <p class="header-sub">Welcome back, ${financeUser?.full_name || financeUser?.email || "Finance Officer"}</p>
-          </div>
+    <!-- Page Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;min-height:92px;padding:32px 32px 18px;margin:0;background:transparent;border:0;border-radius:0;box-shadow:none;color:#173d7a;">
+      <div style="display:flex;align-items:center;gap:14px;min-width:240px;flex:1 1 auto;">
+        <i class="ri-dashboard-line" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;color:#173d7a;font-size:29px;"></i>
+        <div>
+          <h2 style="margin:0;color:#173d7a;font-size:34px;line-height:1.1;font-weight:900;letter-spacing:-.6px;">Dashboard</h2>
+          <div style="margin-top:4px;color:#6b7280;font-size:14px;font-weight:500;">Welcome back, ${financeUser?.full_name || financeUser?.email || "Mark Angelo"} 👋</div>
         </div>
-        <div class="search-box" style="max-width:300px;">
-          <i class="ri-search-line"></i>
-          <input type="text" placeholder="Search here">
+      </div>
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:14px;flex-wrap:wrap;">
+        <div style="width:338px;max-width:100%;height:54px;display:inline-flex;align-items:center;gap:12px;padding:0 24px;border-radius:999px;border:1px solid #dbe4ef;background:#fff;box-shadow:0 3px 10px rgba(20,44,86,.08);">
+          <i class="ri-search-line" style="color:#8a9bb4;font-size:20px;"></i>
+          <input type="text" placeholder="Search here..." id="financeDashboardSearch" style="width:100%;min-width:0;height:100%;border:0;outline:0;background:transparent;color:#3f4b5f;font-size:16px;font-weight:500;">
+        </div>
+        <div style="position:relative;width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:#fff;border-radius:50%;box-shadow:0 2px 8px rgba(20,44,86,.10);border:1px solid #dbe4ef;cursor:pointer;">
+          <i class="ri-notification-3-line" style="font-size:20px;color:#173d7a;"></i>
+          <span style="position:absolute;top:8px;right:10px;width:8px;height:8px;background:#3b82f6;border-radius:50%;border:2px solid #fff;"></span>
         </div>
       </div>
     </div>
 
     <!-- KPI Cards -->
-    <div class="exp-kpi-row finance-summary-cards" style="padding:24px 32px 0;">
-      <div class="exp-kpi-card exp-kpi-teal" style="cursor:pointer;" onclick="openPage('companyIncome')">
-        <div class="exp-kpi-icon"><i class="ri-line-chart-line"></i></div>
-        <div>
-          <div class="exp-kpi-val" id="kpiIncome">—</div>
-          <div class="exp-kpi-lbl">Total Company Income</div>
+    <div class="finance-summary-cards" style="padding:0 32px;">
+      ${kpiCards.map(c => `
+      <div class="exp-kpi-card ${c.colorClass}" onclick="openPage('${c.onclick}')">
+        <div class="exp-kpi-icon"><i class="${c.icon}"></i></div>
+        <div class="exp-kpi-lbl">${c.label}</div>
+        <div class="exp-kpi-val" id="${c.id}">—</div>
+        <div class="finance-kpi-footer">
+          <div class="finance-kpi-pct ${c.pctUp ? 'up' : 'down'}">
+            <i class="${c.pctUp ? 'ri-arrow-up-s-fill' : 'ri-arrow-down-s-fill'}"></i>
+            ${c.pct}
+            <span class="pct-vs">vs last month</span>
+          </div>
+          <div class="finance-kpi-spark">${dashboardSparkSVG(c.sparkColor, c.trend)}</div>
         </div>
-      </div>
-      <div class="exp-kpi-card exp-kpi-blue" style="cursor:pointer;" onclick="openPage('companyExpenses')">
-        <div class="exp-kpi-icon"><i class="ri-shopping-cart-line"></i></div>
-        <div>
-          <div class="exp-kpi-val" id="kpiCompExp">—</div>
-          <div class="exp-kpi-lbl">Company Expenses</div>
-        </div>
-      </div>
-      <div class="exp-kpi-card exp-kpi-cyan" style="cursor:pointer;" onclick="openPage('projectExpenses')">
-        <div class="exp-kpi-icon"><i class="ri-file-list-3-line"></i></div>
-        <div>
-          <div class="exp-kpi-val" id="kpiProjExp">—</div>
-          <div class="exp-kpi-lbl">Project Expenses</div>
-        </div>
-      </div>
-      <div class="exp-kpi-card exp-kpi-indigo" style="cursor:pointer;" onclick="openPage('collections')">
-        <div class="exp-kpi-icon"><i class="ri-hand-coin-line"></i></div>
-        <div>
-          <div class="exp-kpi-val" id="kpiCollections">—</div>
-          <div class="exp-kpi-lbl">Total Collections</div>
-        </div>
-      </div>
+      </div>`).join("")}
     </div>
 
-    <!-- Recent Transactions -->
-    <div class="finance-table-section" style="padding:24px 32px 0;">
-      <div class="inc-tbl-wrap">
-        <div class="inc-tbl-banner"><i class="ri-exchange-funds-line"></i> LATEST FINANCIAL ACTIVITY</div>
-        <table class="inc-tbl">
-          <thead>
-            <tr><th>#</th><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            ${generateDashboardRows()}
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- Collections Overview -->
-    <div class="finance-table-section finance-table-section-secondary" style="padding:24px 32px 32px;">
-      <div class="inc-tbl-wrap">
-        <div class="inc-tbl-banner"><i class="ri-hand-coin-line"></i> PENDING &amp; RECENT COLLECTIONS</div>
-        <table class="inc-tbl">
-          <thead>
-            <tr><th>#</th><th>Client / Project</th><th>Due Date</th><th>Amount Due</th><th>Collected</th><th>Balance</th><th>Status</th></tr>
-          </thead>
-          <tbody>
-            ${generateCollectionRows()}
-          </tbody>
-        </table>
+    <!-- Latest Financial Activity -->
+    <div style="padding:24px 32px 32px;">
+      <div class="finance-activity-card">
+        <div class="finance-activity-header">
+          <div class="finance-activity-title">
+            <div class="finance-activity-title-icon"><i class="ri-exchange-funds-line"></i></div>
+            LATEST FINANCIAL ACTIVITY
+          </div>
+          <div style="position:relative;">
+            <button class="finance-period-btn" id="dashPeriodBtn" onclick="dashTogglePeriod()">
+              <i class="ri-calendar-line" style="font-size:14px;color:#6b7280;"></i>
+              <span id="dashPeriodLabel">This Month</span>
+              <i class="ri-arrow-down-s-line" style="font-size:15px;color:#9ca3af;"></i>
+            </button>
+            <div class="finance-period-dd" id="dashPeriodDd">
+              ${["This Week","This Month","Last Month","This Year"].map(p =>
+                `<div class="finance-period-dd-item" onclick="dashSelectPeriod('${p}')">${p}</div>`
+              ).join("")}
+            </div>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="finance-activity-table">
+            <thead>
+              <tr><th>#</th><th>DATE</th><th>DESCRIPTION</th><th>CATEGORY</th><th>AMOUNT</th><th>STATUS</th></tr>
+            </thead>
+            <tbody>${generateDashboardRows()}</tbody>
+          </table>
+        </div>
+        <div class="finance-activity-footer">
+          <button class="finance-view-all-btn" onclick="openPage('companyIncome')">
+            View all transactions <i class="ri-arrow-right-line"></i>
+          </button>
+        </div>
       </div>
     </div>
 
   </div>`;
-  // Load KPIs from FINANCE_STANDALONE_API
+
+  window.dashTogglePeriod = function() {
+    document.getElementById("dashPeriodDd")?.classList.toggle("open");
+  };
+  window.dashSelectPeriod = function(label) {
+    const lbl = document.getElementById("dashPeriodLabel");
+    if (lbl) lbl.textContent = label;
+    document.getElementById("dashPeriodDd")?.classList.remove("open");
+  };
+  document.addEventListener("click", function(e) {
+    const btn = document.getElementById("dashPeriodBtn");
+    const dd  = document.getElementById("dashPeriodDd");
+    if (dd && btn && !btn.contains(e.target) && !dd.contains(e.target)) {
+      dd.classList.remove("open");
+    }
+  });
+
+  // Load KPIs from API
   financeStandaloneApi("GET", "/api/report/kpis").then(kpis => {
-    const fmt = (n) => formatCurrency(n);
-    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = fmt(val); };
+    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = formatCurrency(val); };
     el("kpiIncome",      kpis.total_income);
     el("kpiCompExp",     kpis.comp_expenses);
     el("kpiProjExp",     kpis.proj_expenses);
     el("kpiCollections", kpis.total_collections);
   }).catch(() => {
-    // Server not running — show dashes
     ["kpiIncome","kpiCompExp","kpiProjExp","kpiCollections"].forEach(id => {
-      const e = document.getElementById(id);
-      if (e) e.textContent = "—";
+      const e = document.getElementById(id); if (e) e.textContent = "—";
     });
   });
 }
 
 function generateDashboardRows() {
   const rows = [
-    { date: "2025-07-15", desc: "Client Payment – Project Alpha", cat: "Income", amount: 250000, status: "completed" },
-    { date: "2025-07-14", desc: "Office Supplies Purchase",       cat: "Expense", amount: 15200, status: "completed" },
-    { date: "2025-07-13", desc: "Project Beta – Material Cost",   cat: "Project Expense", amount: 88000, status: "pending" },
-    { date: "2025-07-12", desc: "Utility Bills – July",           cat: "Expense", amount: 32400, status: "completed" },
-    { date: "2025-07-11", desc: "Collection – XYZ Corp",          cat: "Collection", amount: 450000, status: "completed" },
-    { date: "2025-07-10", desc: "Equipment Maintenance",          cat: "Expense", amount: 9500, status: "progress" },
-    { date: "2025-07-09", desc: "Client Payment – Project Gamma", cat: "Income", amount: 180000, status: "completed" },
+    { date: "2025-07-15", desc: "Client Payment – Project Alpha", cat: "Income",          amount: 250000, status: "completed" },
+    { date: "2025-07-14", desc: "Office Supplies Purchase",        cat: "Expense",         amount: 15200,  status: "completed" },
+    { date: "2025-07-13", desc: "Project Beta – Material Cost",    cat: "Project Expense", amount: 88000,  status: "pending"   },
+    { date: "2025-07-12", desc: "Utility Bills – July",            cat: "Expense",         amount: 32400,  status: "completed" },
+    { date: "2025-07-11", desc: "Consulting Fee – Project Gamma",  cat: "Project Expense", amount: 45000,  status: "completed" },
   ];
-  return rows.map((r, i) => `
-    <tr>
-      <td>${i + 1}</td>
-      <td>${formatDate(r.date)}</td>
-      <td>${r.desc}</td>
-      <td>${(() => { const cfg={Income:['#dcfce7','#14532d'],Collection:['#dbeafe','#1e40af'],'Project Expense':['#fef3c7','#92400e'],Expense:['#fee2e2','#991b1b']}; const [bg,fg]=cfg[r.cat]||['#e5e7eb','#374151']; return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800;background:${bg};color:${fg};letter-spacing:.4px;">${r.cat}</span>`; })()}</td>
-      <td><span style="font-size:14px;font-weight:900;color:${r.cat === "Income" || r.cat === "Collection" ? "#16a34a" : "#dc2626"};background:${r.cat === "Income" || r.cat === "Collection" ? "rgba(22,163,74,.07)" : "rgba(220,38,38,.07)"};padding:3px 9px;border-radius:7px;display:inline-block;">${formatCurrency(r.amount)}</span></td>
-      <td>${(() => { const cfg={completed:['#dcfce7','#14532d','Completed'],pending:['#f1f5f9','#475569','Pending'],progress:['#fef3c7','#92400e','In Progress']}; const [bg,fg,lbl]=cfg[r.status]||['#e5e7eb','#374151',r.status]; return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:800;background:${bg};color:${fg};letter-spacing:.4px;">${lbl}</span>`; })()}</td>
-    </tr>
-  `).join("");
+  const catCfg = {
+    "Income":          { bg:"#dcfce7", fg:"#14532d" },
+    "Collection":      { bg:"#dbeafe", fg:"#1e40af" },
+    "Project Expense": { bg:"#fef3c7", fg:"#92400e" },
+    "Expense":         { bg:"#fee2e2", fg:"#991b1b" }
+  };
+  const stsCfg = {
+    "completed": { bg:"#dcfce7", fg:"#14532d", lbl:"Completed" },
+    "pending":   { bg:"#f1f5f9", fg:"#475569", lbl:"Pending"   },
+    "progress":  { bg:"#fef3c7", fg:"#92400e", lbl:"In Progress"}
+  };
+  return rows.map((r, i) => {
+    const isIncome = r.cat === "Income" || r.cat === "Collection";
+    const cc = catCfg[r.cat] || { bg:"#e5e7eb", fg:"#374151" };
+    const sc = stsCfg[r.status] || { bg:"#e5e7eb", fg:"#374151", lbl: r.status };
+    return `
+    <tr style="border-top:1px solid #f1f5f9;" onmouseenter="this.style.background='#f8fafc'" onmouseleave="this.style.background=''">
+      <td style="padding:13px 16px 13px 24px;font-size:13px;font-weight:600;color:#94a3b8;">${i + 1}</td>
+      <td style="padding:13px 16px;font-size:13px;color:#64748b;font-weight:500;">${formatDate(r.date)}</td>
+      <td style="padding:13px 16px;font-size:13px;color:#1e293b;font-weight:600;">${r.desc}</td>
+      <td style="padding:13px 16px;"><span style="display:inline-flex;align-items:center;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:${cc.bg};color:${cc.fg};letter-spacing:.3px;">${r.cat}</span></td>
+      <td style="padding:13px 16px;font-size:13px;font-weight:800;color:${isIncome ? '#16a34a' : '#dc2626'};">${formatCurrency(r.amount)}</td>
+      <td style="padding:13px 24px 13px 16px;"><span style="display:inline-flex;align-items:center;padding:4px 12px;border-radius:20px;font-size:11px;font-weight:700;background:${sc.bg};color:${sc.fg};letter-spacing:.3px;">${sc.lbl}</span></td>
+    </tr>`;
+  }).join("");
 }
 
 function generateCollectionRows() {
@@ -257,32 +364,16 @@ function loadCompanyIncome() {
   <div class="inc-page">
 
     <!-- Header -->
-    <div style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
-                padding:28px 32px;position:relative;">
-      <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
-      <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;position:relative;">
-        <div style="display:flex;align-items:center;gap:14px;">
-          <div style="width:46px;height:46px;background:rgba(255,255,255,.13);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;color:white;">
-            <i class="ri-money-dollar-circle-line"></i>
-          </div>
-          <div>
-            <h2 style="font-size:22px;font-weight:800;color:white;margin:0;letter-spacing:-.3px;">Company Income</h2>
-            <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Track and manage all income records</p>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <div class="search-box" style="max-width:300px;background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);">
-            <i class="ri-search-line" style="color:rgba(255,255,255,.7);"></i>
-            <input type="text" placeholder="Search here" id="incSearchInput" style="color:white;" >
-          </div>
+    ${financePageHeader({
+      title: "Company Income",
+      subtitle: "Track and manage all income records",
+      icon: "ri-money-dollar-circle-line",
+      searchId: "incSearchInput",
+      controls: `
           <button class="inc-btn-add" id="incAddBtn" style="display:none;">
             <i class="ri-add-line"></i> Add Income
-          </button>
-        <!-- Period filter -->
-        </div>
-      </div>
-    </div>
+          </button>`
+    })}
 
     <!-- Tabs row — tabs left, controls right (consistent across pages) -->
     <div class="company-income-workspace">
@@ -731,26 +822,12 @@ function loadCompanyExpenses() {
   <div class="exp-page">
 
     <!-- Header -->
-    <div style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
-                padding:28px 32px;position:relative;">
-      <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
-      <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;position:relative;">
-        <div style="display:flex;align-items:center;gap:14px;">
-          <div style="width:46px;height:46px;background:rgba(255,255,255,.13);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;color:white;">
-            <i class="ri-bank-card-line"></i>
-          </div>
-          <div>
-            <h2 style="font-size:22px;font-weight:800;color:white;margin:0;letter-spacing:-.3px;">Company Expenses</h2>
-            <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Track operational and overhead expenditures</p>
-          </div>
-        </div>
-        <div class="search-box" style="max-width:300px;background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);">
-          <i class="ri-search-line" style="color:rgba(255,255,255,.7);"></i>
-          <input type="text" placeholder="Search here" id="expSearchInput" style="color:white;">
-        </div>
-      </div>
-    </div>
+    ${financePageHeader({
+      title: "Company Expenses",
+      subtitle: "Track operational and overhead expenditures",
+      icon: "ri-bank-card-line",
+      searchId: "expSearchInput"
+    })}
 
     <!-- Tabs row — tabs left, period filter right -->
     <div class="company-expenses-workspace">
@@ -1708,26 +1785,12 @@ function loadProjectExpenses() {
   <div class="exp-page">
 
     <!-- Header -->
-    <div style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
-                padding:28px 32px;position:relative;">
-      <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
-      <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;position:relative;">
-        <div style="display:flex;align-items:center;gap:14px;">
-          <div style="width:46px;height:46px;background:rgba(255,255,255,.13);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;color:white;">
-            <i class="ri-folder-chart-line"></i>
-          </div>
-          <div>
-            <h2 style="font-size:22px;font-weight:800;color:white;margin:0;letter-spacing:-.3px;">Project Expenses</h2>
-            <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Track project-level expenditures and purchases</p>
-          </div>
-        </div>
-        <div class="search-box" style="max-width:300px;background:rgba(255,255,255,.12);border:1.5px solid rgba(255,255,255,.2);">
-          <i class="ri-search-line" style="color:rgba(255,255,255,.7);"></i>
-          <input type="text" placeholder="Search here" id="peSearchInput" style="color:white;">
-        </div>
-      </div>
-    </div>
+    ${financePageHeader({
+      title: "Project Expenses",
+      subtitle: "Track project-level expenditures and purchases",
+      icon: "ri-folder-chart-line",
+      searchId: "peSearchInput"
+    })}
 
     <!-- Tabs row — tabs left, filter right -->
     <div class="project-expenses-workspace">
@@ -3074,22 +3137,11 @@ function loadCollections() {
   <div class="finance-page-shell finance-collections-page" style="background:#f0f4fa;min-height:100%;padding-bottom:40px;">
 
     <!-- Page Header -->
-    <div class="finance-page-header" style="background:linear-gradient(135deg,#0f2147 0%,#1e3a6e 55%,#2a52a0 100%);
-                padding:28px 32px;position:relative;">
-      <div style="position:absolute;top:-40px;right:-40px;width:200px;height:200px;border-radius:50%;background:rgba(255,255,255,.04);pointer-events:none;"></div>
-      <div style="position:absolute;bottom:-50px;right:140px;width:140px;height:140px;border-radius:50%;background:rgba(255,255,255,.03);pointer-events:none;"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;position:relative;">
-        <div style="display:flex;align-items:center;gap:14px;">
-          <div style="width:46px;height:46px;background:rgba(255,255,255,.13);border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;color:white;">
-            <i class="ri-hand-coin-line"></i>
-          </div>
-          <div>
-            <h2 style="font-size:22px;font-weight:800;color:white;margin:0;letter-spacing:-.3px;">Collections</h2>
-            <p style="color:rgba(255,255,255,.65);font-size:12.5px;margin:3px 0 0;">Track client payments and outstanding balances</p>
-          </div>
-        </div>
-      </div>
-    </div>
+    ${financePageHeader({
+      title: "Collections",
+      subtitle: "Track client payments and outstanding balances",
+      icon: "ri-hand-coin-line"
+    })}
 
     <div class="collections-workspace">
     <!-- Tabs -->
